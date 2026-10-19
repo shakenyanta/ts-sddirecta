@@ -9,6 +9,18 @@ use std::io;
 
 use serde::Serialize;
 
+#[tauri::command]
+fn get_executable_directory() -> Result<String, String> {
+    let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+    let directory = executable
+        .parent()
+        .ok_or("実行ファイルの保存先を取得できませんでした")?;
+    directory
+        .to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| "保存先の文字コードを変換できませんでした".to_string())
+}
+
 #[derive(Serialize)]
 struct DriveInfo { drive: String, #[serde(rename = "type")] kind: String, size: i64 }
 
@@ -103,7 +115,7 @@ fn sd_verify_fill(drive: String, address: u64, size: usize, fill_byte: u8) -> Re
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet, get_drives, sd_read, sd_write, sd_fill, sd_verify_fill])
+        .invoke_handler(tauri::generate_handler![greet, get_executable_directory, get_drives, sd_read, sd_write, sd_fill, sd_verify_fill])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

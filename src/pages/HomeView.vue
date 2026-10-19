@@ -1,8 +1,37 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, nextTick, onMounted, ref } from 'vue';
+import { invoke } from '@tauri-apps/api/core';
+import { splitFolderPath } from '../utils/executablePath';
 
 const menuHeight = ref(48);
 const sdHeight = ref(120);
+const executableDirectory = ref('');
+const pathError = ref('');
+const copyMessages = ref<string[]>([]);
+const textPanel = ref<HTMLElement | null>(null);
+const pathList = ref<HTMLElement | null>(null);
+const folders = computed(() => splitFolderPath(executableDirectory.value));
+
+onMounted(async () => {
+	try {
+		executableDirectory.value = await invoke<string>('get_executable_directory');
+		await nextTick();
+		if (pathList.value) pathList.value.scrollTop = pathList.value.scrollHeight;
+	} catch (error) {
+		pathError.value = `保存先を取得できませんでした: ${String(error)}`;
+	}
+});
+
+async function copyDirectory() {
+	try {
+		await navigator.clipboard.writeText(executableDirectory.value);
+		copyMessages.value.push('コピーしました');
+	} catch {
+		copyMessages.value.push('コピーできませんでした');
+	}
+	await nextTick();
+	if (textPanel.value) textPanel.value.scrollTop = textPanel.value.scrollHeight;
+}
 
 function resize(event: PointerEvent, divider: 1 | 2) {
 	const target = event.currentTarget as HTMLElement;
@@ -37,9 +66,32 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 			<div class="panel-base" :style="{ gridTemplateRows: `${menuHeight}px 1px ${sdHeight}px 1px minmax(0, 1fr) 28px` }">
 				<div id="panel_menu" class="panel_menu"></div>
 				<div id="resizer1" class="resizer" @pointerdown="resize($event, 1)"></div>
-				<div id="panel_sd" class="panel_sd"></div>
+				<section id="panel_sd" class="panel_sd" aria-label="実行ファイルの保存先">
+					<div class="path-header">
+						<span>exeの保存先</span>
+						<button type="button" :disabled="!executableDirectory" @click="copyDirectory">フルパスをコピー</button>
+					</div>
+					<p v-if="pathError" class="path-message path-error" role="alert">{{ pathError }}</p>
+					<ol v-else-if="folders.length" ref="pathList" class="path-list" aria-label="保存先のフォルダー階層">
+						<li v-for="(folder, index) in folders" :key="index"
+							class="path-row" :class="{ 'path-current': index === folders.length - 1 }"
+							:style="{ paddingLeft: `${Math.min(index * 9, 108)}px` }"
+							:aria-current="index === folders.length - 1 ? 'location' : undefined">
+							<span v-if="index > 0" class="path-branch" aria-hidden="true"></span>
+							<span class="path-name" :title="folder">{{ folder }}</span>
+						</li>
+					</ol>
+					<p v-else class="path-message" role="status">保存先を取得中…</p>
+				</section>
 				<div id="resizer2" class="resizer" @pointerdown="resize($event, 2)"></div>
-				<div id="panel_text" class="panel_text"></div>
+				<div id="panel_text" class="panel_text">
+					<div class="path-header text-header">
+						<button type="button" :disabled="copyMessages.length === 0" @click="copyMessages = []" aria-label="操作メッセージをクリア">クリア</button>
+					</div>
+					<div ref="textPanel" class="text-messages" role="log" aria-label="操作メッセージ">
+						<p v-for="(message, index) in copyMessages" :key="index" class="path-message">{{ message }}</p>
+					</div>
+				</div>
 				<div id="panel_footer" class="panel_footer"></div>
 			</div>
 		</div>
@@ -85,6 +137,90 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 }
 .panel_footer {
 	border-top: 1px solid #666;
+}
+.panel_sd,
+.panel_text {
+	font-family: 'Yu Gothic UI', Meiryo, sans-serif;
+	font-size: 11px;
+}
+.panel_sd {
+	display: flex;
+	flex-direction: column;
+}
+.path-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	flex-shrink: 0;
+	gap: 4px;
+	padding: 2px 4px;
+	background: #f3f5f7;
+	border-bottom: 1px solid #d9dfe5;
+}
+.path-header button {
+	font: inherit;
+	padding: 1px 4px;
+	cursor: pointer;
+}
+.path-header button:disabled {
+	cursor: default;
+}
+.path-list {
+	flex: 1;
+	min-height: 0;
+	margin: 0;
+	padding: 3px 4px;
+	list-style: none;
+	overflow: auto;
+}
+.path-row {
+	display: flex;
+	align-items: center;
+	min-height: 15px;
+	line-height: 15px;
+}
+.path-branch {
+	align-self: flex-start;
+	flex: 0 0 7px;
+	height: 8px;
+	margin-right: 2px;
+	border-left: 1px solid #a8b3bf;
+	border-bottom: 1px solid #a8b3bf;
+}
+.path-name {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.path-current {
+	font-weight: 700;
+	color: #174a75;
+	background: #e7f1fb;
+	border-radius: 2px;
+}
+.path-message {
+	margin: 2px 4px;
+	overflow-wrap: anywhere;
+}
+.panel_text {
+	display: flex;
+	flex-direction: column;
+	line-height: 13px;
+}
+.text-header {
+	justify-content: flex-end;
+}
+.text-messages {
+	flex: 1;
+	min-height: 0;
+	overflow: auto;
+}
+.panel_text .path-message {
+	margin: 0 4px;
+}
+.path-error {
+	color: #a12323;
 }
 .resizer {
 	background: #666;

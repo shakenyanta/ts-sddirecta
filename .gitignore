@@ -67,6 +67,7 @@ Desktop.ini
 *.njsproj
 *.sln
 *.sw?
+*.bak
 
 # Build/test artifacts
 coverage/
