@@ -1,10 +1,14 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import SdMenu from '../components/SdMenu.vue';
 import { splitFolderPath } from '../utils/executablePath';
 import { parseSdDirectCsv, type AddressRange } from '../utils/sdDirectCsv';
 
 const menuHeight = ref(48);
+const minimumMenuHeight = ref(48);
+const menuContent = ref<HTMLElement | null>(null);
+let menuObserver: ResizeObserver | undefined;
 const sdHeight = ref(120);
 const executableDirectory = ref('');
 const useInputDirectory = ref(false);
@@ -14,11 +18,23 @@ const displayedDirectory = computed(() => useInputDirectory.value
 const pathError = ref('');
 const messages = ref<string[]>([]);
 const sdDirectDictionary = ref(new Map<string, AddressRange>());
+const matchedFiles = ref<string[]>([]);
+const canSdWrite = computed(() => matchedFiles.value.some(filename => sdDirectDictionary.value.has(filename)));
+let fileTimer: ReturnType<typeof setInterval> | undefined;
+let matching = false;
+let disposed = false;
+let lastMatchError = '';
 const textPanel = ref<HTMLElement | null>(null);
 const pathList = ref<HTMLElement | null>(null);
 const folders = computed(() => splitFolderPath(displayedDirectory.value));
 
 onMounted(async () => {
+	if (typeof ResizeObserver !== 'undefined' && menuContent.value) {
+		menuObserver = new ResizeObserver(([entry]) => {
+			minimumMenuHeight.value = Math.max(48, Math.ceil(entry.contentRect.height));
+		});
+		menuObserver.observe(menuContent.value);
+	}
 	try {
 		executableDirectory.value = await invoke<string>('get_executable_directory');
 		await nextTick();
@@ -45,10 +61,29 @@ onMounted(async () => {
 		await appendMessage(`sdDirectaxs.csv読込失敗: ${String(error)}`);
 		return;
 	}
+	await refreshMatchedFiles(true);
+	if (!disposed) fileTimer = setInterval(() => void refreshMatchedFiles(), 2000);
+});
+
+onUnmounted(() => {
+	disposed = true;
+	menuObserver?.disconnect();
+	clearInterval(fileTimer);
+});
+
+async function refreshMatchedFiles(report = false) {
+	if (matching || disposed) return;
+	matching = true;
 	try {
 		const result = await invoke<{ files: string[]; from_input: boolean }>('find_dictionary_files', {
 			filenames: [...sdDirectDictionary.value.keys()],
 		});
+		if (disposed) return;
+		const changed = useInputDirectory.value !== result.from_input || JSON.stringify(matchedFiles.value) !== JSON.stringify(result.files);
+		matchedFiles.value = result.files;
+		useInputDirectory.value = result.from_input;
+		lastMatchError = '';
+		if (!report && !changed) return;
 		if (result.from_input && result.files.length) {
 			useInputDirectory.value = true;
 			await nextTick();
@@ -59,14 +94,25 @@ onMounted(async () => {
 		}
 		await appendMessage(`ファイル数：${result.files.length}件`);
 	} catch (error) {
-		await appendMessage(`ファイル照合失敗: ${String(error)}`);
+		if (disposed) return;
+		matchedFiles.value = [];
+		const message = `ファイル照合失敗: ${String(error)}`;
+		if (message !== lastMatchError) await appendMessage(message);
+		lastMatchError = message;
+	} finally {
+		matching = false;
 	}
-});
+}
 
 async function appendMessage(...newMessages: string[]) {
 	for (const message of newMessages) messages.value.push(message);
 	await nextTick();
 	if (textPanel.value) textPanel.value.scrollTop = textPanel.value.scrollHeight;
+}
+
+async function onSdWrite(drive: string) {
+	await appendMessage(drive ? `SD書込先: ${drive}` : 'SDドライブを選択してください');
+	if (drive) await appendMessage('SD書込処理は未接続です');
 }
 
 async function copyDirectory() {
@@ -82,7 +128,7 @@ async function copyDirectory() {
 function resize(event: PointerEvent, divider: 1 | 2) {
 	const target = event.currentTarget as HTMLElement;
 	const startY = event.clientY;
-	const initialMenuHeight = menuHeight.value;
+	const initialMenuHeight = Math.max(menuHeight.value, minimumMenuHeight.value);
 	const initialSdHeight = sdHeight.value;
 	const textHeight = target.parentElement!.querySelector<HTMLElement>('.panel_text')!.offsetHeight;
 	target.setPointerCapture(event.pointerId);
@@ -90,7 +136,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 	const move = (moveEvent: PointerEvent) => {
 		const delta = moveEvent.clientY - startY;
 		if (divider === 1) {
-			const change = Math.max(-initialMenuHeight, Math.min(delta, initialSdHeight));
+			const change = Math.max(minimumMenuHeight.value - initialMenuHeight, Math.min(delta, initialSdHeight));
 			menuHeight.value = initialMenuHeight + change;
 			sdHeight.value = initialSdHeight - change;
 		} else {
@@ -109,8 +155,12 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 <template>
 	<div class="panel-outer">
 		<div class="panel-inner">
-			<div class="panel-base" :style="{ gridTemplateRows: `${menuHeight}px 1px ${sdHeight}px 1px minmax(0, 1fr) 28px` }">
-				<div id="panel_menu" class="panel_menu"></div>
+			<div class="panel-base" :style="{ gridTemplateRows: `${Math.max(menuHeight, minimumMenuHeight)}px 1px ${sdHeight}px 1px minmax(0, 1fr) 28px` }">
+				<div id="panel_menu" class="panel_menu">
+					<div ref="menuContent" class="menu-content">
+						<SdMenu :can-write="canSdWrite" @write="onSdWrite" @error="appendMessage" />
+					</div>
+				</div>
 				<div id="resizer1" class="resizer" @pointerdown="resize($event, 1)"></div>
 				<section id="panel_sd" class="panel_sd" aria-label="表示中のフォルダー">
 					<div class="path-header">
@@ -183,6 +233,14 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 }
 .panel_footer {
 	border-top: 1px solid #666;
+}
+.panel_menu {
+	/* The menu's measured content sets its minimum row height. */
+	overflow: visible;
+	container: sd-menu-panel / inline-size;
+}
+.menu-content {
+	min-width: 0;
 }
 .panel_sd,
 .panel_text {

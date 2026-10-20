@@ -64,7 +64,11 @@ fn find_dictionary_files(filenames: Vec<String>) -> Result<MatchedFiles, String>
 }
 
 #[tauri::command]
-fn get_drives() -> Result<Vec<DriveInfo>, String> {
+async fn get_drives() -> Result<Vec<DriveInfo>, String> {
+    tauri::async_runtime::spawn_blocking(list_drives).await.map_err(|e| e.to_string())?
+}
+
+fn list_drives() -> Result<Vec<DriveInfo>, String> {
     use windows_sys::Win32::Storage::FileSystem::{GetLogicalDrives, GetDriveTypeW};
     const DRIVE_REMOVABLE: u32 = 2;
     const DRIVE_FIXED: u32 = 3;
@@ -85,7 +89,7 @@ fn get_drives() -> Result<Vec<DriveInfo>, String> {
                 let drive_str = format!("{}:", drive_letter);
                 let kind = if drive_type == DRIVE_REMOVABLE { "Removable" } else { "Fixed" };
 
-                let volume_path = format!("\\\\.\\{}:", drive_str);
+                let volume_path = format!("\\\\.\\{}", drive_str);
                 let size = match windows_api::get_disk_extents(&volume_path) {
                     Ok(disk_num) if disk_num != 0xFF => {
                         let physical_path = format!("\\\\.\\physicaldrive{}", disk_num);
