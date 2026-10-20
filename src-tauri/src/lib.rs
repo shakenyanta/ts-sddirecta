@@ -5,6 +5,7 @@ fn greet(name: &str) -> String {
 }
 
 mod windows_api;
+mod matching_files;
 use std::io;
 
 use serde::Serialize;
@@ -44,6 +45,22 @@ fn read_startup_csv() -> Result<String, String> {
         .parent()
         .ok_or("実行ファイルの保存先を取得できませんでした")?;
     std::fs::read_to_string(directory.join("sdDirectaxs.csv")).map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+struct MatchedFiles {
+    files: Vec<String>,
+    from_input: bool,
+}
+
+#[tauri::command]
+fn find_dictionary_files(filenames: Vec<String>) -> Result<MatchedFiles, String> {
+    let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+    let directory = executable
+        .parent()
+        .ok_or("実行ファイルの保存先を取得できませんでした")?;
+    let (files, from_input) = matching_files::find_matches(directory, filenames).map_err(|e| e.to_string())?;
+    Ok(MatchedFiles { files, from_input })
 }
 
 #[tauri::command]
@@ -137,7 +154,7 @@ fn sd_verify_fill(drive: String, address: u64, size: usize, fill_byte: u8) -> Re
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet, get_executable_directory, check_startup_csv, read_startup_csv, get_drives, sd_read, sd_write, sd_fill, sd_verify_fill])
+        .invoke_handler(tauri::generate_handler![greet, get_executable_directory, check_startup_csv, read_startup_csv, find_dictionary_files, get_drives, sd_read, sd_write, sd_fill, sd_verify_fill])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

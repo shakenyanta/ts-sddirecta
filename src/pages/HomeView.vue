@@ -7,12 +7,16 @@ import { parseSdDirectCsv, type AddressRange } from '../utils/sdDirectCsv';
 const menuHeight = ref(48);
 const sdHeight = ref(120);
 const executableDirectory = ref('');
+const useInputDirectory = ref(false);
+const displayedDirectory = computed(() => useInputDirectory.value
+	? `${executableDirectory.value.replace(/[\\/]+$/, '')}\\input`
+	: executableDirectory.value);
 const pathError = ref('');
 const messages = ref<string[]>([]);
 const sdDirectDictionary = ref(new Map<string, AddressRange>());
 const textPanel = ref<HTMLElement | null>(null);
 const pathList = ref<HTMLElement | null>(null);
-const folders = computed(() => splitFolderPath(executableDirectory.value));
+const folders = computed(() => splitFolderPath(displayedDirectory.value));
 
 onMounted(async () => {
 	try {
@@ -37,11 +41,25 @@ onMounted(async () => {
 	try {
 		const csv = await invoke<string>('read_startup_csv');
 		sdDirectDictionary.value = parseSdDirectCsv(csv);
-		const lines = [...sdDirectDictionary.value].map(([filename, range]) =>
-			`${filename}: ${range.startAddress}, ${range.endAddress}`);
-		await appendMessage(`dictionary（${sdDirectDictionary.value.size}件）`, ...lines);
 	} catch (error) {
 		await appendMessage(`sdDirectaxs.csv読込失敗: ${String(error)}`);
+		return;
+	}
+	try {
+		const result = await invoke<{ files: string[]; from_input: boolean }>('find_dictionary_files', {
+			filenames: [...sdDirectDictionary.value.keys()],
+		});
+		if (result.from_input && result.files.length) {
+			useInputDirectory.value = true;
+			await nextTick();
+			if (pathList.value) pathList.value.scrollTop = pathList.value.scrollHeight;
+			await appendMessage('inputフォルダへ移動', ...result.files);
+		} else {
+			await appendMessage(...(result.files.length ? result.files : ['一致するファイルはありません']));
+		}
+		await appendMessage(`ファイル数：${result.files.length}件`);
+	} catch (error) {
+		await appendMessage(`ファイル照合失敗: ${String(error)}`);
 	}
 });
 
@@ -53,7 +71,7 @@ async function appendMessage(...newMessages: string[]) {
 
 async function copyDirectory() {
 	try {
-		await navigator.clipboard.writeText(executableDirectory.value);
+		await navigator.clipboard.writeText(displayedDirectory.value);
 	} catch {
 		await appendMessage('コピーできませんでした');
 		return;
@@ -94,9 +112,9 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 			<div class="panel-base" :style="{ gridTemplateRows: `${menuHeight}px 1px ${sdHeight}px 1px minmax(0, 1fr) 28px` }">
 				<div id="panel_menu" class="panel_menu"></div>
 				<div id="resizer1" class="resizer" @pointerdown="resize($event, 1)"></div>
-				<section id="panel_sd" class="panel_sd" aria-label="実行ファイルの保存先">
+				<section id="panel_sd" class="panel_sd" aria-label="表示中のフォルダー">
 					<div class="path-header">
-						<span>exeの保存先</span>
+						<span>{{ useInputDirectory ? '対象フォルダー' : 'exeの保存先' }}</span>
 						<button type="button" :disabled="!executableDirectory" @click="copyDirectory">フルパスをコピー</button>
 					</div>
 					<p v-if="pathError" class="path-message path-error" role="alert">{{ pathError }}</p>
