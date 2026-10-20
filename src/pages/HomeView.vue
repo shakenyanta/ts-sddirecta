@@ -2,12 +2,14 @@
 import { computed, nextTick, onMounted, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { splitFolderPath } from '../utils/executablePath';
+import { parseSdDirectCsv, type AddressRange } from '../utils/sdDirectCsv';
 
 const menuHeight = ref(48);
 const sdHeight = ref(120);
 const executableDirectory = ref('');
 const pathError = ref('');
-const copyMessages = ref<string[]>([]);
+const messages = ref<string[]>([]);
+const sdDirectDictionary = ref(new Map<string, AddressRange>());
 const textPanel = ref<HTMLElement | null>(null);
 const pathList = ref<HTMLElement | null>(null);
 const folders = computed(() => splitFolderPath(executableDirectory.value));
@@ -20,17 +22,43 @@ onMounted(async () => {
 	} catch (error) {
 		pathError.value = `保存先を取得できませんでした: ${String(error)}`;
 	}
+	let exists: boolean;
+	try {
+		exists = await invoke<boolean>('check_startup_csv');
+	} catch (error) {
+		await appendMessage(`sdDirectaxs.csv確認失敗: ${String(error)}`);
+		return;
+	}
+	if (!exists) {
+		await appendMessage('sdDirectaxs.csv無し');
+		return;
+	}
+	await appendMessage('sdDirectaxs.csv読込完了');
+	try {
+		const csv = await invoke<string>('read_startup_csv');
+		sdDirectDictionary.value = parseSdDirectCsv(csv);
+		const lines = [...sdDirectDictionary.value].map(([filename, range]) =>
+			`${filename}: ${range.startAddress}, ${range.endAddress}`);
+		await appendMessage(`dictionary（${sdDirectDictionary.value.size}件）`, ...lines);
+	} catch (error) {
+		await appendMessage(`sdDirectaxs.csv読込失敗: ${String(error)}`);
+	}
 });
+
+async function appendMessage(...newMessages: string[]) {
+	for (const message of newMessages) messages.value.push(message);
+	await nextTick();
+	if (textPanel.value) textPanel.value.scrollTop = textPanel.value.scrollHeight;
+}
 
 async function copyDirectory() {
 	try {
 		await navigator.clipboard.writeText(executableDirectory.value);
-		copyMessages.value.push('コピーしました');
 	} catch {
-		copyMessages.value.push('コピーできませんでした');
+		await appendMessage('コピーできませんでした');
+		return;
 	}
-	await nextTick();
-	if (textPanel.value) textPanel.value.scrollTop = textPanel.value.scrollHeight;
+	await appendMessage('コピーしました');
 }
 
 function resize(event: PointerEvent, divider: 1 | 2) {
@@ -86,10 +114,10 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 				<div id="resizer2" class="resizer" @pointerdown="resize($event, 2)"></div>
 				<div id="panel_text" class="panel_text">
 					<div class="path-header text-header">
-						<button type="button" :disabled="copyMessages.length === 0" @click="copyMessages = []" aria-label="操作メッセージをクリア">クリア</button>
+						<button type="button" :disabled="messages.length === 0" @click="messages = []" aria-label="操作メッセージをクリア">クリア</button>
 					</div>
 					<div ref="textPanel" class="text-messages" role="log" aria-label="操作メッセージ">
-						<p v-for="(message, index) in copyMessages" :key="index" class="path-message">{{ message }}</p>
+						<p v-for="(message, index) in messages" :key="index" class="path-message">{{ message }}</p>
 					</div>
 				</div>
 				<div id="panel_footer" class="panel_footer"></div>

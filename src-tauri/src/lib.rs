@@ -25,6 +25,28 @@ fn get_executable_directory() -> Result<String, String> {
 struct DriveInfo { drive: String, #[serde(rename = "type")] kind: String, size: i64 }
 
 #[tauri::command]
+fn check_startup_csv() -> Result<bool, String> {
+    let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+    let directory = executable
+        .parent()
+        .ok_or("実行ファイルの保存先を取得できませんでした")?;
+    match std::fs::metadata(directory.join("sdDirectaxs.csv")) {
+        Ok(metadata) => Ok(metadata.is_file()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+#[tauri::command]
+fn read_startup_csv() -> Result<String, String> {
+    let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+    let directory = executable
+        .parent()
+        .ok_or("実行ファイルの保存先を取得できませんでした")?;
+    std::fs::read_to_string(directory.join("sdDirectaxs.csv")).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn get_drives() -> Result<Vec<DriveInfo>, String> {
     use windows_sys::Win32::Storage::FileSystem::{GetLogicalDrives, GetDriveTypeW};
     const DRIVE_REMOVABLE: u32 = 2;
@@ -115,7 +137,7 @@ fn sd_verify_fill(drive: String, address: u64, size: usize, fill_byte: u8) -> Re
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet, get_executable_directory, get_drives, sd_read, sd_write, sd_fill, sd_verify_fill])
+        .invoke_handler(tauri::generate_handler![greet, get_executable_directory, check_startup_csv, read_startup_csv, get_drives, sd_read, sd_write, sd_fill, sd_verify_fill])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
