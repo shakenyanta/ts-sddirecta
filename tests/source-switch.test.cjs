@@ -38,7 +38,7 @@ function view(invoke) {
   };
   const api = new Function(...Object.keys(bindings), transpile(source) + `
     return { initializeSource, refreshMatchedFiles, sourceDirectory, displayedDirectory,
-      sdDirectDictionary, sdAddressRange, matchedFiles, canSdWrite, initializing, messages, folders, pathError };
+      sdDirectDictionary, sdloadingDictionary, sdAddressRange, matchedFiles, canSdWrite, initializing, messages, folders, pathError };
   `)(...Object.values(bindings));
   return { ...api, mount: () => mount(), unmount: () => unmount(),
     drop: paths => listener({ payload: { type: 'drop', paths } }),
@@ -52,6 +52,41 @@ function view(invoke) {
 }
 
 const csv = 'A,FILE-AA.001,00000000,000001FF';
+test('matched dictionary retains only matching keys and their ranges and resets on empty results or errors', async () => {
+  let files = ['FILE-AA.001'];
+  let fail = false;
+  const ui = view(backend({
+    read_startup_csv: () => csv + '\nA,FILE-AB.001,00000200,000003FF\nB,IGNORED.001,0,FF',
+    find_dictionary_files: () => {
+      if (fail) throw new Error('cannot list folder');
+      return { files, from_input: false, input_exists: false };
+    },
+  }));
+  await ui.initializeSource();
+  assert.equal(ui.sdDirectDictionary.value.size, 2);
+  assert.deepEqual([...ui.sdloadingDictionary.value], [
+    ['FILE-AA.001', { startAddress: '00000000', endAddress: '000001FF' }],
+  ]);
+  assert.notEqual(ui.sdloadingDictionary.value.get('FILE-AA.001'), ui.sdDirectDictionary.value.get('FILE-AA.001'));
+  files = ['FILE-AB.001'];
+  await ui.refreshMatchedFiles();
+  assert.deepEqual([...ui.sdloadingDictionary.value], [
+    ['FILE-AB.001', { startAddress: '00000200', endAddress: '000003FF' }],
+  ]);
+  files = [];
+  await ui.refreshMatchedFiles();
+  assert.equal(ui.sdloadingDictionary.value.size, 0);
+  assert.equal(ui.sdDirectDictionary.value.size, 2);
+  assert.equal(ui.canSdWrite.value, false);
+  files = ['FILE-AA.001'];
+  await ui.refreshMatchedFiles();
+  fail = true;
+  await ui.refreshMatchedFiles();
+  assert.equal(ui.sdloadingDictionary.value.size, 0);
+  assert.equal(ui.sdDirectDictionary.value.size, 2);
+  assert.equal(ui.canSdWrite.value, false);
+});
+
 test('CSV builds the dictionary and numeric hexadecimal bounds in one pass', () => {
   const { parseSdDirectCsv } = utility('src/utils/sdDirectCsv.ts');
   const parsed = parseSdDirectCsv([
@@ -112,12 +147,14 @@ test('missing or malformed CSV clears previous dictionary, matches, and write av
   await ui.initializeSource(['C:\\missing']);
   assert.equal(ui.sdAddressRange.value, null);
   assert.equal(ui.sdDirectDictionary.value.size, 0);
+  assert.equal(ui.sdloadingDictionary.value.size, 0);
   assert.deepEqual(ui.matchedFiles.value, []);
   assert.equal(ui.canSdWrite.value, false);
   await ui.initializeSource(['C:\\valid']);
   await ui.initializeSource(['C:\\bad']);
   assert.equal(ui.sdAddressRange.value, null);
   assert.equal(ui.sdDirectDictionary.value.size, 0);
+  assert.equal(ui.sdloadingDictionary.value.size, 0);
   assert.equal(ui.canSdWrite.value, false);
 });
 

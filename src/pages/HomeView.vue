@@ -25,9 +25,10 @@ const displayedDirectory = computed(() => useInputDirectory.value
 const pathError = ref('');
 const messages = ref<string[]>([]);
 const sdDirectDictionary = ref(new Map<string, AddressRange>());
+const sdloadingDictionary = ref(new Map<string, AddressRange>());
 const sdAddressRange = ref<AddressRange | null>(null);
 const matchedFiles = ref<string[]>([]);
-const canSdWrite = computed(() => !initializing.value && matchedFiles.value.some(filename => sdDirectDictionary.value.has(filename)));
+const canSdWrite = computed(() => !initializing.value && sdloadingDictionary.value.size > 0);
 let matchingGeneration: number | undefined;
 let disposed = false;
 let lastMatchError = '';
@@ -71,6 +72,7 @@ async function initializeSource(paths?: string[], refreshDirectory?: string) {
 	initializing.value = true;
 	ready = false;
 	sdDirectDictionary.value = new Map();
+	sdloadingDictionary.value = new Map();
 	sdAddressRange.value = null;
 	matchedFiles.value = [];
 	useInputDirectory.value = false;
@@ -144,6 +146,12 @@ async function refreshMatchedFiles(report = false) {
 		});
 		if (disposed || current !== generation) return;
 		const changed = useInputDirectory.value !== result.from_input || JSON.stringify(matchedFiles.value) !== JSON.stringify(result.files);
+		const matchedDictionary = new Map<string, AddressRange>();
+		for (const filename of result.files) {
+			const range = sdDirectDictionary.value.get(filename);
+			if (range) matchedDictionary.set(filename, { ...range });
+		}
+		sdloadingDictionary.value = matchedDictionary;
 		matchedFiles.value = result.files;
 		useInputDirectory.value = result.from_input;
 		lastMatchError = '';
@@ -162,6 +170,7 @@ async function refreshMatchedFiles(report = false) {
 	} catch (error) {
 		if (disposed || current !== generation) return;
 		matchedFiles.value = [];
+		sdloadingDictionary.value = new Map();
 		const message = `ファイル照合失敗: ${String(error)}`;
 		if (message !== lastMatchError) await appendMessage(message);
 		lastMatchError = message;
