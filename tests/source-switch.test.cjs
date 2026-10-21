@@ -38,7 +38,7 @@ function view(invoke) {
   };
   const api = new Function(...Object.keys(bindings), transpile(source) + `
     return { initializeSource, refreshMatchedFiles, sourceDirectory, displayedDirectory,
-      sdDirectDictionary, matchedFiles, canSdWrite, initializing, messages, folders, pathError };
+      sdDirectDictionary, sdAddressRange, matchedFiles, canSdWrite, initializing, messages, folders, pathError };
   `)(...Object.values(bindings));
   return { ...api, mount: () => mount(), unmount: () => unmount(),
     drop: paths => listener({ payload: { type: 'drop', paths } }),
@@ -52,6 +52,21 @@ function view(invoke) {
 }
 
 const csv = 'A,FILE-AA.001,00000000,000001FF';
+test('CSV builds the dictionary and numeric hexadecimal bounds in one pass', () => {
+  const { parseSdDirectCsv } = utility('src/utils/sdDirectCsv.ts');
+  const parsed = parseSdDirectCsv([
+    'A,HIGH.001,0x100,0x07baffff',
+    'A,LOW.001,0,ff',
+    'A,MIDDLE.001,F,1000',
+    'B,IGNORED.001,0,FFFFFFFF',
+  ].join('\n'));
+  assert.equal(parsed.dictionary.size, 3);
+  assert.deepEqual(parsed.dictionary.get('HIGH.001'), { startAddress: '0x100', endAddress: '0x07baffff' });
+  assert.deepEqual(parsed.addressRange, { startAddress: '0x00000000', endAddress: '0x07BAFFFF' });
+  assert.equal(parseSdDirectCsv('').addressRange, null);
+  assert.throws(() => parseSdDirectCsv('A,BAD.001,invalid,FF'), /16進数/);
+});
+
 function backend(overrides = {}) {
   return async (command, args) => {
     if (overrides[command]) return overrides[command](args);
@@ -71,6 +86,7 @@ test('startup and native drop share initialization and use the selected source f
   const run = backend();
   const ui = view(async (command, args) => { calls.push([command, args]); return run(command, args); });
   await ui.mount();
+  assert.deepEqual(ui.sdAddressRange.value, { startAddress: '0x00000000', endAddress: '0x000001FF' });
   assert.equal(ui.displayedDirectory.value, 'C:\\app\\input');
   ui.drop(['C:\\日本語 folder']);
   for (let i = 0; i < 10 && ui.initializing.value; i++) await new Promise(setImmediate);
@@ -94,11 +110,13 @@ test('missing or malformed CSV clears previous dictionary, matches, and write av
   await ui.initializeSource(['C:\\valid']);
   assert.equal(ui.canSdWrite.value, true);
   await ui.initializeSource(['C:\\missing']);
+  assert.equal(ui.sdAddressRange.value, null);
   assert.equal(ui.sdDirectDictionary.value.size, 0);
   assert.deepEqual(ui.matchedFiles.value, []);
   assert.equal(ui.canSdWrite.value, false);
   await ui.initializeSource(['C:\\valid']);
   await ui.initializeSource(['C:\\bad']);
+  assert.equal(ui.sdAddressRange.value, null);
   assert.equal(ui.sdDirectDictionary.value.size, 0);
   assert.equal(ui.canSdWrite.value, false);
 });
@@ -114,6 +132,7 @@ test('old CSV response cannot replace a newer dropped source', async () => {
   await old;
   assert.equal(ui.sourceDirectory.value, 'C:\\new');
   assert.deepEqual([...ui.sdDirectDictionary.value.keys()], ['FILE-AA.001']);
+  assert.deepEqual(ui.sdAddressRange.value, { startAddress: '0x00000000', endAddress: '0x000001FF' });
   assert.equal(ui.initializing.value, false);
 });
 
@@ -165,6 +184,7 @@ test('F5 reloads CSV and matches in the selected source without a polling timer 
   assert.equal(ui.sourceDirectory.value, 'C:\\selected');
   assert.equal(ui.displayedDirectory.value, 'C:\\selected\\input');
   assert.deepEqual([...ui.sdDirectDictionary.value.keys()], ['NEW.001']);
+  assert.deepEqual(ui.sdAddressRange.value, { startAddress: '0x00000000', endAddress: '0x00000001' });
   assert.deepEqual(ui.matchedFiles.value, ['NEW.001']);
   assert.equal(ui.canSdWrite.value, true);
   assert.deepEqual(calls.slice(before).map(([command]) => command), ['check_startup_csv', 'read_startup_csv', 'find_dictionary_files']);

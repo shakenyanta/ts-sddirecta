@@ -13,7 +13,6 @@ const menuContent = ref<HTMLElement | null>(null);
 let menuObserver: ResizeObserver | undefined;
 const sdHeight = ref(120);
 const sourceDirectory = ref('');
-const droppedSource = ref(false);
 const dragging = ref(false);
 const initializing = ref(false);
 let unlistenDrop: UnlistenFn | undefined;
@@ -26,6 +25,7 @@ const displayedDirectory = computed(() => useInputDirectory.value
 const pathError = ref('');
 const messages = ref<string[]>([]);
 const sdDirectDictionary = ref(new Map<string, AddressRange>());
+const sdAddressRange = ref<AddressRange | null>(null);
 const matchedFiles = ref<string[]>([]);
 const canSdWrite = computed(() => !initializing.value && matchedFiles.value.some(filename => sdDirectDictionary.value.has(filename)));
 let matchingGeneration: number | undefined;
@@ -71,6 +71,7 @@ async function initializeSource(paths?: string[], refreshDirectory?: string) {
 	initializing.value = true;
 	ready = false;
 	sdDirectDictionary.value = new Map();
+	sdAddressRange.value = null;
 	matchedFiles.value = [];
 	useInputDirectory.value = false;
 	sourceDirectory.value = '';
@@ -82,7 +83,6 @@ async function initializeSource(paths?: string[], refreshDirectory?: string) {
 			: await invoke<string>('get_executable_directory'));
 		if (!active()) return;
 		sourceDirectory.value = directory;
-		if (!refreshDirectory) droppedSource.value = !!paths;
 		if (refreshDirectory) await appendMessage('F5：表示を更新');
 		else if (paths) await appendMessage('ドラッグ＆ドロップ');
 		await nextTick();
@@ -104,7 +104,9 @@ async function initializeSource(paths?: string[], refreshDirectory?: string) {
 		try {
 			const csv = await invoke<string>('read_startup_csv', { directory });
 			if (!active()) return;
-			sdDirectDictionary.value = parseSdDirectCsv(csv);
+			const parsed = parseSdDirectCsv(csv);
+			sdDirectDictionary.value = parsed.dictionary;
+			sdAddressRange.value = parsed.addressRange;
 			await appendMessage('sdDirectaxs.csv読込完了', `dictionary作成：${sdDirectDictionary.value.size}件`);
 		} catch (error) {
 			if (!active()) return;
@@ -228,7 +230,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 				<div id="resizer1" class="resizer" @pointerdown="resize($event, 1)"></div>
 				<section id="panel_sd" class="panel_sd" aria-label="表示中のフォルダー">
 					<div class="path-header">
-						<span>{{ useInputDirectory || droppedSource ? '対象フォルダー' : 'exeの保存先' }}</span>
+						<span role="status">ファイル数：{{ matchedFiles.length }}件</span>
 						<button type="button" :disabled="!sourceDirectory" @click="copyDirectory">フルパスをコピー</button>
 					</div>
 					<p v-if="pathError" class="path-message path-error" role="alert">{{ pathError }}</p>
@@ -246,7 +248,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 				<div id="resizer2" class="resizer" @pointerdown="resize($event, 2)"></div>
 				<div id="panel_text" class="panel_text">
 					<div class="path-header text-header">
-						<span role="status">ファイル数：{{ matchedFiles.length }}件</span>
+						<span role="status">SD：{{ sdAddressRange ? `${sdAddressRange.startAddress} - ${sdAddressRange.endAddress}` : '未取得' }}</span>
 						<button type="button" :disabled="messages.length === 0" @click="messages = []" aria-label="操作メッセージをクリア">クリア</button>
 					</div>
 					<div ref="textPanel" class="text-messages" role="log" aria-label="操作メッセージ">
