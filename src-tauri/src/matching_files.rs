@@ -17,7 +17,7 @@ fn matching_names(directory: &Path, keys: &HashSet<String>) -> io::Result<Vec<St
     Ok(matches)
 }
 
-/// Search only immediate files; input is a fallback when the exe folder has no matches.
+/// Search only immediate files; input is a fallback when the selected folder has no matches.
 pub fn find_matches(directory: &Path, filenames: Vec<String>) -> io::Result<(Vec<String>, bool)> {
     let keys: HashSet<String> = filenames.into_iter().collect();
     let matches = matching_names(directory, &keys)?;
@@ -121,5 +121,49 @@ mod tests {
         fs::write(dir.0.join("FILE-AB.001"), b"").unwrap();
         fs::write(dir.0.join("FILE-AA.001"), b"").unwrap();
         assert_eq!(find_matches(&dir.0, keys()).unwrap(), (keys(), false));
+    }
+
+    #[test]
+    fn dropped_folder_and_files_resolve_to_the_same_source() {
+        let dir = TestDirectory::new();
+        let folder = dir.0.join("日本語 folder");
+        fs::create_dir(&folder).unwrap();
+        fs::write(folder.join("one.txt"), b"").unwrap();
+        fs::write(folder.join("two.txt"), b"").unwrap();
+        let resolve = crate::source_directory::dropped_directory;
+        let folder_source = resolve(vec![folder.to_str().unwrap().into()]).unwrap();
+        assert_eq!(
+            resolve(vec![
+                folder.join("one.txt").to_str().unwrap().into(),
+                folder.join("two.txt").to_str().unwrap().into(),
+            ])
+            .unwrap(),
+            folder_source
+        );
+        assert!(resolve(vec![folder_source, dir.0.to_str().unwrap().into()]).is_err());
+        assert!(resolve(vec![]).is_err());
+        assert!(resolve(vec![folder.join("missing.txt").to_str().unwrap().into()]).is_err());
+    }
+
+    #[test]
+    fn selected_source_controls_csv_and_input_matching() {
+        let dir = TestDirectory::new();
+        let source = Some(dir.0.to_str().unwrap().to_owned());
+        let csv = "A,FILE-AA.001,00000000,000001FF";
+        fs::write(dir.0.join("sdDirectaxs.csv"), csv).unwrap();
+        assert!(crate::check_startup_csv(source.clone()).unwrap());
+        assert_eq!(crate::read_startup_csv(source.clone()).unwrap(), csv);
+        fs::create_dir(dir.0.join("input")).unwrap();
+        fs::write(dir.0.join("input/FILE-AA.001"), b"test").unwrap();
+        let matched = crate::find_dictionary_files(keys(), source).unwrap();
+        assert_eq!(matched.files, vec!["FILE-AA.001"]);
+        assert!(matched.from_input);
+        assert!(matched.input_exists);
+        let other = TestDirectory::new();
+        let other_source = Some(other.0.to_str().unwrap().to_owned());
+        let matched = crate::find_dictionary_files(keys(), other_source).unwrap();
+        assert!(matched.files.is_empty());
+        assert!(!matched.from_input);
+        assert!(!matched.input_exists);
     }
 }

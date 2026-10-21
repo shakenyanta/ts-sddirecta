@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
+import type { UnlistenFn } from '@tauri-apps/api/event';
 import SdMenu from '../components/SdMenu.vue';
 import { splitFolderPath } from '../utils/executablePath';
 import { parseSdDirectCsv, type AddressRange } from '../utils/sdDirectCsv';
@@ -10,18 +12,23 @@ const minimumMenuHeight = ref(48);
 const menuContent = ref<HTMLElement | null>(null);
 let menuObserver: ResizeObserver | undefined;
 const sdHeight = ref(120);
-const executableDirectory = ref('');
+const sourceDirectory = ref('');
+const droppedSource = ref(false);
+const dragging = ref(false);
+const initializing = ref(false);
+let unlistenDrop: UnlistenFn | undefined;
+let generation = 0;
+let ready = false;
 const useInputDirectory = ref(false);
 const displayedDirectory = computed(() => useInputDirectory.value
-	? `${executableDirectory.value.replace(/[\\/]+$/, '')}\\input`
-	: executableDirectory.value);
+	? `${sourceDirectory.value.replace(/[\\/]+$/, '')}\\input`
+	: sourceDirectory.value);
 const pathError = ref('');
 const messages = ref<string[]>([]);
 const sdDirectDictionary = ref(new Map<string, AddressRange>());
 const matchedFiles = ref<string[]>([]);
-const canSdWrite = computed(() => matchedFiles.value.some(filename => sdDirectDictionary.value.has(filename)));
-let fileTimer: ReturnType<typeof setInterval> | undefined;
-let matching = false;
+const canSdWrite = computed(() => !initializing.value && matchedFiles.value.some(filename => sdDirectDictionary.value.has(filename)));
+let matchingGeneration: number | undefined;
 let disposed = false;
 let lastMatchError = '';
 const textPanel = ref<HTMLElement | null>(null);
@@ -29,6 +36,7 @@ const pathList = ref<HTMLElement | null>(null);
 const folders = computed(() => splitFolderPath(displayedDirectory.value));
 
 onMounted(async () => {
+	window.addEventListener('keydown', onRefreshKey, true);
 	if (typeof ResizeObserver !== 'undefined' && menuContent.value) {
 		menuObserver = new ResizeObserver(([entry]) => {
 			minimumMenuHeight.value = Math.max(48, Math.ceil(entry.contentRect.height));
@@ -36,71 +44,127 @@ onMounted(async () => {
 		menuObserver.observe(menuContent.value);
 	}
 	try {
-		executableDirectory.value = await invoke<string>('get_executable_directory');
-		await nextTick();
-		if (pathList.value) pathList.value.scrollTop = pathList.value.scrollHeight;
+		const unlisten = await getCurrentWebview().onDragDropEvent(event => {
+			dragging.value = event.payload.type === 'enter' || event.payload.type === 'over';
+			if (event.payload.type === 'drop') void initializeSource(event.payload.paths);
+		});
+		if (disposed) { unlisten(); return; }
+		unlistenDrop = unlisten;
 	} catch (error) {
-		pathError.value = `保存先を取得できませんでした: ${String(error)}`;
+		await appendMessage(`ドロップ受付の開始に失敗しました: ${String(error)}`);
 	}
-	let exists: boolean;
-	try {
-		exists = await invoke<boolean>('check_startup_csv');
-	} catch (error) {
-		await appendMessage(`sdDirectaxs.csv確認失敗: ${String(error)}`);
-		return;
-	}
-	if (!exists) {
-		await appendMessage('sdDirectaxs.csv無し');
-		return;
-	}
-	await appendMessage('sdDirectaxs.csv読込完了');
-	try {
-		const csv = await invoke<string>('read_startup_csv');
-		sdDirectDictionary.value = parseSdDirectCsv(csv);
-	} catch (error) {
-		await appendMessage(`sdDirectaxs.csv読込失敗: ${String(error)}`);
-		return;
-	}
-	await refreshMatchedFiles(true);
-	if (!disposed) fileTimer = setInterval(() => void refreshMatchedFiles(), 2000);
+	if (disposed) return;
+	// A drop received during startup takes priority over the exe directory.
+	if (generation === 0) await initializeSource();
 });
+
+function onRefreshKey(event: KeyboardEvent) {
+	if (event.key !== 'F5') return;
+	event.preventDefault();
+	if (event.repeat || initializing.value || disposed) return;
+	void initializeSource(undefined, sourceDirectory.value || undefined);
+}
+
+async function initializeSource(paths?: string[], refreshDirectory?: string) {
+	const current = ++generation;
+	const active = () => !disposed && current === generation;
+	initializing.value = true;
+	ready = false;
+	sdDirectDictionary.value = new Map();
+	matchedFiles.value = [];
+	useInputDirectory.value = false;
+	sourceDirectory.value = '';
+	pathError.value = '';
+	lastMatchError = '';
+	try {
+		const directory = refreshDirectory ?? (paths
+			? await invoke<string>('resolve_drop_directory', { paths })
+			: await invoke<string>('get_executable_directory'));
+		if (!active()) return;
+		sourceDirectory.value = directory;
+		if (!refreshDirectory) droppedSource.value = !!paths;
+		await appendMessage(refreshDirectory ? 'F5：表示を更新' : paths ? 'ドラッグ＆ドロップ' : `対象フォルダー: ${directory}`);
+		await nextTick();
+		if (!active()) return;
+		if (pathList.value) pathList.value.scrollTop = pathList.value.scrollHeight;
+		let exists: boolean;
+		try {
+			exists = await invoke<boolean>('check_startup_csv', { directory });
+		} catch (error) {
+			if (!active()) return;
+			await appendMessage(`sdDirectaxs.csv確認失敗: ${String(error)}`);
+			return;
+		}
+		if (!active()) return;
+		if (!exists) {
+			await appendMessage('sdDirectaxs.csv無し');
+			return;
+		}
+		try {
+			const csv = await invoke<string>('read_startup_csv', { directory });
+			if (!active()) return;
+			sdDirectDictionary.value = parseSdDirectCsv(csv);
+			await appendMessage('sdDirectaxs.csv読込完了', `dictionary作成：${sdDirectDictionary.value.size}件`);
+		} catch (error) {
+			if (!active()) return;
+			await appendMessage(`sdDirectaxs.csv読込失敗: ${String(error)}`);
+			return;
+		}
+		if (!active()) return;
+		ready = true;
+		await refreshMatchedFiles(true);
+	} catch (error) {
+		if (!active()) return;
+		pathError.value = `対象フォルダーを取得できませんでした: ${String(error)}`;
+		await appendMessage(pathError.value);
+	} finally {
+		if (active()) initializing.value = false;
+	}
+}
 
 onUnmounted(() => {
 	disposed = true;
+	generation++;
+	unlistenDrop?.();
 	menuObserver?.disconnect();
-	clearInterval(fileTimer);
+	window.removeEventListener('keydown', onRefreshKey, true);
 });
 
 async function refreshMatchedFiles(report = false) {
-	if (matching || disposed) return;
-	matching = true;
+	const current = generation;
+	if (matchingGeneration === current || disposed || !ready) return;
+	matchingGeneration = current;
 	try {
-		const result = await invoke<{ files: string[]; from_input: boolean }>('find_dictionary_files', {
+		const result = await invoke<{ files: string[]; from_input: boolean; input_exists: boolean }>('find_dictionary_files', {
 			filenames: [...sdDirectDictionary.value.keys()],
+			directory: sourceDirectory.value,
 		});
-		if (disposed) return;
+		if (disposed || current !== generation) return;
 		const changed = useInputDirectory.value !== result.from_input || JSON.stringify(matchedFiles.value) !== JSON.stringify(result.files);
 		matchedFiles.value = result.files;
 		useInputDirectory.value = result.from_input;
 		lastMatchError = '';
+		if (report) await appendMessage(result.input_exists ? 'inputフォルダあり' : 'inputフォルダ無し');
+		if (disposed || current !== generation) return;
 		if (!report && !changed) return;
 		if (result.from_input && result.files.length) {
 			useInputDirectory.value = true;
 			await nextTick();
+			if (disposed || current !== generation) return;
 			if (pathList.value) pathList.value.scrollTop = pathList.value.scrollHeight;
 			await appendMessage('inputフォルダへ移動', ...result.files);
 		} else {
 			await appendMessage(...(result.files.length ? result.files : ['一致するファイルはありません']));
 		}
-		await appendMessage(`ファイル数：${result.files.length}件`);
+		if (!disposed && current === generation) await appendMessage(`ファイル数：${result.files.length}件`);
 	} catch (error) {
-		if (disposed) return;
+		if (disposed || current !== generation) return;
 		matchedFiles.value = [];
 		const message = `ファイル照合失敗: ${String(error)}`;
 		if (message !== lastMatchError) await appendMessage(message);
 		lastMatchError = message;
 	} finally {
-		matching = false;
+		if (matchingGeneration === current) matchingGeneration = undefined;
 	}
 }
 
@@ -153,22 +217,22 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 </script>
 
 <template>
-	<div class="panel-outer">
+	<div class="panel-outer" :class="{ 'drop-active': dragging }">
 		<div class="panel-inner">
 			<div class="panel-base" :style="{ gridTemplateRows: `${Math.max(menuHeight, minimumMenuHeight)}px 1px ${sdHeight}px 1px minmax(0, 1fr) 28px` }">
 				<div id="panel_menu" class="panel_menu">
 					<div ref="menuContent" class="menu-content">
-						<SdMenu :can-write="canSdWrite" @write="onSdWrite" @error="appendMessage" />
+						<SdMenu :can-write="canSdWrite" :busy="initializing" @write="onSdWrite" @error="appendMessage" />
 					</div>
 				</div>
 				<div id="resizer1" class="resizer" @pointerdown="resize($event, 1)"></div>
 				<section id="panel_sd" class="panel_sd" aria-label="表示中のフォルダー">
 					<div class="path-header">
-						<span>{{ useInputDirectory ? '対象フォルダー' : 'exeの保存先' }}</span>
-						<button type="button" :disabled="!executableDirectory" @click="copyDirectory">フルパスをコピー</button>
+						<span>{{ useInputDirectory || droppedSource ? '対象フォルダー' : 'exeの保存先' }}</span>
+						<button type="button" :disabled="!sourceDirectory" @click="copyDirectory">フルパスをコピー</button>
 					</div>
 					<p v-if="pathError" class="path-message path-error" role="alert">{{ pathError }}</p>
-					<ol v-else-if="folders.length" ref="pathList" class="path-list" aria-label="保存先のフォルダー階層">
+					<ol v-else-if="folders.length" ref="pathList" class="path-list" aria-label="対象フォルダーの階層">
 						<li v-for="(folder, index) in folders" :key="index"
 							class="path-row" :class="{ 'path-current': index === folders.length - 1 }"
 							:style="{ paddingLeft: `${Math.min(index * 9, 108)}px` }"
@@ -188,7 +252,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 						<p v-for="(message, index) in messages" :key="index" class="path-message">{{ message }}</p>
 					</div>
 				</div>
-				<div id="panel_footer" class="panel_footer"></div>
+				<div id="panel_footer" class="panel_footer" role="status">{{ dragging ? 'ドロップして対象フォルダーを変更' : initializing ? '対象フォルダーを読込中…' : 'ファイル・フォルダーをドロップできます' }}</div>
 			</div>
 		</div>
 	</div>
@@ -233,6 +297,13 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 }
 .panel_footer {
 	border-top: 1px solid #666;
+	padding: 3px 4px;
+	font: 11px 'Yu Gothic UI', Meiryo, sans-serif;
+}
+.drop-active {
+	outline: 3px solid #4285f4;
+	outline-offset: -3px;
+	background: #e7f1fb;
 }
 .panel_menu {
 	/* The menu's measured content sets its minimum row height. */

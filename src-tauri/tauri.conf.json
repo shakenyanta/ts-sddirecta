@@ -13,6 +13,7 @@
     "windows": [
       {
         "title": "ts-sddirecta",
+        "dragDropEnabled": true,
         "width": 300,
         "height": 300,
         "resizable": true

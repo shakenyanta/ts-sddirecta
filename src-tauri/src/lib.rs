@@ -4,9 +4,12 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! Rust バックエンドからこんにちは！", name)
 }
 
-mod windows_api;
 mod matching_files;
-use std::io;
+mod sd_worker;
+mod source_directory;
+mod startup_csv;
+mod windows_api;
+pub use sd_worker::run_if_worker;
 
 use serde::Serialize;
 
@@ -23,53 +26,69 @@ fn get_executable_directory() -> Result<String, String> {
 }
 
 #[derive(Serialize)]
-struct DriveInfo { drive: String, #[serde(rename = "type")] kind: String, size: i64 }
-
-#[tauri::command]
-fn check_startup_csv() -> Result<bool, String> {
-    let executable = std::env::current_exe().map_err(|e| e.to_string())?;
-    let directory = executable
-        .parent()
-        .ok_or("実行ファイルの保存先を取得できませんでした")?;
-    match std::fs::metadata(directory.join("sdDirectaxs.csv")) {
-        Ok(metadata) => Ok(metadata.is_file()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error.to_string()),
-    }
+struct DriveInfo {
+    drive: String,
+    #[serde(rename = "type")]
+    kind: String,
+    size: i64,
 }
 
 #[tauri::command]
-fn read_startup_csv() -> Result<String, String> {
+fn resolve_drop_directory(paths: Vec<String>) -> Result<String, String> {
+    source_directory::dropped_directory(paths)
+}
+
+#[tauri::command]
+fn check_startup_csv(directory: Option<String>) -> Result<bool, String> {
+    startup_csv_source(directory).map(|_| true)
+}
+
+fn startup_csv_source(directory: Option<String>) -> Result<startup_csv::CsvSource, String> {
+    let source = source_directory::directory(directory)?;
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
     let directory = executable
         .parent()
-        .ok_or("実行ファイルの保存先を取得できませんでした")?;
-    std::fs::read_to_string(directory.join("sdDirectaxs.csv")).map_err(|e| e.to_string())
+        .ok_or("exeの保存先を取得できませんでした")?;
+    startup_csv::resolve_for_source(&source, directory).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn read_startup_csv(directory: Option<String>) -> Result<String, String> {
+    startup_csv_source(directory)?.read().map_err(|e| e.to_string())
 }
 
 #[derive(Serialize)]
 struct MatchedFiles {
     files: Vec<String>,
     from_input: bool,
+    input_exists: bool,
 }
 
 #[tauri::command]
-fn find_dictionary_files(filenames: Vec<String>) -> Result<MatchedFiles, String> {
-    let executable = std::env::current_exe().map_err(|e| e.to_string())?;
-    let directory = executable
-        .parent()
-        .ok_or("実行ファイルの保存先を取得できませんでした")?;
-    let (files, from_input) = matching_files::find_matches(directory, filenames).map_err(|e| e.to_string())?;
-    Ok(MatchedFiles { files, from_input })
+fn find_dictionary_files(
+    filenames: Vec<String>,
+    directory: Option<String>,
+) -> Result<MatchedFiles, String> {
+    let directory = source_directory::directory(directory)?;
+    let input_exists = source_directory::input_exists(&directory)?;
+    let (files, from_input) =
+        matching_files::find_matches(&directory, filenames).map_err(|e| e.to_string())?;
+    Ok(MatchedFiles {
+        files,
+        from_input,
+        input_exists,
+    })
 }
 
 #[tauri::command]
 async fn get_drives() -> Result<Vec<DriveInfo>, String> {
-    tauri::async_runtime::spawn_blocking(list_drives).await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(list_drives)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 fn list_drives() -> Result<Vec<DriveInfo>, String> {
-    use windows_sys::Win32::Storage::FileSystem::{GetLogicalDrives, GetDriveTypeW};
+    use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
     const DRIVE_REMOVABLE: u32 = 2;
     const DRIVE_FIXED: u32 = 3;
 
@@ -87,7 +106,11 @@ fn list_drives() -> Result<Vec<DriveInfo>, String> {
 
             if drive_type == DRIVE_REMOVABLE || drive_type == DRIVE_FIXED {
                 let drive_str = format!("{}:", drive_letter);
-                let kind = if drive_type == DRIVE_REMOVABLE { "Removable" } else { "Fixed" };
+                let kind = if drive_type == DRIVE_REMOVABLE {
+                    "Removable"
+                } else {
+                    "Fixed"
+                };
 
                 let volume_path = format!("\\\\.\\{}", drive_str);
                 let size = match windows_api::get_disk_extents(&volume_path) {
@@ -98,7 +121,11 @@ fn list_drives() -> Result<Vec<DriveInfo>, String> {
                     _ => -1,
                 };
 
-                out.push(DriveInfo { drive: drive_str, kind: kind.to_string(), size });
+                out.push(DriveInfo {
+                    drive: drive_str,
+                    kind: kind.to_string(),
+                    size,
+                });
             }
         }
     }
@@ -107,58 +134,69 @@ fn list_drives() -> Result<Vec<DriveInfo>, String> {
 }
 
 #[tauri::command]
-fn sd_read(drive: String, address: u64, size: usize) -> Result<Vec<u8>, String> {
-    let disk_num = if drive.starts_with("PhysicalDrive") {
-        drive["PhysicalDrive".len()..].parse::<u32>().map_err(|e| e.to_string())?
-    } else {
-        let volume_path = format!("\\\\.\\{}:", drive.trim_end_matches(':'));
-        windows_api::get_disk_extents(&volume_path).map_err(|e: io::Error| e.to_string())?
-    };
-
-    windows_api::sd_read(disk_num, address, size).map_err(|e: io::Error| e.to_string())
+async fn sd_read(drive: String, address: u64, size: usize) -> Result<Vec<u8>, String> {
+    sd_worker::invoke(sd_worker::Operation::Read {
+        drive,
+        address,
+        size,
+    })
+    .await
 }
 
 #[tauri::command]
-fn sd_write(drive: String, address: u64, data: Vec<u8>) -> Result<u32, String> {
-    let disk_num = if drive.starts_with("PhysicalDrive") {
-        drive["PhysicalDrive".len()..].parse::<u32>().map_err(|e| e.to_string())?
-    } else {
-        let volume_path = format!("\\\\.\\{}:", drive.trim_end_matches(':'));
-        windows_api::get_disk_extents(&volume_path).map_err(|e: io::Error| e.to_string())?
-    };
-
-    windows_api::sd_write(&drive, disk_num, address, &data).map_err(|e: io::Error| e.to_string())
+async fn sd_write(drive: String, address: u64, data: Vec<u8>) -> Result<u32, String> {
+    sd_worker::invoke(sd_worker::Operation::Write {
+        drive,
+        address,
+        data,
+    })
+    .await
 }
 
 #[tauri::command]
-fn sd_fill(drive: String, address: u64, size: usize, fill_byte: u8) -> Result<usize, String> {
-    let disk_num = if drive.starts_with("PhysicalDrive") {
-        drive["PhysicalDrive".len()..].parse::<u32>().map_err(|e| e.to_string())?
-    } else {
-        let volume_path = format!("\\\\.\\{}:", drive.trim_end_matches(':'));
-        windows_api::get_disk_extents(&volume_path).map_err(|e: io::Error| e.to_string())?
-    };
-
-    windows_api::sd_fill(&drive, disk_num, address, size, fill_byte).map_err(|e: io::Error| e.to_string())
+async fn sd_fill(drive: String, address: u64, size: usize, fill_byte: u8) -> Result<usize, String> {
+    sd_worker::invoke(sd_worker::Operation::Fill {
+        drive,
+        address,
+        size,
+        fill_byte,
+    })
+    .await
 }
 
 #[tauri::command]
-fn sd_verify_fill(drive: String, address: u64, size: usize, fill_byte: u8) -> Result<usize, String> {
-    let disk_num = if drive.starts_with("PhysicalDrive") {
-        drive["PhysicalDrive".len()..].parse::<u32>().map_err(|e| e.to_string())?
-    } else {
-        let volume_path = format!("\\\\.\\{}:", drive.trim_end_matches(':'));
-        windows_api::get_disk_extents(&volume_path).map_err(|e: io::Error| e.to_string())?
-    };
-
-    windows_api::sd_verify_fill(disk_num, address, size, fill_byte).map_err(|e: io::Error| e.to_string())
+async fn sd_verify_fill(
+    drive: String,
+    address: u64,
+    size: usize,
+    fill_byte: u8,
+) -> Result<usize, String> {
+    sd_worker::invoke(sd_worker::Operation::VerifyFill {
+        drive,
+        address,
+        size,
+        fill_byte,
+    })
+    .await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet, get_executable_directory, check_startup_csv, read_startup_csv, find_dictionary_files, get_drives, sd_read, sd_write, sd_fill, sd_verify_fill])
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            get_executable_directory,
+            resolve_drop_directory,
+            check_startup_csv,
+            read_startup_csv,
+            find_dictionary_files,
+            get_drives,
+            sd_read,
+            sd_write,
+            sd_fill,
+            sd_verify_fill
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
