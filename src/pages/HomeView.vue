@@ -239,7 +239,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 				<div id="resizer1" class="resizer" @pointerdown="resize($event, 1)"></div>
 				<section id="panel_sd" class="panel_sd" aria-label="表示中のフォルダー">
 					<div class="path-header">
-						<span role="status">ファイル数：{{ matchedFiles.length }}件</span>
+						<span role="status">SD書込ファイル数：{{ matchedFiles.length }}件</span>
 						<button type="button" :disabled="!sourceDirectory" @click="copyDirectory">フルパスをコピー</button>
 					</div>
 					<p v-if="pathError" class="path-message path-error" role="alert">{{ pathError }}</p>
@@ -257,7 +257,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 				<div id="resizer2" class="resizer" @pointerdown="resize($event, 2)"></div>
 				<div id="panel_text" class="panel_text">
 					<div class="path-header text-header">
-						<span role="status">SD：{{ sdAddressRange ? `${sdAddressRange.startAddress} - ${sdAddressRange.endAddress}` : '未取得' }}</span>
+						<span role="status">SD：{{ sdAddressRange ? `${sdAddressRange.startAddress} - ${sdAddressRange.endAddress}（${sdDirectDictionary.size}件）` : '未取得' }}</span>
 						<button type="button" :disabled="messages.length === 0" @click="messages = []" aria-label="操作メッセージをクリア">クリア</button>
 					</div>
 					<div ref="textPanel" class="text-messages" role="log" aria-label="操作メッセージ">
