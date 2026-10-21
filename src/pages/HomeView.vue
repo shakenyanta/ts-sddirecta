@@ -83,7 +83,8 @@ async function initializeSource(paths?: string[], refreshDirectory?: string) {
 		if (!active()) return;
 		sourceDirectory.value = directory;
 		if (!refreshDirectory) droppedSource.value = !!paths;
-		await appendMessage(refreshDirectory ? 'F5：表示を更新' : paths ? 'ドラッグ＆ドロップ' : `対象フォルダー: ${directory}`);
+		if (refreshDirectory) await appendMessage('F5：表示を更新');
+		else if (paths) await appendMessage('ドラッグ＆ドロップ');
 		await nextTick();
 		if (!active()) return;
 		if (pathList.value) pathList.value.scrollTop = pathList.value.scrollHeight;
@@ -156,7 +157,6 @@ async function refreshMatchedFiles(report = false) {
 		} else {
 			await appendMessage(...(result.files.length ? result.files : ['一致するファイルはありません']));
 		}
-		if (!disposed && current === generation) await appendMessage(`ファイル数：${result.files.length}件`);
 	} catch (error) {
 		if (disposed || current !== generation) return;
 		matchedFiles.value = [];
@@ -246,6 +246,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 				<div id="resizer2" class="resizer" @pointerdown="resize($event, 2)"></div>
 				<div id="panel_text" class="panel_text">
 					<div class="path-header text-header">
+						<span role="status">ファイル数：{{ matchedFiles.length }}件</span>
 						<button type="button" :disabled="messages.length === 0" @click="messages = []" aria-label="操作メッセージをクリア">クリア</button>
 					</div>
 					<div ref="textPanel" class="text-messages" role="log" aria-label="操作メッセージ">
@@ -384,7 +385,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 	line-height: 13px;
 }
 .text-header {
-	justify-content: flex-end;
+	justify-content: space-between;
 }
 .text-messages {
 	flex: 1;
