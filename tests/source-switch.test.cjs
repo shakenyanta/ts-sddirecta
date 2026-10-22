@@ -52,6 +52,26 @@ function view(invoke) {
 }
 
 const csv = 'A,FILE-AA.001,00000000,000001FF';
+test('extension warnings retain actual filenames, stay separate from write matches, and report warning changes', async () => {
+  let files = ['FILE-AA.001'];
+  let warning_files = ['FILE-AA.bin', 'input\\FILE-AA.002'];
+  const ui = view(backend({ find_dictionary_files: () => ({ files, warning_files, from_input: false, input_exists: true }) }));
+  await ui.initializeSource();
+  const warnings = () => ui.messages.value.filter(message => typeof message !== 'string');
+  assert.deepEqual(warnings(), warning_files.map(filename => ({ text: `警告：拡張子が異なるファイルがあります：${filename}`, warning: true })));
+  assert.deepEqual([...ui.sdloadingDictionary.value.keys()], ['FILE-AA.001']);
+  await ui.refreshMatchedFiles();
+  assert.equal(warnings().length, 2);
+  warning_files = ['FILE-AA.txt'];
+  await ui.refreshMatchedFiles();
+  assert.match(warnings().at(-1).text, /FILE-AA\.txt$/);
+  files = [];
+  await ui.refreshMatchedFiles();
+  assert.equal(ui.canSdWrite.value, false);
+  assert.deepEqual(ui.matchedFiles.value, []);
+  assert.equal(warnings().length, 3);
+});
+
 test('CSV completion log includes the source folder and preserves the dictionary count', async () => {
   for (const source_folder of ['EXEフォルダ', 'configフォルダ', '対象フォルダ', '内蔵CSV']) {
     const ui = view(backend({ read_startup_csv: () => ({ contents: csv, source_folder }) }));
@@ -116,6 +136,7 @@ function backend(overrides = {}) {
   return async (command, args) => {
     if (overrides[command]) {
       const result = await overrides[command](args);
+      if (command === 'find_dictionary_files') return { warning_files: [], ...result };
       return command === 'read_startup_csv' && typeof result === 'string'
         ? { contents: result, source_folder: 'EXEフォルダ' } : result;
     }
@@ -124,7 +145,7 @@ function backend(overrides = {}) {
       case 'resolve_drop_directory': return args.paths[0];
       case 'check_startup_csv': return true;
       case 'read_startup_csv': return { contents: csv, source_folder: 'EXEフォルダ' };
-      case 'find_dictionary_files': return { files: ['FILE-AA.001'], from_input: true, input_exists: true };
+      case 'find_dictionary_files': return { files: ['FILE-AA.001'], warning_files: [], from_input: true, input_exists: true };
       default: throw new Error(command);
     }
   };

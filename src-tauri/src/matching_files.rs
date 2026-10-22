@@ -1,7 +1,12 @@
 use std::{collections::HashSet, fs, io, path::Path};
 
-fn matching_names(directory: &Path, keys: &HashSet<String>) -> io::Result<Vec<String>> {
+fn matching_names(
+    directory: &Path,
+    keys: &HashSet<String>,
+    stems: &HashSet<&str>,
+) -> io::Result<(Vec<String>, Vec<String>)> {
     let mut matches = Vec::new();
+    let mut warnings = Vec::new();
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
         if !entry.file_type()?.is_file() {
@@ -10,29 +15,48 @@ fn matching_names(directory: &Path, keys: &HashSet<String>) -> io::Result<Vec<St
         if let Some(name) = entry.file_name().to_str() {
             if keys.contains(name) {
                 matches.push(name.to_owned());
+            } else if Path::new(name)
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .is_some_and(|stem| stems.contains(stem))
+            {
+                warnings.push(name.to_owned());
             }
         }
     }
     matches.sort();
-    Ok(matches)
+    warnings.sort();
+    Ok((matches, warnings))
 }
 
 /// Search only immediate files; input is a fallback when the selected folder has no matches.
-pub fn find_matches(directory: &Path, filenames: Vec<String>) -> io::Result<(Vec<String>, bool)> {
+pub fn find_matches(
+    directory: &Path,
+    filenames: Vec<String>,
+) -> io::Result<(Vec<String>, bool, Vec<String>)> {
     let keys: HashSet<String> = filenames.into_iter().collect();
-    let matches = matching_names(directory, &keys)?;
+    let stems = keys
+        .iter()
+        .filter_map(|name| Path::new(name).file_stem()?.to_str())
+        .collect();
+    let (matches, mut warnings) = matching_names(directory, &keys, &stems)?;
     if !matches.is_empty() {
-        return Ok((matches, false));
+        return Ok((matches, false, warnings));
     }
     let input = directory.join("input");
     match fs::metadata(&input) {
         Ok(metadata) if metadata.is_dir() => {
-            let matches = matching_names(&input, &keys)?;
+            let (matches, input_warnings) = matching_names(&input, &keys, &stems)?;
+            warnings.extend(
+                input_warnings
+                    .into_iter()
+                    .map(|name| format!("input\\{name}")),
+            );
             let from_input = !matches.is_empty();
-            Ok((matches, from_input))
+            Ok((matches, from_input, warnings))
         }
-        Ok(_) => Ok((Vec::new(), false)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok((Vec::new(), false)),
+        Ok(_) => Ok((Vec::new(), false, warnings)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok((Vec::new(), false, warnings)),
         Err(error) => Err(error),
     }
 }
@@ -88,7 +112,7 @@ mod tests {
         fs::write(dir.0.join("input/FILE-AB.001"), b"").unwrap();
         assert_eq!(
             find_matches(&dir.0, keys()).unwrap(),
-            (vec!["FILE-AA.001".into()], false)
+            (vec!["FILE-AA.001".into()], false, vec![])
         );
     }
 
@@ -101,18 +125,24 @@ mod tests {
         fs::write(dir.0.join("input/FILE-AB.001"), b"").unwrap();
         assert_eq!(
             find_matches(&dir.0, keys()).unwrap(),
-            (vec!["FILE-AB.001".into()], true)
+            (vec!["FILE-AB.001".into()], true, vec![])
         );
     }
 
     #[test]
     fn missing_input_and_unmatched_files_return_no_matches() {
         let dir = TestDirectory::new();
-        assert_eq!(find_matches(&dir.0, keys()).unwrap(), (Vec::new(), false));
+        assert_eq!(
+            find_matches(&dir.0, keys()).unwrap(),
+            (Vec::new(), false, vec![])
+        );
         fs::create_dir_all(dir.0.join("input/nested")).unwrap();
         fs::write(dir.0.join("input/unrelated.txt"), b"").unwrap();
         fs::write(dir.0.join("input/nested/FILE-AA.001"), b"").unwrap();
-        assert_eq!(find_matches(&dir.0, keys()).unwrap(), (Vec::new(), false));
+        assert_eq!(
+            find_matches(&dir.0, keys()).unwrap(),
+            (Vec::new(), false, vec![])
+        );
     }
 
     #[test]
@@ -120,7 +150,55 @@ mod tests {
         let dir = TestDirectory::new();
         fs::write(dir.0.join("FILE-AB.001"), b"").unwrap();
         fs::write(dir.0.join("FILE-AA.001"), b"").unwrap();
-        assert_eq!(find_matches(&dir.0, keys()).unwrap(), (keys(), false));
+        assert_eq!(
+            find_matches(&dir.0, keys()).unwrap(),
+            (keys(), false, vec![])
+        );
+    }
+
+    #[test]
+    fn extension_warnings_preserve_exact_matches_and_ignore_directories() {
+        let dir = TestDirectory::new();
+        for name in ["FILE-AA.001", "FILE-AA.bin", "FILE-AA", "unrelated.bin"] {
+            fs::write(dir.0.join(name), b"").unwrap();
+        }
+        fs::create_dir(dir.0.join("FILE-AB.bin")).unwrap();
+        assert_eq!(
+            find_matches(&dir.0, keys()).unwrap(),
+            (
+                vec!["FILE-AA.001".into()],
+                false,
+                vec!["FILE-AA".into(), "FILE-AA.bin".into()]
+            )
+        );
+    }
+
+    #[test]
+    fn warnings_do_not_prevent_input_fallback_and_keep_full_filenames() {
+        let dir = TestDirectory::new();
+        fs::create_dir(dir.0.join("input")).unwrap();
+        fs::write(dir.0.join("FILE-AA.txt"), b"").unwrap();
+        fs::write(dir.0.join("input/FILE-AB.001"), b"").unwrap();
+        fs::write(dir.0.join("input/FILE-AA.002"), b"").unwrap();
+        assert_eq!(
+            find_matches(&dir.0, keys()).unwrap(),
+            (
+                vec!["FILE-AB.001".into()],
+                true,
+                vec!["FILE-AA.txt".into(), "input\\FILE-AA.002".into()]
+            )
+        );
+    }
+
+    #[test]
+    fn warning_only_results_do_not_become_write_matches() {
+        let dir = TestDirectory::new();
+        fs::write(dir.0.join("日本語.data.bin"), b"").unwrap();
+        fs::write(dir.0.join("日本語.other.bin"), b"").unwrap();
+        assert_eq!(
+            find_matches(&dir.0, vec!["日本語.data.001".into()]).unwrap(),
+            (vec![], false, vec!["日本語.data.bin".into()])
+        );
     }
 
     #[test]

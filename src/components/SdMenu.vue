@@ -2,8 +2,30 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 
-const props = defineProps<{ canWrite: boolean; busy?: boolean }>();
-const emit = defineEmits<{ write: [drive: string]; error: [message: string] }>();
+const props = defineProps<{ canWrite: boolean; busy?: boolean; canCopy?: boolean; canClear?: boolean }>();
+const emit = defineEmits<{ write: [drive: string]; error: [message: string]; refresh: []; copy: []; clear: [] }>();
+const actionsOpen = ref(false);
+const actionsContainer = ref<HTMLElement | null>(null);
+const actionsButton = ref<HTMLButtonElement | null>(null);
+
+function closeActions(event: Event) {
+	if (!actionsOpen.value) return;
+	if (!actionsContainer.value?.contains(event.target as Node)) actionsOpen.value = false;
+}
+
+function onActionsFocusout(event: FocusEvent) {
+	if (!actionsContainer.value?.contains(event.relatedTarget as Node | null)) actionsOpen.value = false;
+}
+
+function runAction(action: 'refresh' | 'copy' | 'clear') {
+	actionsOpen.value = false;
+	actionsButton.value?.focus();
+	if (action === 'refresh') {
+		void refreshDrives();
+		emit('refresh');
+	} else if (action === 'copy') emit('copy');
+	else emit('clear');
+}
 interface DriveInfo { drive: string; type: string; size: number }
 const drives = ref<DriveInfo[]>([]);
 const selectedDrive = ref('');
@@ -64,6 +86,10 @@ function requestWrite() {
 }
 
 function onKeydown(event: KeyboardEvent) {
+	if (event.key === 'Escape' && actionsOpen.value) {
+		actionsOpen.value = false;
+		actionsButton.value?.focus();
+	}
 	if (event.key === 'F5') {
 		event.preventDefault();
 		void refreshDrives();
@@ -74,11 +100,13 @@ onMounted(() => {
 	void refreshDrives();
 	timer = setInterval(() => void refreshDrives(), 2000);
 	window.addEventListener('keydown', onKeydown);
+	window.addEventListener('pointerdown', closeActions);
 });
 onUnmounted(() => {
 	disposed = true;
 	clearInterval(timer);
 	window.removeEventListener('keydown', onKeydown);
+	window.removeEventListener('pointerdown', closeActions);
 });
 </script>
 
@@ -107,11 +135,31 @@ onUnmounted(() => {
 				</span>
 			</label>
 		</div>
+		<div ref="actionsContainer" class="menu-actions" @focusout="onActionsFocusout">
+			<button ref="actionsButton" type="button" class="menu-toggle" title="メニュー" aria-label="メニュー"
+				:aria-expanded="actionsOpen" aria-controls="sd-actions" @click="actionsOpen = !actionsOpen">
+				<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
+			</button>
+			<div v-if="actionsOpen" id="sd-actions" class="menu-dropdown" role="group" aria-label="メニュー操作">
+				<button type="button" :disabled="busy" @click="runAction('refresh')"><span>表示更新</span><kbd>F5</kbd></button>
+				<button type="button" :disabled="!canCopy" @click="runAction('copy')">フルパスをコピー</button>
+				<button type="button" :disabled="!canClear" @click="runAction('clear')">操作メッセージをクリア</button>
+			</div>
+		</div>
 	</div>
 </template>
 
 <style scoped>
-.sd-menu { display: flex; align-items: center; gap: 0.4rem; width: 100%; min-height: 48px; padding: 4px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', Meiryo, sans-serif; font-size: 14px; line-height: 1.5; color: #333; }
+.sd-menu { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 6px; width: 100%; min-height: 48px; padding: 5px 6px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', Meiryo, sans-serif; font-size: 14px; line-height: 1.5; color: #333; }
+.menu-actions { position: relative; }
+.menu-toggle { display: flex; align-items: center; justify-content: center; width: 32px; height: 34px; padding: 0; border: 1px solid transparent; border-radius: 6px; background: transparent; color: #526171; cursor: pointer; }
+.menu-toggle:hover, .menu-toggle[aria-expanded="true"] { background: #e8f0fe; border-color: #c6d8f4; color: #245da6; }
+.menu-toggle:focus-visible, .menu-dropdown button:focus-visible { outline: 2px solid #174a75; outline-offset: 1px; }
+.menu-dropdown { position: absolute; top: calc(100% + 5px); right: 0; z-index: 10; width: 212px; max-width: calc(100vw - 20px); padding: 4px; border: 1px solid #d9dfe5; border-radius: 8px; background: #fff; box-shadow: 0 5px 18px #22334426; }
+.menu-dropdown button { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 8px; border: 0; border-radius: 4px; background: transparent; color: #333; font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+.menu-dropdown button:hover:not(:disabled) { background: #e8f0fe; }
+.menu-dropdown button:disabled { color: #9ca3af; cursor: default; }
+.menu-dropdown kbd { color: #748091; font: inherit; font-size: 11px; }
 .drive-select-inline { display: flex; flex: 1; min-width: 0; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
 .no-drive-warning-inline { display: flex; align-items: center; gap: 0.4rem; padding: 0.45rem 1rem; background: linear-gradient(135deg, #fff9e6 0%, #fff3cd 100%); border: 1.5px solid #ffc107; border-radius: 8px; color: #856404; font-size: 0.95rem; font-weight: 500; white-space: nowrap; }
 .no-drive-warning-inline svg { flex-shrink: 0; }
@@ -152,12 +200,16 @@ onUnmounted(() => {
 @container sd-menu-panel (max-width: 320px) {
 	.sd-menu { gap: 0.3rem; padding-inline: 3px; }
 	.drive-select-inline { gap: 0.3rem; }
-	.drive-item-inline { padding-inline: 0.375rem; }
-	.sd-write-button { padding-inline: 0.8rem; }
+	.drive-item-inline { gap: 3px; padding-inline: 4px; }
+	.radio-label-inline { gap: 3px; }
+	.drive-letter { font-size: 0.85rem; }
+	.sd-card-icon-inline svg { width: 28px; height: 28px; }
+	.sd-write-button { padding-inline: 0.65rem; }
+	.no-drive-warning-inline { padding: 5px; gap: 3px; font-size: 12px; white-space: normal; }
 }
 @container sd-menu-panel (max-width: 200px) {
-	.sd-menu { flex-wrap: wrap; }
-	.drive-select-inline { flex-basis: 100%; }
+	.drive-select-inline { grid-column: 1 / -1; grid-row: 2; }
+	.menu-actions { grid-column: 3; grid-row: 1; }
 	.no-drive-warning-inline { padding-inline: 0.4rem; white-space: normal; }
 }
 </style>

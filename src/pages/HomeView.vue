@@ -23,11 +23,13 @@ const displayedDirectory = computed(() => useInputDirectory.value
 	? `${sourceDirectory.value.replace(/[\\/]+$/, '')}\\input`
 	: sourceDirectory.value);
 const pathError = ref('');
-const messages = ref<string[]>([]);
+type PanelMessage = string | { text: string; warning: true };
+const messages = ref<PanelMessage[]>([]);
 const sdDirectDictionary = ref(new Map<string, AddressRange>());
 const sdloadingDictionary = ref(new Map<string, AddressRange>());
 const sdAddressRange = ref<AddressRange | null>(null);
 const matchedFiles = ref<string[]>([]);
+const warningFiles = ref<string[]>([]);
 const canSdWrite = computed(() => !initializing.value && sdloadingDictionary.value.size > 0);
 let matchingGeneration: number | undefined;
 let disposed = false;
@@ -75,6 +77,7 @@ async function initializeSource(paths?: string[], refreshDirectory?: string) {
 	sdloadingDictionary.value = new Map();
 	sdAddressRange.value = null;
 	matchedFiles.value = [];
+	warningFiles.value = [];
 	useInputDirectory.value = false;
 	sourceDirectory.value = '';
 	pathError.value = '';
@@ -140,12 +143,13 @@ async function refreshMatchedFiles(report = false) {
 	if (matchingGeneration === current || disposed || !ready) return;
 	matchingGeneration = current;
 	try {
-		const result = await invoke<{ files: string[]; from_input: boolean; input_exists: boolean }>('find_dictionary_files', {
+		const result = await invoke<{ files: string[]; warning_files: string[]; from_input: boolean; input_exists: boolean }>('find_dictionary_files', {
 			filenames: [...sdDirectDictionary.value.keys()],
 			directory: sourceDirectory.value,
 		});
 		if (disposed || current !== generation) return;
-		const changed = useInputDirectory.value !== result.from_input || JSON.stringify(matchedFiles.value) !== JSON.stringify(result.files);
+		const warningsChanged = JSON.stringify(warningFiles.value) !== JSON.stringify(result.warning_files);
+		const changed = warningsChanged || useInputDirectory.value !== result.from_input || JSON.stringify(matchedFiles.value) !== JSON.stringify(result.files);
 		const matchedDictionary = new Map<string, AddressRange>();
 		for (const filename of result.files) {
 			const range = sdDirectDictionary.value.get(filename);
@@ -153,11 +157,19 @@ async function refreshMatchedFiles(report = false) {
 		}
 		sdloadingDictionary.value = matchedDictionary;
 		matchedFiles.value = result.files;
+		warningFiles.value = result.warning_files;
 		useInputDirectory.value = result.from_input;
 		lastMatchError = '';
 		if (report) await appendMessage(result.input_exists ? 'inputフォルダあり' : 'inputフォルダ無し');
 		if (disposed || current !== generation) return;
 		if (!report && !changed) return;
+		if ((report || warningsChanged) && result.warning_files.length) {
+			await appendMessage(...result.warning_files.map(filename => ({
+				text: `警告：拡張子が異なるファイルがあります：${filename}`,
+				warning: true as const,
+			})));
+			if (disposed || current !== generation) return;
+		}
 		if (result.from_input && result.files.length) {
 			useInputDirectory.value = true;
 			await nextTick();
@@ -170,6 +182,7 @@ async function refreshMatchedFiles(report = false) {
 	} catch (error) {
 		if (disposed || current !== generation) return;
 		matchedFiles.value = [];
+		warningFiles.value = [];
 		sdloadingDictionary.value = new Map();
 		const message = `ファイル照合失敗: ${String(error)}`;
 		if (message !== lastMatchError) await appendMessage(message);
@@ -179,7 +192,7 @@ async function refreshMatchedFiles(report = false) {
 	}
 }
 
-async function appendMessage(...newMessages: string[]) {
+async function appendMessage(...newMessages: PanelMessage[]) {
 	for (const message of newMessages) messages.value.push(message);
 	await nextTick();
 	if (textPanel.value) textPanel.value.scrollTop = textPanel.value.scrollHeight;
@@ -233,7 +246,9 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 			<div class="panel-base" :style="{ gridTemplateRows: `${Math.max(menuHeight, minimumMenuHeight)}px 1px ${sdHeight}px 1px minmax(0, 1fr) 28px` }">
 				<div id="panel_menu" class="panel_menu">
 					<div ref="menuContent" class="menu-content">
-						<SdMenu :can-write="canSdWrite" :busy="initializing" @write="onSdWrite" @error="appendMessage" />
+						<SdMenu :can-write="canSdWrite" :busy="initializing" :can-copy="!!sourceDirectory" :can-clear="messages.length > 0"
+							@write="onSdWrite" @error="appendMessage" @refresh="initializeSource(undefined, sourceDirectory || undefined)"
+							@copy="copyDirectory" @clear="messages = []" />
 					</div>
 				</div>
 				<div id="resizer1" class="resizer" @pointerdown="resize($event, 1)"></div>
@@ -261,7 +276,8 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 						<button type="button" :disabled="messages.length === 0" @click="messages = []" aria-label="操作メッセージをクリア">クリア</button>
 					</div>
 					<div ref="textPanel" class="text-messages" role="log" aria-label="操作メッセージ">
-						<p v-for="(message, index) in messages" :key="index" class="path-message">{{ message }}</p>
+						<p v-for="(message, index) in messages" :key="index" class="path-message"
+							:class="{ 'path-warning': typeof message !== 'string' && message.warning }">{{ typeof message === 'string' ? message : message.text }}</p>
 					</div>
 				</div>
 				<div id="panel_footer" class="panel_footer" role="status">{{ dragging ? 'ドロップして対象フォルダーを変更' : initializing ? '対象フォルダーを読込中…' : 'ファイル・フォルダーをドロップできます' }}</div>
@@ -408,6 +424,9 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 }
 .path-error {
 	color: #a12323;
+}
+.path-warning {
+	color: #c00;
 }
 .resizer {
 	background: #666;

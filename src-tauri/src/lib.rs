@@ -73,6 +73,7 @@ struct StartupCsv {
 #[derive(Serialize)]
 struct MatchedFiles {
     files: Vec<String>,
+    warning_files: Vec<String>,
     from_input: bool,
     input_exists: bool,
 }
@@ -84,10 +85,11 @@ fn find_dictionary_files(
 ) -> Result<MatchedFiles, String> {
     let directory = source_directory::directory(directory)?;
     let input_exists = source_directory::input_exists(&directory)?;
-    let (files, from_input) =
+    let (files, from_input, warning_files) =
         matching_files::find_matches(&directory, filenames).map_err(|e| e.to_string())?;
     Ok(MatchedFiles {
         files,
+        warning_files,
         from_input,
         input_exists,
     })
