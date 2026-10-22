@@ -152,7 +152,9 @@ mod tests {
         let csv = "A,FILE-AA.001,00000000,000001FF";
         fs::write(dir.0.join("sdDirectaxs.csv"), csv).unwrap();
         assert!(crate::check_startup_csv(source.clone()).unwrap());
-        assert_eq!(crate::read_startup_csv(source.clone()).unwrap(), csv);
+        let loaded = crate::read_startup_csv(source.clone()).unwrap();
+        assert_eq!(loaded.contents, csv);
+        assert_eq!(loaded.source_folder, "対象フォルダ");
         fs::create_dir(dir.0.join("input")).unwrap();
         fs::write(dir.0.join("input/FILE-AA.001"), b"test").unwrap();
         let matched = crate::find_dictionary_files(keys(), source).unwrap();

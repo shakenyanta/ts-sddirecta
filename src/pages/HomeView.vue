@@ -104,12 +104,12 @@ async function initializeSource(paths?: string[], refreshDirectory?: string) {
 			return;
 		}
 		try {
-			const csv = await invoke<string>('read_startup_csv', { directory });
+			const csv = await invoke<{ contents: string; source_folder: string }>('read_startup_csv', { directory });
 			if (!active()) return;
-			const parsed = parseSdDirectCsv(csv);
+			const parsed = parseSdDirectCsv(csv.contents);
 			sdDirectDictionary.value = parsed.dictionary;
 			sdAddressRange.value = parsed.addressRange;
-			await appendMessage('sdDirectaxs.csv読込完了', `dictionary作成：${sdDirectDictionary.value.size}件`);
+			await appendMessage(`sdDirectaxs.csv読込完了 (${csv.source_folder})`, `dictionary作成：${sdDirectDictionary.value.size}件`);
 		} catch (error) {
 			if (!active()) return;
 			await appendMessage(`sdDirectaxs.csv読込失敗: ${String(error)}`);
@@ -163,9 +163,9 @@ async function refreshMatchedFiles(report = false) {
 			await nextTick();
 			if (disposed || current !== generation) return;
 			if (pathList.value) pathList.value.scrollTop = pathList.value.scrollHeight;
-			await appendMessage('inputフォルダへ移動', ...result.files);
-		} else {
-			await appendMessage(...(result.files.length ? result.files : ['一致するファイルはありません']));
+			await appendMessage('inputフォルダへ移動');
+		} else if (!result.files.length) {
+			await appendMessage('一致するファイルはありません');
 		}
 	} catch (error) {
 		if (disposed || current !== generation) return;
@@ -257,7 +257,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 				<div id="resizer2" class="resizer" @pointerdown="resize($event, 2)"></div>
 				<div id="panel_text" class="panel_text">
 					<div class="path-header text-header">
-						<span role="status">SD：{{ sdAddressRange ? `${sdAddressRange.startAddress} - ${sdAddressRange.endAddress}（${sdDirectDictionary.size}件）` : '未取得' }}</span>
+						<span role="status">SDエリア：{{ sdAddressRange ? `${sdAddressRange.startAddress} - ${sdAddressRange.endAddress}（${sdDirectDictionary.size}件）` : '未取得' }}</span>
 						<button type="button" :disabled="messages.length === 0" @click="messages = []" aria-label="操作メッセージをクリア">クリア</button>
 					</div>
 					<div ref="textPanel" class="text-messages" role="log" aria-label="操作メッセージ">

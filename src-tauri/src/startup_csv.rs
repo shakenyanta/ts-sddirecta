@@ -12,6 +12,27 @@ pub enum CsvSource {
 }
 
 impl CsvSource {
+    pub fn folder_label(&self, executable_directory: &Path) -> &'static str {
+        let executable_directory = fs::canonicalize(executable_directory)
+            .unwrap_or_else(|_| executable_directory.to_path_buf());
+        match self {
+            Self::File(path) => {
+                let parent = path.parent().unwrap_or(Path::new(""));
+                let folder = fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+                let config = executable_directory.join("config");
+                let config = fs::canonicalize(&config).unwrap_or(config);
+                if folder == executable_directory {
+                    "EXEフォルダ"
+                } else if folder == config {
+                    "configフォルダ"
+                } else {
+                    "対象フォルダ"
+                }
+            }
+            Self::Embedded => "内蔵CSV",
+        }
+    }
+
     pub fn read(self) -> io::Result<String> {
         match self {
             Self::File(path) => fs::read_to_string(path),
@@ -129,18 +150,22 @@ mod tests {
         fs::write(config.join(FILE_NAME), b"edited config").unwrap();
         fs::write(exe.0.join(FILE_NAME), b"exe CSV").unwrap();
         fs::write(dropped.0.join(FILE_NAME), b"dropped CSV").unwrap();
-        let read = || {
-            resolve_for_source(&dropped.0, &exe.0)
-                .unwrap()
-                .read()
-                .unwrap()
+        let read = |expected_folder| {
+            let source = resolve_for_source(&dropped.0, &exe.0).unwrap();
+            assert_eq!(source.folder_label(&exe.0), expected_folder);
+            assert_eq!(
+                source.folder_label(&fs::canonicalize(&exe.0).unwrap()),
+                expected_folder
+            );
+            source.read().unwrap()
         };
-        assert_eq!(read(), "dropped CSV");
+        assert_eq!(read("対象フォルダ"), "dropped CSV");
         fs::remove_file(dropped.0.join(FILE_NAME)).unwrap();
-        assert_eq!(read(), "exe CSV");
+        assert_eq!(read("EXEフォルダ"), "exe CSV");
         fs::remove_file(exe.0.join(FILE_NAME)).unwrap();
-        assert_eq!(read(), "edited config");
-        assert_eq!(fs::read(config.join(FILE_NAME)).unwrap(), b"edited config");
+        assert_eq!(read("configフォルダ"), "edited config");
+        fs::remove_file(config.join(FILE_NAME)).unwrap();
+        assert_eq!(read("内蔵CSV"), DEFAULT_CSV);
     }
 
     #[test]

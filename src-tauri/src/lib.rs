@@ -53,8 +53,21 @@ fn startup_csv_source(directory: Option<String>) -> Result<startup_csv::CsvSourc
 }
 
 #[tauri::command]
-fn read_startup_csv(directory: Option<String>) -> Result<String, String> {
-    startup_csv_source(directory)?.read().map_err(|e| e.to_string())
+fn read_startup_csv(directory: Option<String>) -> Result<StartupCsv, String> {
+    let source = startup_csv_source(directory)?;
+    let executable_directory = get_executable_directory()?;
+    let source_folder = source.folder_label(std::path::Path::new(&executable_directory));
+    let contents = source.read().map_err(|e| e.to_string())?;
+    Ok(StartupCsv {
+        contents,
+        source_folder,
+    })
+}
+
+#[derive(Serialize)]
+struct StartupCsv {
+    contents: String,
+    source_folder: &'static str,
 }
 
 #[derive(Serialize)]

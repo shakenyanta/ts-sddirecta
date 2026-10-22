@@ -52,6 +52,16 @@ function view(invoke) {
 }
 
 const csv = 'A,FILE-AA.001,00000000,000001FF';
+test('CSV completion log includes the source folder and preserves the dictionary count', async () => {
+  for (const source_folder of ['EXEフォルダ', 'configフォルダ', '対象フォルダ', '内蔵CSV']) {
+    const ui = view(backend({ read_startup_csv: () => ({ contents: csv, source_folder }) }));
+    await ui.initializeSource();
+    const index = ui.messages.value.indexOf(`sdDirectaxs.csv読込完了 (${source_folder})`);
+    assert.ok(index >= 0);
+    assert.equal(ui.messages.value[index + 1], 'dictionary作成：1件');
+  }
+});
+
 test('matched dictionary retains only matching keys and their ranges and resets on empty results or errors', async () => {
   let files = ['FILE-AA.001'];
   let fail = false;
@@ -104,12 +114,16 @@ test('CSV builds the dictionary and numeric hexadecimal bounds in one pass', () 
 
 function backend(overrides = {}) {
   return async (command, args) => {
-    if (overrides[command]) return overrides[command](args);
+    if (overrides[command]) {
+      const result = await overrides[command](args);
+      return command === 'read_startup_csv' && typeof result === 'string'
+        ? { contents: result, source_folder: 'EXEフォルダ' } : result;
+    }
     switch (command) {
       case 'get_executable_directory': return 'C:\\app';
       case 'resolve_drop_directory': return args.paths[0];
       case 'check_startup_csv': return true;
-      case 'read_startup_csv': return csv;
+      case 'read_startup_csv': return { contents: csv, source_folder: 'EXEフォルダ' };
       case 'find_dictionary_files': return { files: ['FILE-AA.001'], from_input: true, input_exists: true };
       default: throw new Error(command);
     }
