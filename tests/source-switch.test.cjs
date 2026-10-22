@@ -86,7 +86,7 @@ test('matched dictionary retains only matching keys and their ranges and resets 
   let files = ['FILE-AA.001'];
   let fail = false;
   const ui = view(backend({
-    read_startup_csv: () => csv + '\nA,FILE-AB.001,00000200,000003FF\nB,IGNORED.001,0,FF',
+    read_startup_csv: () => csv + '\nW,FILE-AB.001,00000200,000003FF\nE\nA,IGNORED.001,0,FF',
     find_dictionary_files: () => {
       if (fail) throw new Error('cannot list folder');
       return { files, from_input: false, input_exists: false };
@@ -95,13 +95,13 @@ test('matched dictionary retains only matching keys and their ranges and resets 
   await ui.initializeSource();
   assert.equal(ui.sdDirectDictionary.value.size, 2);
   assert.deepEqual([...ui.sdloadingDictionary.value], [
-    ['FILE-AA.001', { startAddress: '00000000', endAddress: '000001FF' }],
+    ['FILE-AA.001', { accessFlag: 'A', startAddress: '00000000', endAddress: '000001FF' }],
   ]);
   assert.notEqual(ui.sdloadingDictionary.value.get('FILE-AA.001'), ui.sdDirectDictionary.value.get('FILE-AA.001'));
   files = ['FILE-AB.001'];
   await ui.refreshMatchedFiles();
   assert.deepEqual([...ui.sdloadingDictionary.value], [
-    ['FILE-AB.001', { startAddress: '00000200', endAddress: '000003FF' }],
+    ['FILE-AB.001', { accessFlag: 'W', startAddress: '00000200', endAddress: '000003FF' }],
   ]);
   files = [];
   await ui.refreshMatchedFiles();
@@ -117,19 +117,64 @@ test('matched dictionary retains only matching keys and their ranges and resets 
   assert.equal(ui.canSdWrite.value, false);
 });
 
+test('matching preserves flags for non-A areas without removing unmatched areas from the source dictionary', async () => {
+  const flags = ['A', 'R', 'W', 'N', '0'];
+  let files = ['FILE-R.001', 'FILE-N.001', 'FILE-0.001'];
+  const ui = view(backend({
+    read_startup_csv: () => flags.map(flag => `${flag},FILE-${flag}.001,00000000,000001FF`).join('\n')
+      + '\nE\nA,IGNORED.001,0,FFFFFFFF',
+    find_dictionary_files: ({ filenames }) => {
+      assert.deepEqual(filenames, flags.map(flag => `FILE-${flag}.001`));
+      return { files, from_input: false, input_exists: false };
+    },
+  }));
+  await ui.initializeSource();
+  assert.deepEqual([...ui.sdloadingDictionary.value.values()].map(area => area.accessFlag), ['R', 'N', '0']);
+  assert.equal(ui.sdDirectDictionary.value.size, 5);
+  assert.deepEqual(ui.sdAddressRange.value, { startAddress: '0x00000000', endAddress: '0x000001FF' });
+  assert.ok(ui.messages.value.includes('dictionary作成：5件'));
+  files = [];
+  await ui.refreshMatchedFiles();
+  assert.equal(ui.sdloadingDictionary.value.size, 0);
+  assert.deepEqual([...ui.sdDirectDictionary.value.values()].map(area => area.accessFlag), flags);
+  assert.equal(ui.canSdWrite.value, false);
+});
+
 test('CSV builds the dictionary and numeric hexadecimal bounds in one pass', () => {
   const { parseSdDirectCsv } = utility('src/utils/sdDirectCsv.ts');
   const parsed = parseSdDirectCsv([
     'A,HIGH.001,0x100,0x07baffff',
     'A,LOW.001,0,ff',
     'A,MIDDLE.001,F,1000',
-    'B,IGNORED.001,0,FFFFFFFF',
+    'E,EEEEEEEEEEEE,EEEEEEEE EEEEEEEE,',
+    'A,IGNORED.001,0,FFFFFFFF',
   ].join('\n'));
   assert.equal(parsed.dictionary.size, 3);
-  assert.deepEqual(parsed.dictionary.get('HIGH.001'), { startAddress: '0x100', endAddress: '0x07baffff' });
+  assert.deepEqual(parsed.dictionary.get('HIGH.001'), { accessFlag: 'A', startAddress: '0x100', endAddress: '0x07baffff' });
   assert.deepEqual(parsed.addressRange, { startAddress: '0x00000000', endAddress: '0x07BAFFFF' });
   assert.equal(parseSdDirectCsv('').addressRange, null);
   assert.throws(() => parseSdDirectCsv('A,BAD.001,invalid,FF'), /16進数/);
+});
+
+test('CSV preserves every access flag and includes non-A areas in the bounds', () => {
+  const { parseSdDirectCsv } = utility('src/utils/sdDirectCsv.ts');
+  const flags = ['A', 'R', 'W', 'N', '0', 'X'];
+  const parsed = parseSdDirectCsv([
+    '',
+    ...flags.map((flag, index) => ` ${flag} , FILE-${flag}.001 , ${index === 0 ? '10' : '00'} , ${index === 4 ? 'FFFF' : 'FF'} `),
+    '   ',
+    'E',
+    'A,AFTER-END.001,0,FFFFFFFF',
+    'W,incomplete',
+  ].join('\r\n'));
+  assert.deepEqual([...parsed.dictionary.values()].map(area => area.accessFlag), flags);
+  assert.equal(parsed.dictionary.size, flags.length);
+  assert.deepEqual(parsed.addressRange, { startAddress: '0x00000000', endAddress: '0x0000FFFF' });
+  assert.deepEqual(parseSdDirectCsv('E\nA,IGNORED.001,0,FF'), { dictionary: new Map(), addressRange: null });
+  for (const flag of flags) {
+    assert.throws(() => parseSdDirectCsv(`${flag},incomplete`), /ファイル名・開始アドレス・終了アドレス/);
+    assert.throws(() => parseSdDirectCsv(`${flag},BAD.001,invalid,FF`), /16進数/);
+  }
 });
 
 function backend(overrides = {}) {

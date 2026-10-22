@@ -5,7 +5,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import SdMenu from '../components/SdMenu.vue';
 import { splitFolderPath } from '../utils/executablePath';
-import { parseSdDirectCsv, type AddressRange } from '../utils/sdDirectCsv';
+import { parseSdDirectCsv, type AddressRange, type SdArea } from '../utils/sdDirectCsv';
 
 const menuHeight = ref(48);
 const minimumMenuHeight = ref(48);
@@ -25,8 +25,8 @@ const displayedDirectory = computed(() => useInputDirectory.value
 const pathError = ref('');
 type PanelMessage = string | { text: string; warning: true };
 const messages = ref<PanelMessage[]>([]);
-const sdDirectDictionary = ref(new Map<string, AddressRange>());
-const sdloadingDictionary = ref(new Map<string, AddressRange>());
+const sdDirectDictionary = ref(new Map<string, SdArea>());
+const sdloadingDictionary = ref(new Map<string, SdArea>());
 const sdAddressRange = ref<AddressRange | null>(null);
 const matchedFiles = ref<string[]>([]);
 const warningFiles = ref<string[]>([]);
@@ -150,7 +150,7 @@ async function refreshMatchedFiles(report = false) {
 		if (disposed || current !== generation) return;
 		const warningsChanged = JSON.stringify(warningFiles.value) !== JSON.stringify(result.warning_files);
 		const changed = warningsChanged || useInputDirectory.value !== result.from_input || JSON.stringify(matchedFiles.value) !== JSON.stringify(result.files);
-		const matchedDictionary = new Map<string, AddressRange>();
+		const matchedDictionary = new Map<string, SdArea>();
 		for (const filename of result.files) {
 			const range = sdDirectDictionary.value.get(filename);
 			if (range) matchedDictionary.set(filename, { ...range });
@@ -248,9 +248,8 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 			<div class="panel-base" :style="{ gridTemplateRows: `${Math.max(menuHeight, minimumMenuHeight)}px 1px ${sdHeight}px 1px minmax(0, 1fr) 28px` }">
 				<div id="panel_menu" class="panel_menu">
 					<div ref="menuContent" class="menu-content">
-						<SdMenu :can-write="canSdWrite" :busy="initializing" :can-copy="!!sourceDirectory" :can-clear="messages.length > 0"
-							@write="onSdWrite" @error="appendMessage" @refresh="initializeSource(undefined, sourceDirectory || undefined)"
-							@copy="copyDirectory" @clear="messages = []" />
+						<SdMenu :can-write="canSdWrite" :busy="initializing"
+							@write="onSdWrite" @error="appendMessage" />
 					</div>
 				</div>
 				<div id="resizer1" class="resizer" @pointerdown="resize($event, 1)"></div>

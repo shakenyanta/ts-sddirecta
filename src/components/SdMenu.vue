@@ -2,8 +2,8 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 
-const props = defineProps<{ canWrite: boolean; busy?: boolean; canCopy?: boolean; canClear?: boolean }>();
-const emit = defineEmits<{ write: [drive: string]; error: [message: string]; refresh: []; copy: []; clear: [] }>();
+const props = defineProps<{ canWrite: boolean; busy?: boolean }>();
+const emit = defineEmits<{ write: [drive: string]; error: [message: string] }>();
 const actionsOpen = ref(false);
 const actionsContainer = ref<HTMLElement | null>(null);
 const actionsButton = ref<HTMLButtonElement | null>(null);
@@ -17,15 +17,6 @@ function onActionsFocusout(event: FocusEvent) {
 	if (!actionsContainer.value?.contains(event.relatedTarget as Node | null)) actionsOpen.value = false;
 }
 
-function runAction(action: 'refresh' | 'copy' | 'clear') {
-	actionsOpen.value = false;
-	actionsButton.value?.focus();
-	if (action === 'refresh') {
-		void refreshDrives();
-		emit('refresh');
-	} else if (action === 'copy') emit('copy');
-	else emit('clear');
-}
 interface DriveInfo { drive: string; type: string; size: number }
 const drives = ref<DriveInfo[]>([]);
 const selectedDrive = ref('');
@@ -141,9 +132,12 @@ onUnmounted(() => {
 				<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
 			</button>
 			<div v-if="actionsOpen" id="sd-actions" class="menu-dropdown" role="group" aria-label="メニュー操作">
-				<button type="button" :disabled="busy" @click="runAction('refresh')"><span>表示更新</span><kbd>F5</kbd></button>
-				<button type="button" :disabled="!canCopy" @click="runAction('copy')">フルパスをコピー</button>
-				<button type="button" :disabled="!canClear" @click="runAction('clear')">操作メッセージをクリア</button>
+				<button type="button">全エリアSD読み込み</button>
+				<button type="button">選択エリアSD読み込み</button>
+				<button type="button">全エリアSD書き込み</button>
+				<button type="button">選択エリアSD書き込み</button>
+				<button type="button">全エリアSD FF初期化</button>
+				<button type="button">SD選択エリア FF初期化</button>
 			</div>
 		</div>
 	</div>
@@ -159,7 +153,6 @@ onUnmounted(() => {
 .menu-dropdown button { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 8px; border: 0; border-radius: 4px; background: transparent; color: #333; font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
 .menu-dropdown button:hover:not(:disabled) { background: #e8f0fe; }
 .menu-dropdown button:disabled { color: #9ca3af; cursor: default; }
-.menu-dropdown kbd { color: #748091; font: inherit; font-size: 11px; }
 .drive-select-inline { display: flex; flex: 1; min-width: 0; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
 .no-drive-warning-inline { display: flex; align-items: center; gap: 0.4rem; padding: 0.45rem 1rem; background: linear-gradient(135deg, #fff9e6 0%, #fff3cd 100%); border: 1.5px solid #ffc107; border-radius: 8px; color: #856404; font-size: 0.95rem; font-weight: 500; white-space: nowrap; }
 .no-drive-warning-inline svg { flex-shrink: 0; }
