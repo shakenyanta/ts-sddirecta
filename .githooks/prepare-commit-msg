@@ -1,0 +1,17 @@
+#!/bin/sh
+
+# Keep messages prepared for merge, squash, and amend commits.
+case "$2" in
+  merge|squash|commit) exit 0 ;;
+esac
+
+# Preserve a message the user has already entered.
+if sed '/^[[:space:]]*#/d; /^[[:space:]]*$/d' "$1" | grep -q .; then
+  exit 0
+fi
+
+# Only include staged changes to the root README, regardless of filename case.
+readme_diff=$(git diff --cached --no-ext-diff --no-color -- ':(top,icase)README.md') || exit 1
+if [ -n "$readme_diff" ]; then
+  printf '%s\n' "$readme_diff" > "$1"
+fi
