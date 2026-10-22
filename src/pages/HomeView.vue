@@ -163,6 +163,14 @@ async function refreshMatchedFiles(report = false) {
 		if (report) await appendMessage(result.input_exists ? 'inputフォルダあり' : 'inputフォルダ無し');
 		if (disposed || current !== generation) return;
 		if (!report && !changed) return;
+		if (result.from_input && result.files.length) {
+			useInputDirectory.value = true;
+			await nextTick();
+			if (disposed || current !== generation) return;
+			if (pathList.value) pathList.value.scrollTop = pathList.value.scrollHeight;
+			await appendMessage('inputフォルダへ移動');
+			if (disposed || current !== generation) return;
+		}
 		if ((report || warningsChanged) && result.warning_files.length) {
 			await appendMessage(...result.warning_files.map(filename => ({
 				text: `警告：拡張子が異なるファイルがあります：${filename}`,
@@ -170,13 +178,7 @@ async function refreshMatchedFiles(report = false) {
 			})));
 			if (disposed || current !== generation) return;
 		}
-		if (result.from_input && result.files.length) {
-			useInputDirectory.value = true;
-			await nextTick();
-			if (disposed || current !== generation) return;
-			if (pathList.value) pathList.value.scrollTop = pathList.value.scrollHeight;
-			await appendMessage('inputフォルダへ移動');
-		} else if (!result.files.length) {
+		if (!result.files.length) {
 			await appendMessage('一致するファイルはありません');
 		}
 	} catch (error) {
