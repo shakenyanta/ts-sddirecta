@@ -1,10 +1,13 @@
-//! The GUI stays unelevated. One elevated, headless copy handles one SD operation.
+//! The GUI stays unelevated. An authenticated elevated worker lives until EOF.
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     io::{self, Read, Write},
     net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream},
     os::windows::ffi::OsStrExt,
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicBool, AtomicU8, Ordering},
+        Mutex,
+    },
     time::{Duration, Instant},
 };
 use windows_sys::Win32::{
@@ -17,13 +20,17 @@ use windows_sys::Win32::{
     UI::Shell::{ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW},
 };
 
-static SD_OPERATION: Mutex<()> = Mutex::new(());
+static SESSION: Mutex<Option<Session>> = Mutex::new(None);
+static BUSY: AtomicBool = AtomicBool::new(false);
+static STOPPING: AtomicBool = AtomicBool::new(false);
+static STATUS: AtomicU8 = AtomicU8::new(0);
 // Leave room for the result envelope around a worst-case 64 MiB byte array.
 const MAX_FRAME: usize = 256 * 1024 * 1024 + 1024;
 const MAX_READ: usize = 64 * 1024 * 1024;
 
 #[derive(Serialize, Deserialize)]
 pub enum Operation {
+    Batch(crate::sd_batch::Plan),
     Read {
         drive: String,
         address: u64,
@@ -62,6 +69,7 @@ fn disk_number(drive: &str) -> Result<u32, String> {
 fn execute(operation: Operation) -> Result<serde_json::Value, String> {
     use crate::windows_api;
     match operation {
+        Operation::Batch(_) => Err("一括書込は専用の実行経路を使用してください".into()),
         Operation::Read {
             drive,
             address,
@@ -132,6 +140,99 @@ fn receive<T: DeserializeOwned>(stream: &mut impl Read) -> Result<T, String> {
 }
 
 struct Process(HANDLE);
+struct Session {
+    stream: TcpStream,
+    process: Process,
+}
+
+impl Session {
+    fn close_and_wait(&self) -> Result<(), String> {
+        // EOF releases the worker's request loop. Keep the process handle alive
+        // until Windows confirms that the worker itself (not just its socket) exited.
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
+        if unsafe { WaitForSingleObject(self.process.0, u32::MAX) } != WAIT_OBJECT_0 {
+            return Err(format!(
+                "SD操作プロセスの終了を確認できませんでした: {}",
+                io::Error::last_os_error()
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+enum Response {
+    Ready(bool),
+    Progress(crate::sd_batch::Progress),
+    Finished(Result<serde_json::Value, String>),
+}
+
+pub fn is_busy() -> bool {
+    BUSY.load(Ordering::SeqCst)
+}
+
+pub fn status() -> &'static str {
+    if let Ok(mut session) = SESSION.try_lock() {
+        if session
+            .as_ref()
+            .is_some_and(|s| unsafe { WaitForSingleObject(s.process.0, 0) } == WAIT_OBJECT_0)
+        {
+            *session = None;
+            STATUS.store(0, Ordering::SeqCst);
+        }
+    }
+    match STATUS.load(Ordering::SeqCst) {
+        1 => "checking",
+        2 => "ready",
+        3 => "error",
+        _ => "idle",
+    }
+}
+
+pub fn shutdown() -> Result<(), String> {
+    request_shutdown();
+    let mut session = SESSION.lock().map_err(|e| e.to_string())?;
+    if let Some(worker) = session.as_ref() {
+        if let Err(error) = worker.close_and_wait() {
+            STATUS.store(3, Ordering::SeqCst);
+            return Err(error);
+        }
+    }
+    *session = None;
+    STATUS.store(0, Ordering::SeqCst);
+    Ok(())
+}
+
+pub fn request_shutdown() {
+    STOPPING.store(true, Ordering::SeqCst);
+}
+
+fn elevated() -> Result<bool, String> {
+    use windows_sys::Win32::{
+        Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY},
+        System::Threading::{GetCurrentProcess, OpenProcessToken},
+    };
+    let mut token = 0;
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(io::Error::last_os_error().to_string());
+    }
+    let token = Process(token);
+    let mut elevation: TOKEN_ELEVATION = unsafe { std::mem::zeroed() };
+    let mut size = 0;
+    if unsafe {
+        GetTokenInformation(
+            token.0,
+            TokenElevation,
+            &mut elevation as *mut _ as *mut _,
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut size,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error().to_string());
+    }
+    Ok(elevation.TokenIsElevated != 0)
+}
 impl Drop for Process {
     fn drop(&mut self) {
         if self.0 != 0 {
@@ -188,8 +289,7 @@ fn launch(address: SocketAddr, token: &str) -> Result<Process, String> {
     Ok(Process(info.hProcess))
 }
 
-fn invoke_blocking(operation: Operation) -> Result<serde_json::Value, String> {
-    let _guard = SD_OPERATION.lock().map_err(|e| e.to_string())?;
+fn connect() -> Result<Session, String> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).map_err(|e| e.to_string())?;
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     let mut random = [0u8; 32];
@@ -219,8 +319,15 @@ fn invoke_blocking(operation: Operation) -> Result<serde_json::Value, String> {
                     continue;
                 }
                 stream.set_read_timeout(None).map_err(|e| e.to_string())?;
-                send(&mut stream, &operation)?;
-                return receive::<Result<serde_json::Value, String>>(&mut stream)?;
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .map_err(|e| e.to_string())?;
+                if !matches!(receive::<Response>(&mut stream)?, Response::Ready(true)) {
+                    return Err("SD操作プロセスの管理者権限を確認できませんでした".into());
+                }
+                stream.set_read_timeout(None).map_err(|e| e.to_string())?;
+                stream.set_nodelay(true).map_err(|e| e.to_string())?;
+                return Ok(Session { stream, process });
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 if process.0 != 0 && unsafe { WaitForSingleObject(process.0, 0) } == WAIT_OBJECT_0 {
@@ -234,11 +341,114 @@ fn invoke_blocking(operation: Operation) -> Result<serde_json::Value, String> {
     Err("SD操作プロセスへの接続がタイムアウトしました".into())
 }
 
+fn invoke_blocking(
+    operation: Operation,
+    mut progress: impl FnMut(crate::sd_batch::Progress),
+) -> Result<serde_json::Value, String> {
+    if BUSY
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("別のSD操作を実行中です".into());
+    }
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            BUSY.store(false, Ordering::SeqCst);
+        }
+    }
+    let _busy = Guard;
+    if STOPPING.load(Ordering::SeqCst) {
+        return Err("アプリの終了処理中です".into());
+    }
+    let mut session = SESSION.lock().map_err(|e| e.to_string())?;
+    if session
+        .as_ref()
+        .is_some_and(|s| unsafe { WaitForSingleObject(s.process.0, 0) } == WAIT_OBJECT_0)
+    {
+        *session = None;
+    }
+    if session.is_none() {
+        STATUS.store(1, Ordering::SeqCst);
+        match connect() {
+            Ok(connected) => {
+                *session = Some(connected);
+                STATUS.store(2, Ordering::SeqCst);
+            }
+            Err(error) => {
+                STATUS.store(
+                    if error.contains("キャンセル") {
+                        0
+                    } else {
+                        3
+                    },
+                    Ordering::SeqCst,
+                );
+                return Err(error);
+            }
+        }
+    }
+    let stream = &mut session.as_mut().unwrap().stream;
+    let exchange = (|| -> Result<Result<serde_json::Value, String>, String> {
+        send(stream, &operation)?;
+        loop {
+            match receive::<Response>(stream)? {
+                Response::Progress(event) => progress(event),
+                Response::Finished(result) => return Ok(result),
+                Response::Ready(_) => return Err("SD操作プロセスの応答が不正です".into()),
+            }
+        }
+    })();
+    match exchange {
+        Ok(result) => result,
+        Err(error) => {
+            if let Some(disconnected) = session.take() {
+                let _ = disconnected.stream.shutdown(std::net::Shutdown::Both);
+                // Do not unlock the UI while a disconnected worker may still write.
+                unsafe {
+                    WaitForSingleObject(disconnected.process.0, u32::MAX);
+                }
+            }
+            STATUS.store(3, Ordering::SeqCst);
+            Err(format!("SD操作プロセスとの通信に失敗しました: {error}"))
+        }
+    }
+}
+
 pub async fn invoke<T: DeserializeOwned>(operation: Operation) -> Result<T, String> {
-    let result = tauri::async_runtime::spawn_blocking(move || invoke_blocking(operation))
+    let result = tauri::async_runtime::spawn_blocking(move || invoke_blocking(operation, |_| {}))
         .await
         .map_err(|e| e.to_string())??;
     serde_json::from_value(result).map_err(|e| e.to_string())
+}
+
+pub async fn write_batch(
+    plan: crate::sd_batch::Plan,
+    app: tauri::AppHandle,
+) -> Result<crate::sd_batch::Progress, String> {
+    use tauri::Emitter;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        invoke_blocking(Operation::Batch(plan), |event| {
+            let _ = app.emit("sd-progress", event);
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    serde_json::from_value(result).map_err(|e| e.to_string())
+}
+
+fn serve_requests(stream: &mut TcpStream) -> Result<(), String> {
+    loop {
+        let operation = receive::<Operation>(stream)?;
+        let result = match operation {
+            Operation::Batch(plan) => {
+                crate::sd_batch::execute(plan, |event| send(stream, &Response::Progress(event)))
+                    .and_then(|done| serde_json::to_value(done).map_err(|e| e.to_string()))
+            }
+            operation => execute(operation),
+        };
+        send(stream, &Response::Finished(result))?;
+    }
 }
 
 /// Handle worker mode before starting Tauri/WebView2, including malformed requests.
@@ -266,8 +476,15 @@ pub fn run_if_worker() -> bool {
         stream
             .write_all(arguments[3].as_bytes())
             .map_err(|e| e.to_string())?;
-        let operation = receive::<Operation>(&mut stream)?;
-        send(&mut stream, &execute(operation))
+        let is_elevated = elevated()?;
+        send(&mut stream, &Response::Ready(is_elevated))?;
+        if !is_elevated {
+            return Err("管理者権限がありません".into());
+        }
+        // Idle reads block until another request or the GUI closes the socket.
+        stream.set_read_timeout(None).map_err(|e| e.to_string())?;
+        stream.set_nodelay(true).map_err(|e| e.to_string())?;
+        serve_requests(&mut stream)
     })();
     true
 }
@@ -307,6 +524,86 @@ mod tests {
             drive: "PhysicalDrive0".into(),
             address: 0,
             size: MAX_READ + 1,
-        }).is_err());
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn worker_reuses_connection_after_operation_errors_and_exits_on_disconnect() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            // No disk is touched: malformed drives fail before the Windows API.
+            serve_requests(&mut stream)
+        });
+        for _ in 0..2 {
+            send(
+                &mut client,
+                &Operation::Read {
+                    drive: "invalid".into(),
+                    address: 0,
+                    size: 512,
+                },
+            )
+            .unwrap();
+            assert!(matches!(
+                receive::<Response>(&mut client).unwrap(),
+                Response::Finished(Err(_))
+            ));
+        }
+        drop(client);
+        assert!(server.join().unwrap().is_err());
+    }
+
+    #[test]
+    fn shutdown_closes_connection_then_waits_for_windows_exit_signal() {
+        use windows_sys::Win32::System::Threading::{CreateEventW, SetEvent};
+        // A Windows event simulates the process-exit signal. No elevation or SD
+        // is needed, and the test controls exactly when the wait can finish.
+        let signal = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+        assert_ne!(signal, 0);
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let session = Session {
+            stream: client,
+            process: Process(signal),
+        };
+        let (sent, received) = std::sync::mpsc::channel();
+        let waiting = std::thread::spawn(move || {
+            let result = session.close_and_wait();
+            sent.send(result).unwrap();
+        });
+        assert_eq!(peer.read(&mut [0u8; 1]).unwrap(), 0);
+        assert!(matches!(
+            received.recv_timeout(Duration::from_millis(50)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        assert_ne!(unsafe { SetEvent(signal) }, 0);
+        received
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        waiting.join().unwrap();
+    }
+
+    #[test]
+    fn shutdown_reports_invalid_process_handle_instead_of_claiming_success() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (_peer, _) = listener.accept().unwrap();
+        let session = Session {
+            stream: client,
+            process: Process(0),
+        };
+        assert!(session
+            .close_and_wait()
+            .unwrap_err()
+            .contains("終了を確認できませんでした"));
     }
 }

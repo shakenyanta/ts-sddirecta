@@ -18,6 +18,7 @@ function view(invoke) {
   const source = readFileSync('src/pages/HomeView.vue', 'utf8').match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
     .replace(/^import .*;\r?$/gm, '');
   let mount, unmount, listener, timer, unlistened = false;
+  const eventListeners = new Map();
   const keyListeners = new Set();
   const bindings = {
     ref: value => ({ value }),
@@ -27,6 +28,7 @@ function view(invoke) {
     onUnmounted: fn => { unmount = fn; },
     getCurrentWebview: () => ({ onDragDropEvent: async fn => { listener = fn; return () => { unlistened = true; }; } }),
     invoke,
+    listen: async (name, fn) => { eventListeners.set(name, fn); return () => eventListeners.delete(name); },
     window: {
       addEventListener: (name, fn) => { if (name === 'keydown') keyListeners.add(fn); },
       removeEventListener: (name, fn) => { if (name === 'keydown') keyListeners.delete(fn); },
@@ -35,16 +37,19 @@ function view(invoke) {
     clearInterval: () => { timer = undefined; },
     ...utility('src/utils/sdDirectCsv.ts'),
     ...utility('src/utils/executablePath.ts'),
+    ...utility('src/utils/sdWrite.ts'),
   };
   const api = new Function(...Object.keys(bindings), transpile(source) + `
     return { initializeSource, refreshMatchedFiles, sourceDirectory, displayedDirectory,
-      sdDirectDictionary, sdloadingDictionary, sdAddressRange, matchedFiles, canSdWrite, initializing, messages, folders, pathError };
+      sdDirectDictionary, sdloadingDictionary, sdAddressRange, matchedFiles, canSdWrite, writeFileCount, allFileCount, initializing, messages, folders, pathError,
+      onSdWrite, confirmWrite, writing, pendingPlan, progress, percent, currentRun, transientNotice };
   `)(...Object.values(bindings));
   return { ...api, mount: () => mount(), unmount: () => unmount(),
     drop: paths => listener({ payload: { type: 'drop', paths } }),
+    event: (name, payload) => eventListeners.get(name)?.({ payload }),
     key: (key, repeat = false) => {
       let prevented = false;
-      for (const fn of keyListeners) fn({ key, repeat, preventDefault: () => { prevented = true; } });
+      for (const fn of keyListeners) fn({ key, repeat, preventDefault: () => { prevented = true; }, stopImmediatePropagation: () => {} });
       return prevented;
     },
     get hasTimer() { return !!timer; },
@@ -117,7 +122,7 @@ test('matched dictionary retains only matching keys and their ranges and resets 
   assert.equal(ui.canSdWrite.value, false);
 });
 
-test('matching preserves flags for non-A areas without removing unmatched areas from the source dictionary', async () => {
+test('all-area write remains available with only R/N/0 matches and keeps selected and total counts separate', async () => {
   const flags = ['A', 'R', 'W', 'N', '0'];
   let files = ['FILE-R.001', 'FILE-N.001', 'FILE-0.001'];
   const ui = view(backend({
@@ -130,13 +135,22 @@ test('matching preserves flags for non-A areas without removing unmatched areas 
   }));
   await ui.initializeSource();
   assert.deepEqual([...ui.sdloadingDictionary.value.values()].map(area => area.accessFlag), ['R', 'N', '0']);
+  assert.equal(ui.writeFileCount.value, 0);
+  assert.equal(ui.allFileCount.value, 3);
+  assert.equal(ui.canSdWrite.value, true);
   assert.equal(ui.sdDirectDictionary.value.size, 5);
   assert.deepEqual(ui.sdAddressRange.value, { startAddress: '0x00000000', endAddress: '0x000001FF' });
   assert.ok(ui.messages.value.includes('dictionary作成：5件'));
+  files = flags.map(flag => `FILE-${flag}.001`);
+  await ui.refreshMatchedFiles();
+  assert.equal(ui.writeFileCount.value, 2);
+  assert.equal(ui.allFileCount.value, 5);
   files = [];
   await ui.refreshMatchedFiles();
   assert.equal(ui.sdloadingDictionary.value.size, 0);
   assert.deepEqual([...ui.sdDirectDictionary.value.values()].map(area => area.accessFlag), flags);
+  assert.equal(ui.writeFileCount.value, 0);
+  assert.equal(ui.allFileCount.value, 0);
   assert.equal(ui.canSdWrite.value, false);
 });
 
@@ -326,5 +340,130 @@ test('F5 prevents default reload while busy and ignores key repeats', async () =
   release(csv);
   for (let i = 0; i < 10 && ui.initializing.value; i++) await new Promise(setImmediate);
   assert.equal(ui.sourceDirectory.value, 'C:\\app');
+  ui.unmount();
+});
+
+async function until(check) {
+  for (let i = 0; i < 30 && !check(); i++) await new Promise(setImmediate);
+  assert.ok(check(), 'expected state was not reached');
+}
+
+test('write workflow confirms first, blocks target changes, rejects stale events, and logs timed completion', async () => {
+  let ui, runArgs, release;
+  const waiting = new Promise(resolve => { release = resolve; });
+  const entry = { filename: 'FILE-AA.001', address: 0, size: 512, file_size: 768 };
+  const calls = [];
+  ui = view(backend({
+    prepare_sd_write: args => ({ run_id: args.runId, drive: args.drive, directory: args.directory, capacity: 2048, total_bytes: 512, entries: [entry] }),
+    run_sd_write: args => { runArgs = args; calls.push('run'); return waiting; },
+    discard_sd_write: () => { calls.push('discard'); },
+  }));
+  await ui.mount();
+  const task = ui.onSdWrite('E:');
+  await until(() => !!ui.pendingPlan.value);
+  assert.equal(ui.writing.value, true);
+  assert.equal(ui.canSdWrite.value, false);
+  assert.deepEqual(calls, []);
+  const source = ui.sourceDirectory.value;
+  ui.drop(['C:\\other']);
+  assert.equal(ui.sourceDirectory.value, source);
+  assert.equal(ui.key('F5'), true);
+  assert.match(ui.transientNotice.value, /再読込できません/);
+  ui.confirmWrite(true);
+  await until(() => !!runArgs);
+  await ui.onSdWrite('E:');
+  assert.deepEqual(calls, ['run']);
+  const event = { run_id: runArgs.runId, filename: entry.filename, index: 1, total: 1, completed: 0, stage: 'verify', processed_bytes: 512, total_bytes: 1024, elapsed_ms: 100, file_ms: 100, error: null };
+  ui.event('sd-progress', { ...event, run_id: 'stale', stage: 'done' });
+  assert.equal(ui.progress.value, null);
+  ui.event('sd-progress', event);
+  assert.equal(ui.percent.value, 50);
+  ui.event('sd-progress', { ...event, stage: 'file_done', completed: 1, processed_bytes: 1024, file_ms: 253 });
+  assert.equal(ui.percent.value, 99);
+  const done = { ...event, stage: 'done', filename: '', completed: 1, processed_bytes: 1024, elapsed_ms: 2540 };
+  ui.event('sd-progress', done);
+  release(done);
+  await task;
+  assert.equal(ui.writing.value, false);
+  assert.equal(ui.percent.value, 100);
+  assert.equal(ui.canSdWrite.value, true);
+  assert.equal(ui.hasTimer, false);
+  assert.equal(ui.messages.value.filter(m => typeof m === 'string' && m.startsWith('全件完了')).length, 1);
+  assert.ok(ui.messages.value.some(m => typeof m === 'object' && /末尾256バイトを無視/.test(m.text)));
+  assert.ok(ui.messages.value.some(m => typeof m === 'string' && /所要時間 253ms/.test(m)));
+  assert.ok(ui.messages.value.some(m => typeof m === 'string' && /総所要時間 2.54秒/.test(m)));
+  ui.unmount();
+});
+
+test('confirmation cancellation and empty plans do not invoke the write operation', async () => {
+  for (const empty of [false, true]) {
+    let ran = false;
+    const ui = view(backend({
+      prepare_sd_write: args => ({ run_id: args.runId, entries: empty ? [] : [{ filename: 'FILE-AA.001', size: 512, file_size: 0 }] }),
+      run_sd_write: () => { ran = true; }, discard_sd_write: () => {},
+    }));
+    await ui.mount();
+    const task = ui.onSdWrite('E:');
+    if (!empty) { await until(() => !!ui.pendingPlan.value); ui.confirmWrite(false); }
+    await task;
+    assert.equal(ran, false);
+    assert.equal(ui.writing.value, false);
+    ui.unmount();
+  }
+});
+
+test('failed verification preserves progress and identifies the failed and unexecuted files', async () => {
+  let ui;
+  ui = view(backend({
+    prepare_sd_write: args => ({ run_id: args.runId, drive: 'E:', total_bytes: 1536, entries: ['a','b','c'].map(filename => ({ filename, size: 512, file_size: 512 })) }),
+    run_sd_write: args => {
+      ui.event('sd-progress', { run_id: args.runId, filename: 'b', index: 2, total: 3, completed: 1, stage: 'failed', processed_bytes: 1536, total_bytes: 3072, elapsed_ms: 1000, file_ms: 253, error: '照合不一致' });
+      throw new Error('照合不一致');
+    }, discard_sd_write: () => {},
+  }));
+  await ui.mount();
+  const task = ui.onSdWrite('E:');
+  await until(() => !!ui.pendingPlan.value);
+  ui.confirmWrite(true);
+  await task;
+  assert.equal(ui.writing.value, false);
+  assert.equal(ui.percent.value, 50);
+  assert.equal(ui.hasTimer, false);
+  assert.ok(ui.messages.value.some(m => typeof m === 'object' && /b: 一部だけ/.test(m.text)));
+  assert.ok(ui.messages.value.includes('未実行: c'));
+  ui.unmount();
+});
+
+test('size comments distinguish truncation, padding, zero-byte fill, and exact size', () => {
+  const { sizeComment, writePercent } = utility('src/utils/sdWrite.ts');
+  const entry = { filename: 'a', size: 1024 };
+  assert.match(sizeComment({ ...entry, file_size: 1536 }), /末尾512バイトを無視/);
+  assert.match(sizeComment({ ...entry, file_size: 512 }), /残り512バイトを0xFF/);
+  assert.match(sizeComment({ ...entry, file_size: 0 }), /全体を0xFF/);
+  assert.equal(sizeComment({ ...entry, file_size: 1024 }), null);
+  assert.equal(writePercent({ stage: 'verify', processed_bytes: 2048, total_bytes: 2048 }), 99);
+  assert.equal(writePercent({ stage: 'done', processed_bytes: 2048, total_bytes: 2048 }), 100);
+  assert.equal(writePercent({ stage: 'prepare', processed_bytes: 0, total_bytes: 0 }), 0);
+});
+
+test('shutdown waiting keeps target changes disabled and reports wait failures', async () => {
+  const calls = [];
+  const run = backend();
+  const ui = view(async (command, args) => { calls.push(command); return run(command, args); });
+  await ui.mount();
+  assert.equal(ui.canSdWrite.value, true);
+  const source = ui.sourceDirectory.value;
+  const before = calls.length;
+  ui.event('sd-shutdown-started');
+  assert.equal(ui.canSdWrite.value, false);
+  ui.drop(['C:\\other']);
+  assert.equal(ui.key('F5'), true);
+  await ui.onSdWrite('E:');
+  assert.equal(ui.sourceDirectory.value, source);
+  assert.equal(calls.length, before);
+  assert.match(ui.transientNotice.value, /終了処理中/);
+  ui.event('sd-shutdown-error', '終了確認失敗');
+  assert.ok(ui.messages.value.some(m => typeof m === 'object' && /終了確認失敗/.test(m.text)));
+  assert.equal(ui.canSdWrite.value, false);
   ui.unmount();
 });

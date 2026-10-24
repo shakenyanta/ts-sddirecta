@@ -5,6 +5,7 @@ fn greet(name: &str) -> String {
 }
 
 mod matching_files;
+mod sd_batch;
 mod sd_worker;
 mod source_directory;
 mod startup_csv;
@@ -12,6 +13,94 @@ mod windows_api;
 pub use sd_worker::run_if_worker;
 
 use serde::Serialize;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex,
+};
+
+static WRITE_RUNNING: AtomicBool = AtomicBool::new(false);
+static EXIT_WAITING: AtomicBool = AtomicBool::new(false);
+static EXIT_READY: AtomicBool = AtomicBool::new(false);
+static WRITE_PLAN: Mutex<Option<sd_batch::Plan>> = Mutex::new(None);
+
+#[tauri::command]
+fn sd_admin_status() -> &'static str {
+    sd_worker::status()
+}
+
+#[tauri::command]
+async fn prepare_sd_write(
+    directory: String,
+    drive: String,
+    run_id: String,
+) -> Result<sd_batch::Plan, String> {
+    if EXIT_WAITING.load(Ordering::SeqCst) {
+        return Err("アプリの終了処理中です".into());
+    }
+    if WRITE_RUNNING.load(Ordering::SeqCst) || sd_worker::is_busy() {
+        return Err("SD処理中です".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let plan = sd_batch::prepare(&directory, &drive, &run_id)?;
+        *WRITE_PLAN.lock().map_err(|e| e.to_string())? = Some(plan.clone());
+        Ok(plan)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn discard_sd_write(run_id: String) -> Result<(), String> {
+    let mut pending = WRITE_PLAN.lock().map_err(|e| e.to_string())?;
+    if pending.as_ref().is_some_and(|p| p.run_id == run_id) {
+        *pending = None;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn run_sd_write(run_id: String, app: tauri::AppHandle) -> Result<sd_batch::Progress, String> {
+    if EXIT_WAITING.load(Ordering::SeqCst) {
+        return Err("アプリの終了処理中です".into());
+    }
+    if WRITE_RUNNING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("SD処理中です".into());
+    }
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            WRITE_RUNNING.store(false, Ordering::SeqCst);
+        }
+    }
+    let _guard = Guard;
+    let plan = {
+        let mut pending = WRITE_PLAN.lock().map_err(|e| e.to_string())?;
+        if pending.as_ref().is_none_or(|p| p.run_id != run_id) {
+            return Err("書込内容を再確認してください".into());
+        }
+        pending.take().unwrap()
+    };
+    let checked =
+        tauri::async_runtime::spawn_blocking(move || -> Result<sd_batch::Plan, String> {
+            let current = sd_batch::prepare(&plan.source, &plan.drive, &plan.run_id)?;
+            if current != plan {
+                return Err(
+                    "確認後にCSV・ファイル・SDが変更されました。書込内容を再確認してください"
+                        .into(),
+                );
+            }
+            if plan.entries.is_empty() {
+                return Err("書込対象なし".into());
+            }
+            Ok(plan)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+    sd_worker::write_batch(checked, app).await
+}
 
 #[tauri::command]
 fn get_executable_directory() -> Result<String, String> {
@@ -207,11 +296,60 @@ pub fn run() {
             read_startup_csv,
             find_dictionary_files,
             get_drives,
+            sd_admin_status,
+            prepare_sd_write,
+            discard_sd_write,
+            run_sd_write,
             sd_read,
             sd_write,
             sd_fill,
             sd_verify_fill
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                use tauri::Emitter;
+                if EXIT_READY.load(Ordering::SeqCst) {
+                    return;
+                }
+                api.prevent_close();
+                if WRITE_RUNNING.load(Ordering::SeqCst) || sd_worker::is_busy() {
+                    let _ = window.emit("sd-close-blocked", ());
+                } else if EXIT_WAITING
+                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+                {
+                    sd_worker::request_shutdown();
+                    let _ = window.emit("sd-shutdown-started", ());
+                    let window = window.clone();
+                    // Process waiting must not block the WebView/event-loop thread.
+                    tauri::async_runtime::spawn(async move {
+                        let result = tauri::async_runtime::spawn_blocking(sd_worker::shutdown)
+                            .await
+                            .map_err(|e| e.to_string())
+                            .and_then(|r| r);
+                        match result {
+                            Ok(()) => {
+                                EXIT_READY.store(true, Ordering::SeqCst);
+                                if let Err(error) = window.close() {
+                                    EXIT_WAITING.store(false, Ordering::SeqCst);
+                                    EXIT_READY.store(false, Ordering::SeqCst);
+                                    let _ = window.emit("sd-shutdown-error", error.to_string());
+                                }
+                            }
+                            Err(error) => {
+                                EXIT_WAITING.store(false, Ordering::SeqCst);
+                                let _ = window.emit("sd-shutdown-error", error);
+                            }
+                        }
+                    });
+                }
+            }
+        })
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                let _ = sd_worker::shutdown();
+            }
+        });
 }

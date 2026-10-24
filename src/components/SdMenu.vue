@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 
-const props = defineProps<{ canWrite: boolean; busy?: boolean }>();
+const props = defineProps<{ canWrite: boolean; busy?: boolean; writeLabel?: string }>();
 const emit = defineEmits<{ write: [drive: string]; error: [message: string] }>();
 const actionsOpen = ref(false);
 const actionsContainer = ref<HTMLElement | null>(null);
@@ -23,14 +23,17 @@ const selectedDrive = ref('');
 const selectedDriveHasMedia = computed(() => drives.value.some(drive => drive.drive === selectedDrive.value && drive.size > 0));
 const canRequestWrite = computed(() => props.canWrite && selectedDriveHasMedia.value && !props.busy);
 const writeTitle = computed(() => {
-	if (!props.canWrite) return 'dictionary と一致するファイルがありません';
+	if (props.busy) return 'SDカードの処理中です';
+	if (!props.canWrite) return '全エリアと一致するファイルがありません';
 	if (!selectedDrive.value) return 'SDドライブを選択してください';
 	if (!selectedDriveHasMedia.value) return '選択したドライブにSDカードが挿入されていません';
-	if (props.busy) return 'SDカードの処理中です';
-	return 'dictionary と一致するファイルをSDカードへ書込します';
+	return '全エリア（E以外）と一致するファイルをSDカードへ書込します';
 });
 const backendStatus = ref<'checking' | 'running' | 'stopped'>('checking');
-const backendTitle = computed(() => ({ checking: 'ドライブ情報を確認中…', running: 'Tauri バックエンド: 応答あり', stopped: 'Tauri バックエンド: 応答なし' })[backendStatus.value]);
+const adminStatus = ref<'idle' | 'checking' | 'ready' | 'error'>('idle');
+const adminTitle = computed(() => ({ idle: '管理者権限：未取得', checking: '管理者権限：確認中', ready: '管理者権限：取得済み（SD操作用プロセス）', error: '管理者権限：取得・通信失敗' })[adminStatus.value]);
+let adminTimer: ReturnType<typeof setInterval> | undefined;
+let checkingAdmin = false;
 let timer: ReturnType<typeof setInterval> | undefined;
 let checking = false;
 let disposed = false;
@@ -53,7 +56,7 @@ async function refreshDrives() {
 	checking = true;
 	try {
 		const result = await invoke<DriveInfo[]>('get_drives');
-		if (disposed) return;
+		if (disposed || props.busy) return;
 		drives.value = result.filter(drive => drive.type === 'Removable');
 		backendStatus.value = 'running';
 		if (!drives.value.some(drive => drive.drive === selectedDrive.value)) {
@@ -62,7 +65,7 @@ async function refreshDrives() {
 			selectedDrive.value = drives.value.find(drive => drive.drive === savedDrive)?.drive ?? drives.value[0]?.drive ?? '';
 		}
 	} catch (error) {
-		if (disposed) return;
+		if (disposed || props.busy) return;
 		drives.value = [];
 		selectedDrive.value = '';
 		if (backendStatus.value !== 'stopped') emit('error', `ドライブ情報取得失敗: ${String(error)}`);
@@ -70,6 +73,17 @@ async function refreshDrives() {
 	} finally {
 		checking = false;
 	}
+}
+
+async function refreshAdmin() {
+	if (checkingAdmin) return;
+	checkingAdmin = true;
+	try {
+		const status = await invoke<'idle' | 'checking' | 'ready' | 'error'>('sd_admin_status');
+		if (!disposed) adminStatus.value = status;
+	} catch {
+		if (!disposed) adminStatus.value = 'error';
+	} finally { checkingAdmin = false; }
 }
 
 function requestWrite() {
@@ -89,6 +103,8 @@ function onKeydown(event: KeyboardEvent) {
 
 onMounted(() => {
 	void refreshDrives();
+	void refreshAdmin();
+	adminTimer = setInterval(() => void refreshAdmin(), 500);
 	timer = setInterval(() => void refreshDrives(), 2000);
 	window.addEventListener('keydown', onKeydown);
 	window.addEventListener('pointerdown', closeActions);
@@ -96,6 +112,7 @@ onMounted(() => {
 onUnmounted(() => {
 	disposed = true;
 	clearInterval(timer);
+	clearInterval(adminTimer);
 	window.removeEventListener('keydown', onKeydown);
 	window.removeEventListener('pointerdown', closeActions);
 });
@@ -105,15 +122,16 @@ onUnmounted(() => {
 	<div class="sd-menu" aria-label="SDカード操作">
 		<div class="sd-write-wrapper">
 			<button type="button" class="sd-write-button" :disabled="!canRequestWrite" @click="requestWrite"
-				:title="writeTitle">SD書込</button>
-			<span class="backend-indicator" :class="`backend-indicator--${backendStatus}`" :title="backendTitle" role="img" :aria-label="backendTitle"></span>
+				:title="writeTitle">{{ writeLabel || 'SD書込' }}</button>
+			<span class="backend-indicator" :class="`admin-indicator--${adminStatus}`" :title="adminTitle" role="img" :aria-label="adminTitle"></span>
+			<span class="admin-label" :title="adminTitle">管理者権限</span>
 		</div>
 		<div class="drive-select-inline" role="radiogroup" aria-label="書込先ドライブ">
 			<div v-if="!drives.length" class="no-drive-warning-inline" role="status">
 				<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z" /></svg>
 				<span>{{ backendStatus === 'checking' ? '確認中…' : backendStatus === 'stopped' ? '取得失敗' : 'SDドライブなし' }}</span>
 			</div>
-			<label v-for="drive in drives" :key="drive.drive" class="drive-item-inline">
+			<label v-for="drive in drives" :key="drive.drive" class="drive-item-inline" :class="{ 'drive-disabled': busy }">
 				<span class="radio-label-inline">
 					<input v-model="selectedDrive" type="radio" :value="drive.drive" name="drive-select" :disabled="busy" @change="selectDrive" :aria-label="`ドライブ ${drive.drive}`" />
 					<span class="drive-letter">{{ drive.drive }}</span>
@@ -127,7 +145,7 @@ onUnmounted(() => {
 			</label>
 		</div>
 		<div ref="actionsContainer" class="menu-actions" @focusout="onActionsFocusout">
-			<button ref="actionsButton" type="button" class="menu-toggle" title="メニュー" aria-label="メニュー"
+			<button ref="actionsButton" type="button" class="menu-toggle" title="メニュー" aria-label="メニュー" :disabled="busy"
 				:aria-expanded="actionsOpen" aria-controls="sd-actions" @click="actionsOpen = !actionsOpen">
 				<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
 			</button>
@@ -175,7 +193,9 @@ onUnmounted(() => {
 .status-empty { color: #d5d5d5; }
 .status-busy { background: #000; color: #fff; font-weight: bold; }
 .sd-capacity-display-inline { position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; justify-content: center; padding: 0.05rem 0.2rem; background: transparent; font-size: 0.6rem; font-weight: 800; color: #fff; min-width: 20px; text-align: center; letter-spacing: 0.02em; text-shadow: -1px -1px 0 #333, 1px -1px 0 #333, -1px 1px 0 #333, 1px 1px 0 #333, 0 0 3px rgba(0, 0, 0, 0.5); z-index: 1; white-space: nowrap; pointer-events: none; }
-.sd-write-wrapper { position: relative; display: inline-flex; flex-shrink: 0; }
+.sd-write-wrapper { position: relative; display: inline-flex; flex-direction: column; flex-shrink: 0; }
+.admin-label { font-size: 10px; line-height: 12px; text-align: center; color: #526171; }
+.drive-disabled { opacity: 0.5; cursor: default; }
 .sd-write-button { padding: 0.45rem 1.1rem; background: linear-gradient(135deg, #4285f4 0%, #357ae8 100%); color: white; border: 2px solid transparent; border-radius: 8px; font-family: inherit; font-size: 0.95rem; font-weight: 600; cursor: pointer; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); outline: none; white-space: nowrap; box-shadow: 0 3px 8px rgba(66, 133, 244, 0.3), 0 1px 3px rgba(66, 133, 244, 0.2); position: relative; overflow: hidden; }
 .sd-write-button::before { content: ''; position: absolute; top: 0; left: -100%; width: 100%; height: 100%; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent); transition: left 0.5s; }
 .sd-write-button:hover::before { left: 100%; }
@@ -188,6 +208,10 @@ onUnmounted(() => {
 .backend-indicator--checking { background-color: #cbd5e1; animation: backend-pulse 1.4s ease-in-out infinite; }
 .backend-indicator--running { background-color: #22c55e; box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.25); animation: backend-ripple 2s ease-out 3; }
 .backend-indicator--stopped { background-color: #9ca3af; }
+.admin-indicator--idle { background-color: #9ca3af; }
+.admin-indicator--checking { background-color: #eab308; animation: backend-pulse 1.4s ease-in-out infinite; }
+.admin-indicator--ready { background-color: #22c55e; box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.25); }
+.admin-indicator--error { background-color: #dc2626; }
 @keyframes backend-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
 @keyframes backend-ripple { 0% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.5); } 60% { box-shadow: 0 0 0 5px rgba(34, 197, 94, 0); } 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); } }
 @container sd-menu-panel (max-width: 320px) {

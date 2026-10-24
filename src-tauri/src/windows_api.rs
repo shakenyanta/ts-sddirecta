@@ -1,11 +1,19 @@
 #![allow(non_snake_case)]
 use std::ffi::OsStr;
+use std::io;
 use std::iter::once;
 use std::os::windows::prelude::*;
-use std::io;
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, GENERIC_READ, GENERIC_WRITE};
-use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, SetFilePointerEx, ReadFile, WriteFile, FILE_BEGIN, FILE_FLAG_NO_BUFFERING, FILE_FLAG_WRITE_THROUGH};
-use windows_sys::Win32::System::Ioctl::{DISK_GEOMETRY, IOCTL_DISK_GET_DRIVE_GEOMETRY, VOLUME_DISK_EXTENTS};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
+};
+use windows_sys::Win32::Storage::FileSystem::{
+    ReadFile, SetFilePointerEx, WriteFile, FILE_ATTRIBUTE_NORMAL, FILE_BEGIN,
+    FILE_FLAG_NO_BUFFERING, FILE_FLAG_WRITE_THROUGH, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    OPEN_EXISTING,
+};
+use windows_sys::Win32::System::Ioctl::{
+    DISK_GEOMETRY, IOCTL_DISK_GET_DRIVE_GEOMETRY, VOLUME_DISK_EXTENTS,
+};
 use windows_sys::Win32::System::IO::DeviceIoControl;
 
 const IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS: u32 = 0x00560000;
@@ -26,7 +34,10 @@ extern "system" {
 
 pub fn get_disk_extents(drive_path: &str) -> Result<u32, io::Error> {
     let mut disk_number: u32 = 0xFF;
-    let wide: Vec<u16> = OsStr::new(drive_path).encode_wide().chain(once(0)).collect();
+    let wide: Vec<u16> = OsStr::new(drive_path)
+        .encode_wide()
+        .chain(once(0))
+        .collect();
 
     unsafe {
         let h_drive: HANDLE = CreateFileW(
@@ -58,7 +69,11 @@ pub fn get_disk_extents(drive_path: &str) -> Result<u32, io::Error> {
             std::ptr::null_mut(),
         );
 
-        let last_err = if ok == 0 { Some(io::Error::last_os_error()) } else { None };
+        let last_err = if ok == 0 {
+            Some(io::Error::last_os_error())
+        } else {
+            None
+        };
         CloseHandle(h_drive);
 
         if let Some(e) = last_err {
@@ -68,10 +83,20 @@ pub fn get_disk_extents(drive_path: &str) -> Result<u32, io::Error> {
         if (bytes_returned as usize) >= std::mem::size_of::<VOLUME_DISK_EXTENTS>() {
             let p = buffer.as_ptr() as *const VOLUME_DISK_EXTENTS;
             let vde = std::ptr::read_unaligned(p);
-            
+            if vde.NumberOfDiskExtents != 1 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "単一ディスクのドライブのみ対応しています",
+                ));
+            }
+
             if vde.NumberOfDiskExtents > 0 {
                 #[repr(C)]
-                struct DISK_EXTENT { pub DiskNumber: u32, pub _start: i64, pub _length: i64 }
+                struct DISK_EXTENT {
+                    pub DiskNumber: u32,
+                    pub _start: i64,
+                    pub _length: i64,
+                }
                 let de_ptr = buffer.as_ptr().add(8) as *const DISK_EXTENT;
                 let de = std::ptr::read_unaligned(de_ptr);
                 disk_number = de.DiskNumber;
@@ -82,50 +107,278 @@ pub fn get_disk_extents(drive_path: &str) -> Result<u32, io::Error> {
 }
 
 pub fn get_physical_size(physical_path: &str) -> Result<u64, io::Error> {
-    let wide: Vec<u16> = OsStr::new(physical_path).encode_wide().chain(once(0)).collect();
-
-    unsafe {
-        let h_physical: HANDLE = CreateFileW(
-            wide.as_ptr(),
-            0,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
-            std::ptr::null(),
-            OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL,
-            0,
-        );
-
-        if h_physical == INVALID_HANDLE_VALUE {
-            return Err(io::Error::last_os_error());
-        }
-
-        let mut geometry: DISK_GEOMETRY = std::mem::zeroed();
-        let mut bytes_returned: u32 = 0;
-
-        let ok = DeviceIoControl(
-            h_physical,
-            IOCTL_DISK_GET_DRIVE_GEOMETRY,
+    let handle = DiskHandle::open(physical_path, 0, FILE_ATTRIBUTE_NORMAL)?;
+    // GEOMETRY_EX permits a metadata-only handle in the unelevated GUI and
+    // provides exact DiskSize instead of the rounded CHS geometry product.
+    use windows_sys::Win32::System::Ioctl::{DISK_GEOMETRY_EX, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX};
+    let mut buffer = [0u64; 128];
+    let mut count = 0;
+    if unsafe {
+        DeviceIoControl(
+            handle.0,
+            IOCTL_DISK_GET_DRIVE_GEOMETRY_EX,
             std::ptr::null(),
             0,
-            &mut geometry as *mut _ as *mut _,
-            std::mem::size_of::<DISK_GEOMETRY>() as u32,
-            &mut bytes_returned,
+            buffer.as_mut_ptr() as *mut _,
+            std::mem::size_of_val(&buffer) as u32,
+            &mut count,
             std::ptr::null_mut(),
-        );
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if count < 32 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "SD容量の応答が不正です",
+        ));
+    }
+    let geometry = unsafe { std::ptr::read_unaligned(buffer.as_ptr() as *const DISK_GEOMETRY_EX) };
+    if geometry.DiskSize <= 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "SDメディアがありません",
+        ));
+    }
+    Ok(geometry.DiskSize as u64)
+}
 
-        let last_err = if ok == 0 { Some(io::Error::last_os_error()) } else { None };
-        CloseHandle(h_physical);
+pub fn removable_target(drive: &str) -> Result<(u32, u64), String> {
+    use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+    let root: Vec<u16> = format!("{drive}\\\0").encode_utf16().collect();
+    if drive.len() != 2
+        || !drive.as_bytes()[0].is_ascii_uppercase()
+        || !drive.ends_with(':')
+        || unsafe { GetDriveTypeW(root.as_ptr()) } != 2
+    {
+        return Err("書込可能なリムーバブルSDドライブを選択してください".into());
+    }
+    let disk = get_disk_extents(&format!("\\\\.\\{drive}")).map_err(|e| e.to_string())?;
+    if disk == 0xFF {
+        return Err("SDディスクを特定できませんでした".into());
+    }
+    let capacity =
+        get_physical_size(&format!("\\\\.\\PhysicalDrive{disk}")).map_err(|e| e.to_string())?;
+    Ok((disk, capacity))
+}
 
-        if let Some(e) = last_err {
-            return Err(e);
+// One physical handle and one mandatory volume lock per batch. Large, aligned,
+// unbuffered transfers avoid stale read-back data and repeated open/close costs.
+struct DiskHandle(HANDLE);
+impl DiskHandle {
+    fn open(path: &str, access: u32, flags: u32) -> io::Result<Self> {
+        let wide: Vec<u16> = OsStr::new(path).encode_wide().chain(once(0)).collect();
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                access,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                flags,
+                0,
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(Self(handle))
         }
+    }
+}
+impl Drop for DiskHandle {
+    fn drop(&mut self) {
+        unsafe {
+            CloseHandle(self.0);
+        }
+    }
+}
 
-        let total_size = geometry.Cylinders as u64 
-            * geometry.TracksPerCylinder as u64 
-            * geometry.SectorsPerTrack as u64 
-            * geometry.BytesPerSector as u64;
-        
-        Ok(total_size)
+fn disk_length(handle: HANDLE) -> io::Result<u64> {
+    let mut length: i64 = 0;
+    let mut count = 0;
+    let ok = unsafe {
+        DeviceIoControl(
+            handle,
+            0x0007405c,
+            std::ptr::null(),
+            0,
+            &mut length as *mut _ as *mut _,
+            8,
+            &mut count,
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if count != 8 || length <= 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "SD容量を取得できませんでした",
+        ));
+    }
+    Ok(length as u64)
+}
+
+pub struct BatchDisk {
+    physical: DiskHandle,
+    _volume: DiskHandle,
+    sector: usize,
+    pub capacity: u64,
+}
+impl BatchDisk {
+    pub fn open(drive: &str, expected_disk: u32, expected_capacity: u64) -> Result<Self, String> {
+        use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
+        let root: Vec<u16> = format!("{drive}\\\0").encode_utf16().collect();
+        if drive.len() != 2
+            || !drive.as_bytes()[0].is_ascii_uppercase()
+            || !drive.ends_with(':')
+            || unsafe { GetDriveTypeW(root.as_ptr()) } != 2
+        {
+            return Err("リムーバブルSDドライブではありません".into());
+        }
+        let volume_path = format!("\\\\.\\{drive}");
+        let disk = get_disk_extents(&volume_path).map_err(|e| e.to_string())?;
+        if disk != expected_disk {
+            return Err("確認後にSDドライブが変更されました".into());
+        }
+        let drives = unsafe { GetLogicalDrives() };
+        for i in 0..26 {
+            let other = format!("{}:", (b'A' + i) as char);
+            if drives & (1u32 << i) != 0
+                && other != drive
+                && get_disk_extents(&format!("\\\\.\\{other}")).ok() == Some(disk)
+            {
+                return Err("複数ボリュームのあるSDカードへの書込には対応していません".into());
+            }
+        }
+        let volume = DiskHandle::open(
+            &volume_path,
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_ATTRIBUTE_NORMAL,
+        )
+        .map_err(|e| format!("SDボリュームを開けません: {e}"))?;
+        let mut count = 0;
+        if unsafe {
+            DeviceIoControl(
+                volume.0,
+                FSCTL_LOCK_VOLUME,
+                std::ptr::null(),
+                0,
+                std::ptr::null_mut(),
+                0,
+                &mut count,
+                std::ptr::null_mut(),
+            )
+        } == 0
+        {
+            return Err(format!(
+                "SDをロックできません。SDを使用中のファイルを閉じてください: {}",
+                io::Error::last_os_error()
+            ));
+        }
+        let physical = DiskHandle::open(
+            &format!("\\\\.\\PhysicalDrive{disk}"),
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_NO_BUFFERING,
+        )
+        .map_err(|e| e.to_string())?;
+        let capacity = disk_length(physical.0).map_err(|e| e.to_string())?;
+        if capacity != expected_capacity {
+            return Err("確認後にSD容量が変更されました".into());
+        }
+        let mut geometry: DISK_GEOMETRY = unsafe { std::mem::zeroed() };
+        if unsafe {
+            DeviceIoControl(
+                physical.0,
+                IOCTL_DISK_GET_DRIVE_GEOMETRY,
+                std::ptr::null(),
+                0,
+                &mut geometry as *mut _ as *mut _,
+                std::mem::size_of::<DISK_GEOMETRY>() as u32,
+                &mut count,
+                std::ptr::null_mut(),
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error().to_string());
+        }
+        let sector = geometry.BytesPerSector as usize;
+        if !sector.is_power_of_two() || sector > 65536 || capacity % sector as u64 != 0 {
+            return Err("対応していないSDセクターサイズです".into());
+        }
+        Ok(Self {
+            physical,
+            _volume: volume,
+            sector,
+            capacity,
+        })
+    }
+    fn seek(&self, address: u64) -> Result<(), String> {
+        let mut position = 0;
+        if address > i64::MAX as u64
+            || unsafe {
+                SetFilePointerEx(self.physical.0, address as i64, &mut position, FILE_BEGIN)
+            } == 0
+        {
+            return Err(io::Error::last_os_error().to_string());
+        }
+        Ok(())
+    }
+}
+impl crate::sd_batch::Disk for BatchDisk {
+    fn sector(&self) -> usize {
+        self.sector
+    }
+    fn read(&mut self, address: u64, data: &mut [u8]) -> Result<(), String> {
+        self.seek(address)?;
+        let mut count = 0;
+        if unsafe {
+            ReadFile(
+                self.physical.0,
+                data.as_mut_ptr() as *mut _,
+                data.len() as u32,
+                &mut count,
+                std::ptr::null_mut(),
+            )
+        } == 0
+        {
+            return Err(format!("SD読込失敗: {}", io::Error::last_os_error()));
+        }
+        if count as usize != data.len() {
+            return Err("SD読込サイズが不足しています".into());
+        }
+        Ok(())
+    }
+    fn write(&mut self, address: u64, data: &[u8]) -> Result<(), String> {
+        self.seek(address)?;
+        let mut count = 0;
+        if unsafe {
+            WriteFile(
+                self.physical.0,
+                data.as_ptr() as *const _,
+                data.len() as u32,
+                &mut count,
+                std::ptr::null_mut(),
+            )
+        } == 0
+        {
+            return Err(format!("SD書込失敗: {}", io::Error::last_os_error()));
+        }
+        if count as usize != data.len() {
+            return Err("SD書込サイズが不足しています".into());
+        }
+        Ok(())
+    }
+    fn flush(&mut self) -> Result<(), String> {
+        if unsafe { windows_sys::Win32::Storage::FileSystem::FlushFileBuffers(self.physical.0) }
+            == 0
+        {
+            return Err(format!("SD書込確定失敗: {}", io::Error::last_os_error()));
+        }
+        Ok(())
     }
 }
 

@@ -1,0 +1,64 @@
+<div id="sd-flow-fixed" role="figure" aria-label="SD書込の処理フロー。基本の処理は縦一直線に並び、書込完了後は待機中へ戻ります。">
+  <style>
+    #sd-flow-fixed { color:var(--foreground); position:relative; padding:16px 0; }
+    #sd-flow-fixed .diagram { position:relative; }
+    #sd-flow-fixed .spine { width:calc(100% - 160px); max-width:360px; margin-left:40px; display:flex; flex-direction:column; gap:34px; }
+    #sd-flow-fixed .node { position:relative; box-sizing:border-box; text-align:center; padding:14px 10px; border:1px solid var(--border); border-radius:8px; background:var(--muted); color:var(--foreground); }
+    #sd-flow-fixed .name { font-weight:500; }
+    #sd-flow-fixed .detail { margin-top:8px; }
+    #sd-flow-fixed .important { border:3px solid var(--orange); background:color-mix(in srgb,var(--orange) 16%,var(--background)); }
+    #sd-flow-fixed .yellow { background:color-mix(in srgb,var(--yellow) 13%,var(--background)); }
+    #sd-flow-fixed .green { background:color-mix(in srgb,var(--green) 13%,var(--background)); }
+    #sd-flow-fixed .lamp { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:5px; background:var(--muted-foreground); }
+    #sd-flow-fixed .yellow .lamp { background:var(--yellow); }
+    #sd-flow-fixed .green .lamp { background:var(--green); }
+    #sd-flow-fixed .exit { position:absolute; right:0; width:104px; }
+    #sd-flow-fixed .exit-label { position:absolute; bottom:calc(100% + 8px); left:0; right:0; text-align:center; }
+    #sd-flow-fixed .edges { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; overflow:visible; color:var(--muted-foreground); }
+    #sd-flow-fixed .loop-label { position:absolute; left:0; writing-mode:vertical-rl; color:var(--muted-foreground); }
+    @media (min-width:600px) { #sd-flow-fixed .spine { margin-left:80px; width:calc(100% - 240px); } #sd-flow-fixed .exit { width:130px; } }
+  </style>
+  <div class="diagram">
+    <svg class="edges" aria-hidden="true"><defs><marker id="sd-flow-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L8,4 L0,8 Z" fill="currentColor"/></marker></defs><g class="paths"></g></svg>
+    <div class="spine">
+      <div class="node" data-step="start"><div class="name">アプリ起動</div></div>
+      <div class="node" data-step="wait"><div class="name">待機中</div><div class="detail text-small">ドラッグ＆ドロップ可能<br>ランプ：未取得は灰色<br>取得済みは緑色</div></div>
+      <div class="node important" data-step="button"><div class="name">SD書込ボタン押下</div><div class="detail text-small">対象変更を禁止<br>対象ファイル・SD・領域を検査</div></div>
+      <div class="node" data-step="check"><div class="name">管理者権限判定</div><div class="detail text-small">取得済みなら次の確認画面を省略し<br>管理者プロセス実行へ進む</div></div>
+      <div class="node yellow" data-step="uac"><div class="name">管理者画面表示</div><div class="detail text-small"><span class="lamp"></span>ランプ：黄色点滅<br>承認で次へ進む<br>キャンセル時は制限解除して待機中へ</div></div>
+      <div class="node green" data-step="worker"><div class="name">管理者プロセス実行</div><div class="detail text-small">起動または既存プロセスを再利用<br>権限・通信準備の確認後<br><span class="lamp"></span>ランプ：緑色</div></div>
+      <div class="node green" data-step="write"><div class="name">SD書込・照合実施</div><div class="detail text-small">進捗・件数・所要時間を表示<br>完了後は結果表示・操作制限解除<br>管理者プロセスと緑ランプを維持</div></div>
+    </div>
+    <div class="node exit"><div class="exit-label text-small">終了操作</div><div class="name">アプリ終了</div><div class="detail text-small">管理者プロセスも終了</div></div>
+    <div class="loop-label text-small">完了後、待機中へ戻る</div>
+  </div>
+  <script>
+    (() => {
+      const root = document.getElementById('sd-flow-fixed');
+      const diagram = root.querySelector('.diagram');
+      const nodes = [...root.querySelectorAll('[data-step]')];
+      const exit = root.querySelector('.exit');
+      const svg = root.querySelector('.edges');
+      const group = root.querySelector('.paths');
+      const loopLabel = root.querySelector('.loop-label');
+      function draw() {
+        const base = diagram.getBoundingClientRect();
+        const box = el => { const r = el.getBoundingClientRect(); return { left:r.left-base.left, right:r.right-base.left, top:r.top-base.top, bottom:r.bottom-base.top, x:r.left-base.left+r.width/2, y:r.top-base.top+r.height/2 }; };
+        const boxes = nodes.map(box);
+        exit.style.top = (boxes[1].y - exit.offsetHeight/2) + 'px';
+        const out = box(exit);
+        svg.setAttribute('viewBox', `0 0 ${base.width} ${base.height}`);
+        group.replaceChildren();
+        const path = d => { const p = document.createElementNS('http://www.w3.org/2000/svg','path'); p.setAttribute('d',d); p.setAttribute('fill','none'); p.setAttribute('stroke','currentColor'); p.setAttribute('stroke-width','1.5'); p.setAttribute('marker-end','url(#sd-flow-arrow)'); group.appendChild(p); };
+        for (let i=0; i<boxes.length-1; i++) path(`M${boxes[i].x},${boxes[i].bottom} V${boxes[i+1].top-2}`);
+        const first=boxes[1], last=boxes[boxes.length-1];
+        path(`M${last.left},${last.y} H12 V${first.y} H${first.left-2}`);
+        path(`M${first.right},${first.y} H${out.left-2}`);
+        loopLabel.style.top = ((first.y+last.y)/2-70)+'px';
+      }
+      new ResizeObserver(draw).observe(diagram);
+      draw();
+      if (document.fonts) document.fonts.ready.then(draw);
+    })();
+  </script>
+</div>
