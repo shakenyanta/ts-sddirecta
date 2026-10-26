@@ -24,10 +24,13 @@ export function writeStageLabel(stage: string): string {
     write: '書込中', verify: '照合中', file_done: '処理中', done: '完了', failed: '失敗' } as Record<string, string>)[stage] ?? '準備中';
 }
 
+export function formatByteCount(bytes: number): string {
+  return `${bytes.toLocaleString('ja-JP')}(0x${bytes.toString(16)})`;
+}
+
 export function sizeComment(entry: WriteEntry): string | null {
-  const bytes = (n: number) => n.toLocaleString('ja-JP');
-  if (entry.file_size > entry.size) return `注意: ${entry.filename} は領域サイズを超えています。ファイル: ${bytes(entry.file_size)}バイト、領域: ${bytes(entry.size)}バイト。末尾${bytes(entry.file_size - entry.size)}バイトを無視して書き込みます。`;
-  if (entry.file_size === 0) return `${entry.filename}: 0バイトのため、対象領域${bytes(entry.size)}バイト全体を0xFFで埋めます。`;
-  if (entry.file_size < entry.size) return `${entry.filename}: ファイル${bytes(entry.file_size)}バイトを書き込み、残り${bytes(entry.size - entry.file_size)}バイトを0xFFで埋めます。`;
+  if (entry.file_size > entry.size) return `注意: ${entry.filename} は領域サイズを超えています。ファイル: ${formatByteCount(entry.file_size)}バイト、領域: ${formatByteCount(entry.size)}バイト。末尾${formatByteCount(entry.file_size - entry.size)}バイトを無視して書き込みます。`;
+  if (entry.file_size === 0) return `${entry.filename}: ${formatByteCount(0)}バイトのため、対象領域${formatByteCount(entry.size)}バイト全体を0xFFで埋めます。`;
+  if (entry.file_size < entry.size) return `${entry.filename}: ファイル${formatByteCount(entry.file_size)}バイトを書き込み、残り${formatByteCount(entry.size - entry.file_size)}バイトを0xFFで埋めます。`;
   return null;
 }

@@ -6,7 +6,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import SdMenu from '../components/SdMenu.vue';
 import { splitFolderPath } from '../utils/executablePath';
 import { parseSdDirectCsv, type AddressRange, type SdArea } from '../utils/sdDirectCsv';
-import { writePercent, writeStageLabel, sizeComment, type WritePlan, type WriteProgress } from '../utils/sdWrite';
+import { writePercent, writeStageLabel, sizeComment, formatByteCount, type WritePlan, type WriteProgress } from '../utils/sdWrite';
 
 const menuHeight = ref(48);
 const minimumMenuHeight = ref(48);
@@ -22,8 +22,14 @@ const writeStage = ref('');
 const currentRun = ref('');
 const progress = ref<WriteProgress | null>(null);
 const pendingPlan = ref<WritePlan | null>(null);
-const confirmDialog = ref<HTMLDialogElement | null>(null);
-let confirmResolve: ((confirmed: boolean) => void) | undefined;
+const writeDialog = ref<HTMLDialogElement | null>(null);
+const writeDialogOpen = ref(false);
+const writeLog = ref<PanelMessage[]>([]);
+const writeLogPanel = ref<HTMLElement | null>(null);
+const writeTotal = ref(0);
+const copyStatus = ref('');
+const popupTitle = computed(() => writing.value ? `${statusLabel.value}…`
+    : writeStage.value === 'done' ? '書込完了' : writeStage.value === 'failed' ? '書込失敗' : '書込対象なし');
 let progressUnlisten: UnlistenFn | undefined;
 let closeUnlisten: UnlistenFn | undefined;
 const shutdownUnlisteners: UnlistenFn[] = [];
@@ -120,6 +126,7 @@ function onRefreshKey(event: KeyboardEvent) {
 async function initializeSource(paths?: string[], refreshDirectory?: string, forWrite = false) {
 	if (closing.value) return;
 	if (writing.value && !forWrite) { showNotice('SD処理中のため変更できません'); return; }
+	if (paths) messages.value = [];
 	const current = ++generation;
 	const active = () => !disposed && current === generation;
 	initializing.value = true;
@@ -188,7 +195,6 @@ onUnmounted(() => {
 	progressUnlisten?.();
 	closeUnlisten?.();
 	for (const stop of shutdownUnlisteners) stop();
-	confirmResolve?.(false);
 	clearInterval(elapsedTimer);
 	clearTimeout(noticeTimer);
 	menuObserver?.disconnect();
@@ -252,13 +258,19 @@ async function refreshMatchedFiles(report = false) {
 }
 
 async function appendMessage(...newMessages: PanelMessage[]) {
-	for (const message of newMessages) messages.value.push(message);
-	await nextTick();
-	if (textPanel.value) textPanel.value.scrollTop = textPanel.value.scrollHeight;
+    messages.value.push(...newMessages);
+    await nextTick();
+    if (textPanel.value) textPanel.value.scrollTop = textPanel.value.scrollHeight;
+}
+
+async function appendWriteMessage(...newMessages: PanelMessage[]) {
+    writeLog.value.push(...newMessages);
+    await nextTick();
+    if (writeLogPanel.value) writeLogPanel.value.scrollTop = writeLogPanel.value.scrollHeight;
 }
 
 async function onSdWrite(drive: string) {
-	if (writing.value || closing.value || initializing.value || !drive || !sourceDirectory.value) return;
+	if (writeDialogOpen.value || writing.value || closing.value || initializing.value || !drive || !sourceDirectory.value) return;
 	if (!progressUnlisten) { await appendMessage('進捗通知を受信できません。アプリを再起動してください'); return; }
 	writing.value = true;
 	dragging.value = false;
@@ -266,21 +278,24 @@ async function onSdWrite(drive: string) {
 	currentRun.value = crypto.randomUUID();
 	progress.value = null;
 	elapsedMs.value = 0;
+    writeLog.value = [];
+    writeTotal.value = 0;
+    copyStatus.value = '';
+    writeDialogOpen.value = true;
 	let plan: WritePlan | null = null;
 	try {
+        await nextTick();
+        writeDialog.value?.showModal();
+        await appendMessage('SD書込の準備を開始します');
 		await initializeSource(undefined, sourceDirectory.value, true);
 		plan = await invoke<WritePlan>('prepare_sd_write', { directory: sourceDirectory.value, drive, runId: currentRun.value });
-		if (!plan.entries.length) { await appendMessage('書込対象なし（全エリアと一致するファイルがありません）'); return; }
+		if (!plan.entries.length) { await appendWriteMessage('書込対象なし（全エリアと一致するファイルがありません）'); return; }
 		pendingPlan.value = plan;
-		writeStage.value = 'confirm';
-		const confirmed = new Promise<boolean>(resolve => { confirmResolve = resolve; });
-		await nextTick();
-		confirmDialog.value?.showModal();
-		if (!await confirmed) { await appendMessage('SD書込をキャンセルしました'); return; }
-		await appendMessage(`SD書込先: ${plan.drive} / 対象: ${plan.entries.length}件 / ${plan.total_bytes.toLocaleString('ja-JP')}バイト`);
+		writeTotal.value = plan.entries.length;
+		await appendWriteMessage(`SD書込先: ${plan.drive} / 対象: ${plan.entries.length}件 / ${formatByteCount(plan.total_bytes)}バイト`);
 		for (const entry of plan.entries) {
 			const text = sizeComment(entry);
-			if (text) await appendMessage(entry.file_size > entry.size ? { text, warning: true } : text);
+			if (text) await appendWriteMessage(entry.file_size > entry.size ? { text, warning: true } : text);
 		}
 		writeStage.value = 'waiting';
 		const done = await invoke<WriteProgress>('run_sd_write', { runId: currentRun.value });
@@ -290,13 +305,13 @@ async function onSdWrite(drive: string) {
 		writeStage.value = 'failed';
 		const last = latestProgress();
 		if (last) progress.value = { ...last, stage: 'failed' };
-		await appendMessage({ text: `SD書込を停止しました: ${String(error)}`, warning: true });
+		await appendWriteMessage({ text: `SD書込を停止しました: ${String(error)}`, warning: true });
 		if (plan) {
 			const completed = last?.completed ?? 0;
 			const started = last?.index ?? 0;
-			if (started > completed) await appendMessage({ text: `${last?.filename}: 一部だけ書き込まれている可能性があります`, warning: true });
+			if (started > completed) await appendWriteMessage({ text: `${last?.filename}: 一部だけ書き込まれている可能性があります`, warning: true });
 			const unexecuted = plan.entries.slice(Math.max(completed, started)).map(entry => entry.filename);
-			await appendMessage(`正常完了 ${completed}/${plan.entries.length}件 | 停止までの総所要時間 ${(elapsedMs.value / 1000).toFixed(2)}秒`, `未実行: ${unexecuted.join(', ') || 'なし'}`);
+			await appendWriteMessage(`正常完了 ${completed}/${plan.entries.length} ${(elapsedMs.value / 1000).toFixed(2)}秒`, `未実行: ${unexecuted.join(', ') || 'なし'}`);
 		}
 	} finally {
 		clearInterval(elapsedTimer);
@@ -304,17 +319,25 @@ async function onSdWrite(drive: string) {
 		if (plan) await invoke('discard_sd_write', { runId: plan.run_id }).catch(() => {});
 		writing.value = false;
 		pendingPlan.value = null;
-		confirmResolve = undefined;
 		transientNotice.value = '';
 	}
 }
 
 function latestProgress(): WriteProgress | null { return progress.value; }
 
-function confirmWrite(confirmed: boolean) {
-	confirmDialog.value?.close();
-	pendingPlan.value = null;
-	confirmResolve?.(confirmed);
+function closeWriteDialog() {
+    if (writing.value) return;
+    writeDialog.value?.close();
+    writeDialogOpen.value = false;
+}
+
+async function copyWriteLog() {
+    try {
+        await navigator.clipboard.writeText(writeLog.value.map(message => typeof message === 'string' ? message : message.text).join('\n'));
+        copyStatus.value = 'コピーしました';
+    } catch {
+        copyStatus.value = 'コピーできませんでした';
+    }
 }
 
 function showNotice(message: string) {
@@ -333,13 +356,13 @@ function acceptProgress(event: WriteProgress) {
 	if (!elapsedTimer && event.stage !== 'done' && event.stage !== 'failed') {
 		elapsedTimer = setInterval(() => { elapsedMs.value = Math.max(0, performance.now() - elapsedAnchor); }, 100);
 	}
-	if (event.stage === 'file_done') void appendMessage(`完了 ${event.completed}/${event.total}: ${event.filename} | 所要時間 ${event.file_ms}ms`);
-	if (event.stage === 'failed') void appendMessage({ text: `失敗 ${event.index}/${event.total}: ${event.filename} | ${event.error} | 所要時間 ${event.file_ms}ms`, warning: true });
+	if (event.stage === 'file_done') void appendWriteMessage(`${event.completed}/${event.total} ${event.filename} ${event.file_ms}ms ✓`);
+	if (event.stage === 'failed') void appendWriteMessage({ text: `失敗 ${event.index}/${event.total} ${event.filename} ${event.file_ms}ms: ${event.error}`, warning: true });
 	if (event.stage === 'done' || event.stage === 'failed') {
 		clearInterval(elapsedTimer);
 		elapsedTimer = undefined;
 	}
-	if (event.stage === 'done') void appendMessage(`全件完了 ${event.completed}/${event.total}件 | 全体 100% | 総所要時間 ${(event.elapsed_ms / 1000).toFixed(2)}秒`);
+	if (event.stage === 'done') void appendWriteMessage(`全件完了 ${event.completed}/${event.total} ${(event.elapsed_ms / 1000).toFixed(2)}秒`);
 }
 
 async function copyDirectory() {
@@ -419,39 +442,72 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 					</div>
 				</div>
 				<div id="panel_footer" class="panel_footer" role="status">
-					<div v-if="progress" class="write-progress">
-						<div v-if="progress.filename">処理{{ writing ? '中' : '結果' }} {{ progress.index }}/{{ progress.total }}: {{ progress.filename }}</div>
-						<div>{{ statusLabel }} | 完了 {{ progress.completed }}/{{ progress.total }}件 | 全体 {{ percent }}% | {{ writing ? '経過' : '総所要時間' }} {{ (elapsedMs / 1000).toFixed(2) }}秒</div>
-						<progress :value="percent" max="100" aria-label="SD書込・照合の全体進捗"></progress>
-					</div>
+
 					<div>{{ closing ? '終了処理中：SD操作プロセスの終了を確認しています' : writing ? 'SD処理中：ドライブ・対象フォルダーの変更と再読込はできません' : dragging ? 'ドロップして対象フォルダーを変更' : initializing ? '対象フォルダーを読込中…' : 'ファイル・フォルダーをドロップできます' }}</div>
 					<div v-if="transientNotice" class="path-error">{{ transientNotice }}</div>
 				</div>
 			</div>
 		</div>
 	</div>
-	<dialog ref="confirmDialog" class="write-confirm" aria-labelledby="write-confirm-title" @cancel.prevent="confirmWrite(false)">
-		<template v-if="pendingPlan">
-			<h2 id="write-confirm-title">全エリアSD書込内容の確認</h2>
-			<p>書込先：{{ pendingPlan.drive }}（{{ pendingPlan.capacity.toLocaleString('ja-JP') }}バイト）</p>
-			<p>対象フォルダー：{{ pendingPlan.directory.replace(/^\\\\\?\\/, '') }}</p>
-			<p>対象：{{ pendingPlan.entries.length }}件 / 総書込：{{ pendingPlan.total_bytes.toLocaleString('ja-JP') }}バイト</p>
-			<ul><li v-for="entry in pendingPlan.entries" :key="entry.filename">{{ entry.filename }}（{{ entry.size.toLocaleString('ja-JP') }}バイト）</li></ul>
-			<p>指定領域のデータを上書きし、書込後に照合します。</p>
-			<div class="confirm-actions"><button type="button" autofocus @click="confirmWrite(false)">キャンセル</button><button type="button" @click="confirmWrite(true)">書込開始</button></div>
-		</template>
-	</dialog>
+	<dialog ref="writeDialog" class="write-dialog" aria-labelledby="write-title" @cancel.prevent="closeWriteDialog">
+        <div class="write-dialog-content">
+            <div class="write-header">
+                <h2 id="write-title" :class="{ 'write-failed': writeStage === 'failed' }">{{ popupTitle }}</h2>
+                <p class="write-count" role="status">{{ progress?.completed ?? 0 }}/{{ progress?.total ?? writeTotal }} ({{ percent }}%)</p>
+            </div>
+            <progress :value="percent" max="100" aria-label="SD書込・照合の全体進捗"></progress>
+            <p v-if="writing" class="write-detail">
+                <span class="write-current" :title="progress?.filename ? `${statusLabel} ${progress.filename}` : statusLabel">{{ statusLabel }}<template v-if="progress?.filename"> {{ progress.filename }}</template></span>
+            </p>
+            <div ref="writeLogPanel" class="write-log" role="log" aria-label="SD書込ログ" tabindex="0">
+                <p v-for="(message, index) in writeLog" :key="index" :class="{ 'log-warning': typeof message !== 'string' && message.warning, 'log-done': typeof message === 'string' && message.startsWith('全件完了') }">{{ typeof message === 'string' ? message : message.text }}</p>
+            </div>
+            <p v-if="transientNotice" class="write-notice" role="status">{{ transientNotice }}</p>
+            <div class="write-actions">
+                <span class="write-time">{{ (elapsedMs / 1000).toFixed(2) }}秒</span>
+                <button type="button" class="copy-log" aria-live="polite" @click="copyWriteLog">{{ copyStatus || 'ログをコピー' }}</button>
+                <button type="button" class="close-write" :disabled="writing" @click="closeWriteDialog">閉じる</button>
+            </div>
+        </div>
+    </dialog>
 </template>
 
 <style scoped>
-.write-progress { padding: 4px; flex-shrink: 0; background: #e7f1fb; overflow-wrap: anywhere; }
-.write-progress progress { display: block; width: 100%; height: 10px; margin-top: 3px; }
-.write-confirm { width: min(480px, calc(100vw - 32px)); max-height: calc(100vh - 32px); box-sizing: border-box; border: 1px solid #74879b; border-radius: 8px; padding: 16px; font: 13px 'Yu Gothic UI', Meiryo, sans-serif; overflow-wrap: anywhere; }
-.write-confirm::backdrop { background: #0006; }
-.write-confirm h2 { font-size: 16px; margin-top: 0; }
-.write-confirm ul { max-height: 140px; overflow: auto; padding-left: 20px; }
-.confirm-actions { display: flex; justify-content: flex-end; gap: 12px; }
-.confirm-actions button { padding: 6px 12px; }
+.write-dialog { position: fixed; inset: 0; margin: auto; width: min(650px, calc(100vw - 8px)); height: min(480px, calc(100dvh - 8px)); max-width: none; max-height: calc(100dvh - 8px); padding: 0; border: 0; border-radius: 18px; background: #f8f9fe; color: #121212; box-shadow: 0 12px 32px #0003; font: 12px 'Yu Gothic UI', Meiryo, sans-serif; overflow: hidden; }
+.write-dialog::backdrop { background: #0005; }
+.write-dialog-content { display: flex; flex-direction: column; height: 100%; min-height: 0; gap: 6px; padding: 12px; }
+.write-header { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 8px; }
+.write-dialog h2 { min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; line-height: 1.3; font-weight: 700; }
+.write-dialog h2.write-failed { color: #b3261e; }
+.write-dialog progress { appearance: none; display: block; flex-shrink: 0; width: 100%; height: 3px; border: 0; border-radius: 8px; overflow: hidden; background: #dce5f5; accent-color: #1a73df; }
+.write-dialog progress::-webkit-progress-bar { background: #dce5f5; }
+.write-dialog progress::-webkit-progress-value { background: #1a73df; border-radius: 8px; transition: width .15s; }
+.write-dialog progress::-moz-progress-bar { background: #1a73df; }
+.write-count { flex-shrink: 0; margin: 0; color: #155bb5; font-size: 11px; white-space: nowrap; }
+.write-detail { display: flex; flex-shrink: 0; margin: 0; color: #536176; font-size: 11px; line-height: 1.2; white-space: nowrap; }
+.write-current { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.write-time { flex: 1; min-width: 0; color: #536176; font-size: 11px; white-space: nowrap; }
+.write-log { flex: 1; min-height: 0; overflow: auto; padding: 4px; border-radius: 3px; background: #1e1e1e; color: #36dbc3; font: 11px/1.25 Consolas, 'Yu Gothic UI', monospace; scrollbar-color: #888 #eee; scrollbar-width: thin; }
+.write-log::-webkit-scrollbar { width: 8px; height: 8px; }
+.write-log::-webkit-scrollbar-thumb { border-radius: 4px; background: #888; }
+.write-log::-webkit-scrollbar-track, .write-log::-webkit-scrollbar-corner { background: #eee; }
+.write-log p { width: max-content; min-width: 100%; margin: 0; white-space: nowrap; overflow-wrap: normal; word-break: normal; }
+.write-log .log-warning { color: #ffb4ab; }
+.write-log .log-done { margin-top: 2px; padding: 2px 4px; border-radius: 3px; background: #183e46; color: #00d8ff; font-weight: bold; }
+.write-actions { display: flex; flex-shrink: 0; justify-content: flex-end; align-items: center; gap: 6px; }
+.write-actions button { flex-shrink: 0; border-radius: 20px; padding: 5px 12px; font: inherit; line-height: 1.2; cursor: pointer; }
+.copy-log { border: 1px solid #c5cad3; background: #e9ecf2; color: #242424; }
+.close-write { border: 1px solid #1a73df; background: #1a73df; color: white; font-weight: bold !important; }
+.close-write:disabled { opacity: .45; cursor: default; }
+.write-actions button:focus-visible, .write-log:focus-visible { outline: 2px solid #1a73df; outline-offset: 2px; }
+.write-notice { flex-shrink: 0; margin: 0; font-size: 11px; line-height: 1.2; color: #536176; }
+@media (max-width: 400px), (max-height: 400px) {
+    .write-dialog { border-radius: 14px; }
+    .write-dialog-content { padding: 8px; gap: 5px; }
+    .write-dialog h2 { font-size: 14px; }
+    .write-log { font-size: 11px; line-height: 1.2; }
+    .write-actions button { padding: 4px 10px; font-size: 11px; }
+}
 .panel-outer {
 	border: 1px solid #000;
 	padding: 1px;

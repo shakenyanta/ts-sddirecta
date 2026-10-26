@@ -124,7 +124,6 @@ onUnmounted(() => {
 			<button type="button" class="sd-write-button" :disabled="!canRequestWrite" @click="requestWrite"
 				:title="writeTitle">{{ writeLabel || 'SD書込' }}</button>
 			<span class="backend-indicator" :class="`admin-indicator--${adminStatus}`" :title="adminTitle" role="img" :aria-label="adminTitle"></span>
-			<span class="admin-label" :title="adminTitle">管理者権限</span>
 		</div>
 		<div class="drive-select-inline" role="radiogroup" aria-label="書込先ドライブ">
 			<div v-if="!drives.length" class="no-drive-warning-inline" role="status">
@@ -194,7 +193,6 @@ onUnmounted(() => {
 .status-busy { background: #000; color: #fff; font-weight: bold; }
 .sd-capacity-display-inline { position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; justify-content: center; padding: 0.05rem 0.2rem; background: transparent; font-size: 0.6rem; font-weight: 800; color: #fff; min-width: 20px; text-align: center; letter-spacing: 0.02em; text-shadow: -1px -1px 0 #333, 1px -1px 0 #333, -1px 1px 0 #333, 1px 1px 0 #333, 0 0 3px rgba(0, 0, 0, 0.5); z-index: 1; white-space: nowrap; pointer-events: none; }
 .sd-write-wrapper { position: relative; display: inline-flex; flex-direction: column; flex-shrink: 0; }
-.admin-label { font-size: 10px; line-height: 12px; text-align: center; color: #526171; }
 .drive-disabled { opacity: 0.5; cursor: default; }
 .sd-write-button { padding: 0.45rem 1.1rem; background: linear-gradient(135deg, #4285f4 0%, #357ae8 100%); color: white; border: 2px solid transparent; border-radius: 8px; font-family: inherit; font-size: 0.95rem; font-weight: 600; cursor: pointer; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); outline: none; white-space: nowrap; box-shadow: 0 3px 8px rgba(66, 133, 244, 0.3), 0 1px 3px rgba(66, 133, 244, 0.2); position: relative; overflow: hidden; }
 .sd-write-button::before { content: ''; position: absolute; top: 0; left: -100%; width: 100%; height: 100%; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent); transition: left 0.5s; }
