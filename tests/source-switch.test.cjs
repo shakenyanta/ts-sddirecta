@@ -38,6 +38,9 @@ function view(invoke) {
     ...utility('src/utils/sdDirectCsv.ts'),
     ...utility('src/utils/executablePath.ts'),
     ...utility('src/utils/sdWrite.ts'),
+    createLogScroller: getPanel => utility('src/utils/logScroll.ts').createLogScroller(getPanel, {
+      request: () => 1, cancel: () => {}, reducedMotion: () => false,
+    }),
   };
   const api = new Function(...Object.keys(bindings), transpile(source) + `
     return { initializeSource, refreshMatchedFiles, sourceDirectory, displayedDirectory,

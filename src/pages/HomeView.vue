@@ -5,6 +5,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import SdMenu from '../components/SdMenu.vue';
 import { splitFolderPath } from '../utils/executablePath';
+import { createLogScroller } from '../utils/logScroll';
 import { parseSdDirectCsv, type AddressRange, type SdArea } from '../utils/sdDirectCsv';
 import { writePercent, writeStageLabel, sizeComment, formatByteCount, type WritePlan, type WriteProgress, type OperationStatus } from '../utils/sdWrite';
 
@@ -26,6 +27,7 @@ const writeDialog = ref<HTMLDialogElement | null>(null);
 const writeDialogOpen = ref(false);
 const writeLog = ref<PanelMessage[]>([]);
 const writeLogPanel = ref<HTMLElement | null>(null);
+const writeLogScroller = createLogScroller(() => writeLogPanel.value);
 const writeTotal = ref(0);
 const copyStatus = ref('');
 const popupTitle = computed(() => writing.value ? `${statusLabel.value}…`
@@ -202,6 +204,7 @@ async function initializeSource(paths?: string[], refreshDirectory?: string, for
 }
 
 onUnmounted(() => {
+    writeLogScroller.dispose();
 	disposed = true;
 	generation++;
 	unlistenDrop?.();
@@ -277,10 +280,9 @@ async function appendMessage(...newMessages: PanelMessage[]) {
     if (textPanel.value) textPanel.value.scrollTop = textPanel.value.scrollHeight;
 }
 
-async function appendWriteMessage(...newMessages: PanelMessage[]) {
+function appendWriteMessage(...newMessages: PanelMessage[]) {
     writeLog.value.push(...newMessages);
-    await nextTick();
-    if (writeLogPanel.value) writeLogPanel.value.scrollTop = writeLogPanel.value.scrollHeight;
+    writeLogScroller.append();
 }
 
 async function onSdWrite(drive: string) {
@@ -296,6 +298,7 @@ async function onSdWrite(drive: string) {
     elapsedAnchor = performance.now();
     elapsedTimer = setInterval(() => { elapsedMs.value = Math.max(0, performance.now() - elapsedAnchor); }, 100);
     writeLog.value = [];
+    writeLogScroller.reset();
     writeTotal.value = 0;
     copyStatus.value = '';
     writeDialogOpen.value = true;
@@ -309,11 +312,12 @@ async function onSdWrite(drive: string) {
 		if (!plan.entries.length) { await appendWriteMessage('書込対象なし（全エリアと一致するファイルがありません）'); return; }
 		pendingPlan.value = plan;
 		writeTotal.value = plan.entries.length;
-		await appendWriteMessage(`SD書込先: ${plan.drive} / 対象: ${plan.entries.length}件 / ${formatByteCount(plan.total_bytes)}バイト`);
+		const initialLog: PanelMessage[] = [`SD書込先: ${plan.drive} / 対象: ${plan.entries.length}件 / ${formatByteCount(plan.total_bytes)}バイト`];
 		for (const entry of plan.entries) {
 			const text = sizeComment(entry);
-			if (text) await appendWriteMessage(entry.file_size > entry.size ? { text, warning: true } : text);
+			if (text) initialLog.push(entry.file_size > entry.size ? { text, warning: true } : text);
 		}
+        appendWriteMessage(...initialLog);
 		writeStage.value = 'waiting';
 		const done = await invoke<WriteProgress>('run_sd_write', { runId: currentRun.value });
 		acceptProgress(done);
@@ -349,6 +353,7 @@ function latestProgress(): WriteProgress | null { return progress.value; }
 
 function closeWriteDialog() {
     if (writing.value) return;
+    writeLogScroller.dispose();
     writeDialog.value?.close();
     writeDialogOpen.value = false;
 }
@@ -496,11 +501,11 @@ function resize(event: PointerEvent, divider: 1 | 2) {
                 <p class="write-count" role="status">{{ progress?.completed ?? 0 }}/{{ progress?.total ?? writeTotal }} ({{ percent }}%)</p>
             </div>
             <progress :value="percent" max="100" aria-label="SD書込・照合の全体進捗"></progress>
-            <p v-if="writing" class="write-detail">
+            <p class="write-detail">
                 <span class="write-current" :title="progress?.filename ? `${statusLabel} ${progress.filename}` : statusLabel">{{ statusLabel }}<template v-if="progress?.filename"> {{ progress.filename }}</template></span>
             </p>
-            <p v-if="writing && operationDetail" class="write-operation" :title="operationDetail" role="status">{{ operationDetail }}</p>
-            <div ref="writeLogPanel" class="write-log" role="log" aria-label="SD書込ログ" tabindex="0">
+            <p class="write-operation" :title="operationDetail" role="status">{{ writing ? operationDetail : '' }}</p>
+            <div ref="writeLogPanel" class="write-log" role="log" aria-label="SD書込ログ" tabindex="0" @scroll="writeLogScroller.onScroll">
                 <p v-for="(message, index) in writeLog" :key="index" :class="{ 'log-warning': typeof message !== 'string' && message.warning, 'log-done': typeof message === 'string' && message.startsWith('全件完了') }">{{ typeof message === 'string' ? message : message.text }}</p>
             </div>
             <p v-if="transientNotice" class="write-notice" role="status">{{ transientNotice }}</p>
@@ -515,7 +520,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 </template>
 
 <style scoped>
-.write-operation { margin: 0; flex-shrink: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; color: #526171; }
+.write-operation { margin: 0; flex-shrink: 0; min-height: 1.2em; line-height: 1.2; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; color: #526171; }
 .write-dialog { position: fixed; inset: 0; margin: auto; width: min(650px, calc(100vw - 8px)); height: min(480px, calc(100dvh - 8px)); max-width: none; max-height: calc(100dvh - 8px); padding: 0; border: 0; border-radius: 18px; background: #f8f9fe; color: #121212; box-shadow: 0 12px 32px #0003; font: 12px 'Yu Gothic UI', Meiryo, sans-serif; overflow: hidden; }
 .write-dialog::backdrop { background: #0005; }
 .write-dialog-content { display: flex; flex-direction: column; height: 100%; min-height: 0; gap: 6px; padding: 12px; }
@@ -530,7 +535,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 .write-detail { display: flex; flex-shrink: 0; margin: 0; color: #536176; font-size: 11px; line-height: 1.2; white-space: nowrap; }
 .write-current { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .write-time { flex: 1; min-width: 0; color: #536176; font-size: 11px; white-space: nowrap; }
-.write-log { flex: 1; min-height: 0; overflow: auto; padding: 4px; border-radius: 3px; background: #1e1e1e; color: #36dbc3; font: 11px/1.25 Consolas, 'Yu Gothic UI', monospace; scrollbar-color: #888 #eee; scrollbar-width: thin; }
+.write-log { flex: 1; min-height: 0; overflow: auto; overflow-anchor: none; scrollbar-gutter: stable; padding: 4px; border-radius: 3px; background: #1e1e1e; color: #36dbc3; font: 11px/1.25 Consolas, 'Yu Gothic UI', monospace; scrollbar-color: #888 #eee; scrollbar-width: thin; }
 .write-log::-webkit-scrollbar { width: 8px; height: 8px; }
 .write-log::-webkit-scrollbar-thumb { border-radius: 4px; background: #888; }
 .write-log::-webkit-scrollbar-track, .write-log::-webkit-scrollbar-corner { background: #eee; }
