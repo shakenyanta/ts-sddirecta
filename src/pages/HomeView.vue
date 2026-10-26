@@ -6,7 +6,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import SdMenu from '../components/SdMenu.vue';
 import { splitFolderPath } from '../utils/executablePath';
 import { parseSdDirectCsv, type AddressRange, type SdArea } from '../utils/sdDirectCsv';
-import { writePercent, writeStageLabel, sizeComment, formatByteCount, type WritePlan, type WriteProgress } from '../utils/sdWrite';
+import { writePercent, writeStageLabel, sizeComment, formatByteCount, type WritePlan, type WriteProgress, type OperationStatus } from '../utils/sdWrite';
 
 const menuHeight = ref(48);
 const minimumMenuHeight = ref(48);
@@ -31,6 +31,16 @@ const copyStatus = ref('');
 const popupTitle = computed(() => writing.value ? `${statusLabel.value}…`
     : writeStage.value === 'done' ? '書込完了' : writeStage.value === 'failed' ? '書込失敗' : '書込対象なし');
 let progressUnlisten: UnlistenFn | undefined;
+let operationUnlisten: UnlistenFn | undefined;
+const operationStatus = ref<OperationStatus | null>(null);
+let operationAnchor = 0;
+const operationDetail = computed(() => {
+    if (!operationStatus.value) return '';
+    // The elapsed timer keeps this reactive even while a device call is blocked.
+    void elapsedMs.value;
+    const ms = Math.max(0, performance.now() - operationAnchor);
+    return `${operationStatus.value.detail} / ${ms >= 5000 ? 'デバイス応答待ち・' : ''}${Math.floor(ms / 1000)}秒経過`;
+});
 let closeUnlisten: UnlistenFn | undefined;
 const shutdownUnlisteners: UnlistenFn[] = [];
 let elapsedTimer: ReturnType<typeof setInterval> | undefined;
@@ -71,6 +81,9 @@ onMounted(async () => {
 		const unlisten = await listen<WriteProgress>('sd-progress', event => acceptProgress(event.payload));
 		if (disposed) { unlisten(); return; }
 		progressUnlisten = unlisten;
+        const stopOperation = await listen<OperationStatus>('sd-operation', event => acceptOperation(event.payload));
+        if (disposed) { stopOperation(); return; }
+        operationUnlisten = stopOperation;
 		const closeListener = await listen('sd-close-blocked', () => showNotice('SD処理中のため終了できません'));
 		if (disposed) { closeListener(); return; }
 		closeUnlisten = closeListener;
@@ -193,6 +206,7 @@ onUnmounted(() => {
 	generation++;
 	unlistenDrop?.();
 	progressUnlisten?.();
+    operationUnlisten?.();
 	closeUnlisten?.();
 	for (const stop of shutdownUnlisteners) stop();
 	clearInterval(elapsedTimer);
@@ -278,6 +292,9 @@ async function onSdWrite(drive: string) {
 	currentRun.value = crypto.randomUUID();
 	progress.value = null;
 	elapsedMs.value = 0;
+    operationStatus.value = null;
+    elapsedAnchor = performance.now();
+    elapsedTimer = setInterval(() => { elapsedMs.value = Math.max(0, performance.now() - elapsedAnchor); }, 100);
     writeLog.value = [];
     writeTotal.value = 0;
     copyStatus.value = '';
@@ -309,15 +326,20 @@ async function onSdWrite(drive: string) {
 		if (plan) {
 			const completed = last?.completed ?? 0;
 			const started = last?.index ?? 0;
-			if (started > completed) await appendWriteMessage({ text: `${last?.filename}: 一部だけ書き込まれている可能性があります`, warning: true });
-			const unexecuted = plan.entries.slice(Math.max(completed, started)).map(entry => entry.filename);
-			await appendWriteMessage(`正常完了 ${completed}/${plan.entries.length} ${(elapsedMs.value / 1000).toFixed(2)}秒`, `未実行: ${unexecuted.join(', ') || 'なし'}`);
+            if (last?.stage === 'final_failed' || last?.stage === 'final_verify' || last?.stage === 'final_file_done') {
+                await appendWriteMessage(`最終照合成功 ${completed}/${plan.entries.length}`, `最終照合未完了: ${plan.entries.slice(completed).map(entry => entry.filename).join(', ') || 'なし'}`);
+            } else {
+                if (started > 0) await appendWriteMessage({ text: `${last?.filename}: 一部だけ書き込まれている可能性があります`, warning: true });
+                const unexecuted = plan.entries.slice(started).map(entry => entry.filename);
+                await appendWriteMessage(`最終照合成功 0/${plan.entries.length} ${(elapsedMs.value / 1000).toFixed(2)}秒`, `未実行: ${unexecuted.join(', ') || 'なし'}`);
+            }
 		}
 	} finally {
 		clearInterval(elapsedTimer);
 		elapsedTimer = undefined;
 		if (plan) await invoke('discard_sd_write', { runId: plan.run_id }).catch(() => {});
 		writing.value = false;
+        operationStatus.value = null;
 		pendingPlan.value = null;
 		transientNotice.value = '';
 	}
@@ -340,6 +362,14 @@ async function copyWriteLog() {
     }
 }
 
+async function openDiagnosticLog() {
+    try {
+        await invoke('open_diagnostic_log');
+    } catch (error) {
+        await appendWriteMessage({ text: `ログを開けませんでした: ${String(error)}`, warning: true });
+    }
+}
+
 function showNotice(message: string) {
 	transientNotice.value = message;
 	clearTimeout(noticeTimer);
@@ -348,21 +378,31 @@ function showNotice(message: string) {
 
 function acceptProgress(event: WriteProgress) {
 	if (!writing.value || event.run_id !== currentRun.value) return;
-	if (progress.value?.stage === 'done' || progress.value?.stage === 'failed') return;
+	if (progress.value?.stage === 'done' || progress.value?.stage === 'failed' || progress.value?.stage === 'final_failed') return;
+    operationStatus.value = null;
 	progress.value = event;
 	writeStage.value = event.stage;
-	elapsedMs.value = event.elapsed_ms;
-	elapsedAnchor = performance.now() - event.elapsed_ms;
+    const now = performance.now();
+	elapsedMs.value = Math.max(elapsedMs.value, now - elapsedAnchor, event.elapsed_ms);
+	elapsedAnchor = now - elapsedMs.value;
 	if (!elapsedTimer && event.stage !== 'done' && event.stage !== 'failed') {
 		elapsedTimer = setInterval(() => { elapsedMs.value = Math.max(0, performance.now() - elapsedAnchor); }, 100);
 	}
-	if (event.stage === 'file_done') void appendWriteMessage(`${event.completed}/${event.total} ${event.filename} ${event.file_ms}ms ✓`);
-	if (event.stage === 'failed') void appendWriteMessage({ text: `失敗 ${event.index}/${event.total} ${event.filename} ${event.file_ms}ms: ${event.error}`, warning: true });
-	if (event.stage === 'done' || event.stage === 'failed') {
+	if (event.stage === 'file_done') void appendWriteMessage(`${event.index}/${event.total} ${event.filename} ${event.file_ms}ms ✓`);
+    if (event.stage === 'final_file_done') void appendWriteMessage(`最終照合 ${event.completed}/${event.total} ${event.filename} ${event.file_ms}ms ✓`);
+	if (event.stage === 'failed' || event.stage === 'final_failed') void appendWriteMessage({ text: `${event.stage === 'final_failed' ? '最終照合失敗' : '失敗'} ${event.index}/${event.total} ${event.filename} ${event.file_ms}ms: ${event.error}`, warning: true });
+	if (event.stage === 'done' || event.stage === 'failed' || event.stage === 'final_failed') {
 		clearInterval(elapsedTimer);
 		elapsedTimer = undefined;
 	}
 	if (event.stage === 'done') void appendWriteMessage(`全件完了 ${event.completed}/${event.total} ${(event.elapsed_ms / 1000).toFixed(2)}秒`);
+}
+
+function acceptOperation(event: OperationStatus) {
+    if (!writing.value || event.run_id !== currentRun.value) return;
+    if (['done', 'failed', 'final_failed'].includes(progress.value?.stage ?? '')) return;
+    operationStatus.value = event;
+    operationAnchor = performance.now() - event.operation_ms;
 }
 
 async function copyDirectory() {
@@ -459,6 +499,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
             <p v-if="writing" class="write-detail">
                 <span class="write-current" :title="progress?.filename ? `${statusLabel} ${progress.filename}` : statusLabel">{{ statusLabel }}<template v-if="progress?.filename"> {{ progress.filename }}</template></span>
             </p>
+            <p v-if="writing && operationDetail" class="write-operation" :title="operationDetail" role="status">{{ operationDetail }}</p>
             <div ref="writeLogPanel" class="write-log" role="log" aria-label="SD書込ログ" tabindex="0">
                 <p v-for="(message, index) in writeLog" :key="index" :class="{ 'log-warning': typeof message !== 'string' && message.warning, 'log-done': typeof message === 'string' && message.startsWith('全件完了') }">{{ typeof message === 'string' ? message : message.text }}</p>
             </div>
@@ -466,6 +507,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
             <div class="write-actions">
                 <span class="write-time">{{ (elapsedMs / 1000).toFixed(2) }}秒</span>
                 <button type="button" class="copy-log" aria-live="polite" @click="copyWriteLog">{{ copyStatus || 'ログをコピー' }}</button>
+                <button type="button" @click="openDiagnosticLog">ログ表示</button>
                 <button type="button" class="close-write" :disabled="writing" @click="closeWriteDialog">閉じる</button>
             </div>
         </div>
@@ -473,6 +515,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 </template>
 
 <style scoped>
+.write-operation { margin: 0; flex-shrink: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; color: #526171; }
 .write-dialog { position: fixed; inset: 0; margin: auto; width: min(650px, calc(100vw - 8px)); height: min(480px, calc(100dvh - 8px)); max-width: none; max-height: calc(100dvh - 8px); padding: 0; border: 0; border-radius: 18px; background: #f8f9fe; color: #121212; box-shadow: 0 12px 32px #0003; font: 12px 'Yu Gothic UI', Meiryo, sans-serif; overflow: hidden; }
 .write-dialog::backdrop { background: #0005; }
 .write-dialog-content { display: flex; flex-direction: column; height: 100%; min-height: 0; gap: 6px; padding: 12px; }

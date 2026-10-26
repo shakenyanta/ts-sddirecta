@@ -42,7 +42,7 @@ function view(invoke) {
   const api = new Function(...Object.keys(bindings), transpile(source) + `
     return { initializeSource, refreshMatchedFiles, sourceDirectory, displayedDirectory,
       sdDirectDictionary, sdloadingDictionary, sdAddressRange, matchedFiles, canSdWrite, writeFileCount, allFileCount, initializing, messages, folders, pathError,
-      onSdWrite, closeWriteDialog, copyWriteLog, writeDialogOpen, writeLog, writing, pendingPlan, progress, percent, currentRun, transientNotice };
+      onSdWrite, closeWriteDialog, copyWriteLog, writeDialogOpen, writeLog, writing, pendingPlan, progress, percent, currentRun, transientNotice, operationStatus, operationDetail };
   `)(...Object.values(bindings));
   return { ...api, mount: () => mount(), unmount: () => unmount(),
     drop: paths => listener({ payload: { type: 'drop', paths } }),
@@ -57,6 +57,39 @@ function view(invoke) {
 }
 
 const csv = 'A,FILE-AA.001,00000000,000001FF';
+
+test('blocked operation details stay visible and final verification failure never reports success', async () => {
+  let ui, release, runId;
+  const waiting = new Promise(resolve => { release = resolve; });
+  ui = view(backend({
+    prepare_sd_write: args => ({ run_id: args.runId, drive: 'H:', total_bytes: 1024, entries: ['first', 'second'].map(filename => ({ filename, size: 512, file_size: 512 })) }),
+    run_sd_write: args => { runId = args.runId; return waiting; },
+    discard_sd_write: () => {},
+  }));
+  await ui.mount();
+  const task = ui.onSdWrite('H:');
+  await until(() => !!runId);
+  const status = { run_id: runId, operation_id: 'worker-1', detail: 'H:を開いています', operation_ms: 7000, waiting: true };
+  ui.event('sd-operation', { ...status, run_id: 'stale' });
+  assert.equal(ui.operationStatus.value, null);
+  ui.event('sd-operation', status);
+  assert.match(ui.operationDetail.value, /H:を開いています.*デバイス応答待ち・7秒経過/);
+  const progress = { run_id: runId, filename: 'first', index: 1, total: 2, completed: 0, stage: 'final_verify', processed_bytes: 2048, total_bytes: 3072, elapsed_ms: 7100, file_ms: 0, error: null };
+  ui.event('sd-progress', progress);
+  assert.equal(ui.percent.value, 66);
+  assert.equal(ui.operationStatus.value, null);
+  ui.event('sd-progress', { ...progress, stage: 'final_failed', error: '照合不一致' });
+  ui.event('sd-operation', status);
+  assert.equal(ui.operationStatus.value, null);
+  release({ ...progress, stage: 'done', processed_bytes: 3072 });
+  await task;
+  assert.notEqual(ui.percent.value, 100);
+  const logs = ui.writeLog.value.map(m => typeof m === 'string' ? m : m.text);
+  assert.ok(logs.some(m => m.includes('最終照合失敗')));
+  assert.ok(logs.includes('最終照合未完了: first, second'));
+  assert.ok(logs.every(m => !m.startsWith('全件完了')));
+  ui.unmount();
+});
 test('extension warnings retain actual filenames, stay separate from write matches, and report warning changes', async () => {
   let files = ['FILE-AA.001'];
   let warning_files = ['FILE-AA.bin', 'input\\FILE-AA.002'];

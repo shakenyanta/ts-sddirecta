@@ -13,6 +13,10 @@ export interface WriteProgress {
   elapsed_ms: number; file_ms: number; error: string | null;
 }
 
+export interface OperationStatus {
+  run_id: string; operation_id: string; detail: string; operation_ms: number; waiting: boolean;
+}
+
 export function writePercent(progress: WriteProgress | null): number {
   if (!progress || progress.total_bytes === 0) return 0;
   if (progress.stage === 'done') return 100;
@@ -21,7 +25,8 @@ export function writePercent(progress: WriteProgress | null): number {
 
 export function writeStageLabel(stage: string): string {
   return ({ prepare: '準備中', confirm: '確認中', waiting: '権限確認待ち',
-    write: '書込中', verify: '照合中', file_done: '処理中', done: '完了', failed: '失敗' } as Record<string, string>)[stage] ?? '準備中';
+    write: '書込中', verify: '照合中', file_done: '処理中', final_verify: '最終照合中',
+    final_file_done: '最終照合中', final_failed: '最終照合失敗', done: '完了', failed: '失敗' } as Record<string, string>)[stage] ?? '準備中';
 }
 
 export function formatByteCount(bytes: number): string {

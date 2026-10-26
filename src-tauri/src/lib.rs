@@ -4,6 +4,7 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! Rust バックエンドからこんにちは！", name)
 }
 
+mod diagnostics;
 mod matching_files;
 mod sd_batch;
 mod sd_worker;
@@ -24,12 +25,24 @@ static EXIT_READY: AtomicBool = AtomicBool::new(false);
 static WRITE_PLAN: Mutex<Option<sd_batch::Plan>> = Mutex::new(None);
 
 #[tauri::command]
+async fn open_diagnostic_log() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let path = diagnostics::path()?;
+        diagnostics::record("INFO", "open log in associated editor");
+        tauri_plugin_opener::open_path(path, None::<&str>).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 fn sd_admin_status() -> &'static str {
     sd_worker::status()
 }
 
 #[tauri::command]
 async fn prepare_sd_write(
+    app: tauri::AppHandle,
     directory: String,
     drive: String,
     run_id: String,
@@ -41,6 +54,12 @@ async fn prepare_sd_write(
         return Err("SD処理中です".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
+        diagnostics::path().map_err(|e| format!("診断ログを作成できません: {e}"))?;
+        let run = diagnostics::Run::start_segment(&run_id, "prepare");
+        let _monitor = run.monitor(move |status| {
+            use tauri::Emitter;
+            let _ = app.emit("sd-operation", status);
+        });
         let plan = sd_batch::prepare(&directory, &drive, &run_id)?;
         *WRITE_PLAN.lock().map_err(|e| e.to_string())? = Some(plan.clone());
         Ok(plan)
@@ -83,8 +102,14 @@ async fn run_sd_write(run_id: String, app: tauri::AppHandle) -> Result<sd_batch:
         }
         pending.take().unwrap()
     };
+    let prepare_app = app.clone();
     let checked =
         tauri::async_runtime::spawn_blocking(move || -> Result<sd_batch::Plan, String> {
+            let run = diagnostics::Run::start_segment(&plan.run_id, "revalidate");
+            let _monitor = run.monitor(move |status| {
+                use tauri::Emitter;
+                let _ = prepare_app.emit("sd-operation", status);
+            });
             let current = sd_batch::prepare(&plan.source, &plan.drive, &plan.run_id)?;
             if current != plan {
                 return Err(
@@ -186,9 +211,20 @@ fn find_dictionary_files(
 
 #[tauri::command]
 async fn get_drives() -> Result<Vec<DriveInfo>, String> {
-    tauri::async_runtime::spawn_blocking(list_drives)
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(|| {
+        static LAST: Mutex<Option<String>> = Mutex::new(None);
+        let (result, notes) = diagnostics::quiet(list_drives);
+        let snapshot = serde_json::to_string(&(&result, &notes)).unwrap_or_default();
+        if let Ok(mut previous) = LAST.lock() {
+            if previous.as_ref() != Some(&snapshot) {
+                diagnostics::record("INFO", &format!("drive state changed {snapshot}"));
+                *previous = Some(snapshot);
+            }
+        }
+        result
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn list_drives() -> Result<Vec<DriveInfo>, String> {
@@ -297,6 +333,7 @@ pub fn run() {
             find_dictionary_files,
             get_drives,
             sd_admin_status,
+            open_diagnostic_log,
             prepare_sd_write,
             discard_sd_write,
             run_sd_write,

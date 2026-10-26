@@ -6,7 +6,7 @@ use std::{
     os::windows::ffi::OsStrExt,
     sync::{
         atomic::{AtomicBool, AtomicU8, Ordering},
-        Mutex,
+        Arc, Mutex,
     },
     time::{Duration, Instant},
 };
@@ -20,6 +20,7 @@ use windows_sys::Win32::{
     UI::Shell::{ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW},
 };
 
+static LOG_ATTACHED: AtomicBool = AtomicBool::new(false);
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
 static BUSY: AtomicBool = AtomicBool::new(false);
 static STOPPING: AtomicBool = AtomicBool::new(false);
@@ -30,7 +31,10 @@ const MAX_READ: usize = 64 * 1024 * 1024;
 
 #[derive(Serialize, Deserialize)]
 pub enum Operation {
-    Batch(crate::sd_batch::Plan),
+    Batch {
+        plan: crate::sd_batch::Plan,
+        log_path: std::path::PathBuf,
+    },
     Read {
         drive: String,
         address: u64,
@@ -69,7 +73,7 @@ fn disk_number(drive: &str) -> Result<u32, String> {
 fn execute(operation: Operation) -> Result<serde_json::Value, String> {
     use crate::windows_api;
     match operation {
-        Operation::Batch(_) => Err("一括書込は専用の実行経路を使用してください".into()),
+        Operation::Batch { .. } => Err("一括書込は専用の実行経路を使用してください".into()),
         Operation::Read {
             drive,
             address,
@@ -164,6 +168,7 @@ impl Session {
 enum Response {
     Ready(bool),
     Progress(crate::sd_batch::Progress),
+    Status(crate::diagnostics::OperationStatus),
     Finished(Result<serde_json::Value, String>),
 }
 
@@ -244,181 +249,207 @@ impl Drop for Process {
 }
 
 fn launch(address: SocketAddr, token: &str) -> Result<Process, String> {
-    struct Com(bool);
-    impl Drop for Com {
-        fn drop(&mut self) {
-            if self.0 {
-                unsafe {
-                    CoUninitialize();
+    crate::diagnostics::step("worker launch / UAC", || {
+        struct Com(bool);
+        impl Drop for Com {
+            fn drop(&mut self) {
+                if self.0 {
+                    unsafe {
+                        CoUninitialize();
+                    }
                 }
             }
         }
-    }
-    let _com = Com(unsafe {
-        CoInitializeEx(
-            std::ptr::null(),
-            (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32,
-        )
-    } >= 0);
-    let executable = std::env::current_exe().map_err(|e| e.to_string())?;
-    let executable: Vec<u16> = executable
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect();
-    let verb: Vec<u16> = "runas\0".encode_utf16().collect();
-    // Parameters contain only a loopback address and a random hexadecimal token.
-    let arguments: Vec<u16> = format!("--sd-worker {address} {token}\0")
-        .encode_utf16()
-        .collect();
-    let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
-    info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
-    info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
-    info.lpVerb = verb.as_ptr();
-    info.lpFile = executable.as_ptr();
-    info.lpParameters = arguments.as_ptr();
-    info.nShow = 0;
-    if unsafe { ShellExecuteExW(&mut info) } == 0 {
-        let error = io::Error::last_os_error();
-        return Err(if error.raw_os_error() == Some(1223) {
-            "管理者権限の確認がキャンセルされました".into()
-        } else {
-            format!("SD操作プロセスを起動できませんでした: {error}")
-        });
-    }
-    Ok(Process(info.hProcess))
+        let _com = Com(unsafe {
+            CoInitializeEx(
+                std::ptr::null(),
+                (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32,
+            )
+        } >= 0);
+        let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+        let executable: Vec<u16> = executable
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        let verb: Vec<u16> = "runas\0".encode_utf16().collect();
+        // Parameters contain only a loopback address and a random hexadecimal token.
+        let arguments: Vec<u16> = format!("--sd-worker {address} {token}\0")
+            .encode_utf16()
+            .collect();
+        let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
+        info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
+        info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
+        info.lpVerb = verb.as_ptr();
+        info.lpFile = executable.as_ptr();
+        info.lpParameters = arguments.as_ptr();
+        info.nShow = 0;
+        if unsafe { ShellExecuteExW(&mut info) } == 0 {
+            let error = io::Error::last_os_error();
+            return Err(if error.raw_os_error() == Some(1223) {
+                "管理者権限の確認がキャンセルされました".into()
+            } else {
+                format!("SD操作プロセスを起動できませんでした: {error}")
+            });
+        }
+        Ok(Process(info.hProcess))
+    })
 }
 
 fn connect() -> Result<Session, String> {
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).map_err(|e| e.to_string())?;
-    listener.set_nonblocking(true).map_err(|e| e.to_string())?;
-    let mut random = [0u8; 32];
-    if unsafe {
-        BCryptGenRandom(
-            std::ptr::null_mut(),
-            random.as_mut_ptr(),
-            random.len() as u32,
-            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
-        )
-    } < 0
-    {
-        return Err("SD操作の認証情報を生成できませんでした".into());
-    }
-    let token: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
-    let process = launch(listener.local_addr().map_err(|e| e.to_string())?, &token)?;
-    let started = Instant::now();
-    while started.elapsed() < Duration::from_secs(30) {
-        match listener.accept() {
-            Ok((mut stream, _)) => {
-                stream.set_nonblocking(false).map_err(|e| e.to_string())?;
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(2)))
-                    .map_err(|e| e.to_string())?;
-                let mut received = [0; 64];
-                if stream.read_exact(&mut received).is_err() || received != token.as_bytes() {
-                    continue;
-                }
-                stream.set_read_timeout(None).map_err(|e| e.to_string())?;
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(10)))
-                    .map_err(|e| e.to_string())?;
-                if !matches!(receive::<Response>(&mut stream)?, Response::Ready(true)) {
-                    return Err("SD操作プロセスの管理者権限を確認できませんでした".into());
-                }
-                stream.set_read_timeout(None).map_err(|e| e.to_string())?;
-                stream.set_nodelay(true).map_err(|e| e.to_string())?;
-                return Ok(Session { stream, process });
-            }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                if process.0 != 0 && unsafe { WaitForSingleObject(process.0, 0) } == WAIT_OBJECT_0 {
-                    return Err("SD操作プロセスが接続前に終了しました".into());
-                }
-                std::thread::sleep(Duration::from_millis(25));
-            }
-            Err(error) => return Err(error.to_string()),
+    crate::diagnostics::step("worker connect / authentication", || {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).map_err(|e| e.to_string())?;
+        listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+        let mut random = [0u8; 32];
+        if unsafe {
+            BCryptGenRandom(
+                std::ptr::null_mut(),
+                random.as_mut_ptr(),
+                random.len() as u32,
+                BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+            )
+        } < 0
+        {
+            return Err("SD操作の認証情報を生成できませんでした".into());
         }
-    }
-    Err("SD操作プロセスへの接続がタイムアウトしました".into())
+        let token: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+        let process = launch(listener.local_addr().map_err(|e| e.to_string())?, &token)?;
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(30) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    stream.set_nonblocking(false).map_err(|e| e.to_string())?;
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .map_err(|e| e.to_string())?;
+                    let mut received = [0; 64];
+                    if stream.read_exact(&mut received).is_err() || received != token.as_bytes() {
+                        continue;
+                    }
+                    stream.set_read_timeout(None).map_err(|e| e.to_string())?;
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(10)))
+                        .map_err(|e| e.to_string())?;
+                    if !matches!(receive::<Response>(&mut stream)?, Response::Ready(true)) {
+                        return Err("SD操作プロセスの管理者権限を確認できませんでした".into());
+                    }
+                    stream.set_read_timeout(None).map_err(|e| e.to_string())?;
+                    stream.set_nodelay(true).map_err(|e| e.to_string())?;
+                    return Ok(Session { stream, process });
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    if process.0 != 0
+                        && unsafe { WaitForSingleObject(process.0, 0) } == WAIT_OBJECT_0
+                    {
+                        return Err("SD操作プロセスが接続前に終了しました".into());
+                    }
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        Err("SD操作プロセスへの接続がタイムアウトしました".into())
+    })
 }
 
 fn invoke_blocking(
     operation: Operation,
     mut progress: impl FnMut(crate::sd_batch::Progress),
+    status: impl Fn(crate::diagnostics::OperationStatus) + Send + Sync + 'static,
 ) -> Result<serde_json::Value, String> {
-    if BUSY
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        return Err("別のSD操作を実行中です".into());
-    }
-    struct Guard;
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            BUSY.store(false, Ordering::SeqCst);
+    let run_id = match &operation {
+        Operation::Batch { plan, .. } => plan.run_id.as_str(),
+        _ => "single",
+    };
+    let run = crate::diagnostics::Run::start_segment(run_id, "gui_worker_request");
+    let status = Arc::new(status);
+    let monitor_status = status.clone();
+    let _monitor = run.monitor(move |event| monitor_status(event));
+    crate::diagnostics::step("worker request", || {
+        if BUSY
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Err("別のSD操作を実行中です".into());
         }
-    }
-    let _busy = Guard;
-    if STOPPING.load(Ordering::SeqCst) {
-        return Err("アプリの終了処理中です".into());
-    }
-    let mut session = SESSION.lock().map_err(|e| e.to_string())?;
-    if session
-        .as_ref()
-        .is_some_and(|s| unsafe { WaitForSingleObject(s.process.0, 0) } == WAIT_OBJECT_0)
-    {
-        *session = None;
-    }
-    if session.is_none() {
-        STATUS.store(1, Ordering::SeqCst);
-        match connect() {
-            Ok(connected) => {
-                *session = Some(connected);
-                STATUS.store(2, Ordering::SeqCst);
-            }
-            Err(error) => {
-                STATUS.store(
-                    if error.contains("キャンセル") {
-                        0
-                    } else {
-                        3
-                    },
-                    Ordering::SeqCst,
-                );
-                return Err(error);
+        struct Guard;
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                BUSY.store(false, Ordering::SeqCst);
             }
         }
-    }
-    let stream = &mut session.as_mut().unwrap().stream;
-    let exchange = (|| -> Result<Result<serde_json::Value, String>, String> {
-        send(stream, &operation)?;
-        loop {
-            match receive::<Response>(stream)? {
-                Response::Progress(event) => progress(event),
-                Response::Finished(result) => return Ok(result),
-                Response::Ready(_) => return Err("SD操作プロセスの応答が不正です".into()),
-            }
+        let _busy = Guard;
+        if STOPPING.load(Ordering::SeqCst) {
+            return Err("アプリの終了処理中です".into());
         }
-    })();
-    match exchange {
-        Ok(result) => result,
-        Err(error) => {
-            if let Some(disconnected) = session.take() {
-                let _ = disconnected.stream.shutdown(std::net::Shutdown::Both);
-                // Do not unlock the UI while a disconnected worker may still write.
-                unsafe {
-                    WaitForSingleObject(disconnected.process.0, u32::MAX);
+        let mut session = SESSION.lock().map_err(|e| e.to_string())?;
+        if session
+            .as_ref()
+            .is_some_and(|s| unsafe { WaitForSingleObject(s.process.0, 0) } == WAIT_OBJECT_0)
+        {
+            *session = None;
+        }
+        if session.is_none() {
+            STATUS.store(1, Ordering::SeqCst);
+            match connect() {
+                Ok(connected) => {
+                    *session = Some(connected);
+                    STATUS.store(2, Ordering::SeqCst);
+                }
+                Err(error) => {
+                    STATUS.store(
+                        if error.contains("キャンセル") {
+                            0
+                        } else {
+                            3
+                        },
+                        Ordering::SeqCst,
+                    );
+                    return Err(error);
                 }
             }
-            STATUS.store(3, Ordering::SeqCst);
-            Err(format!("SD操作プロセスとの通信に失敗しました: {error}"))
         }
-    }
+        let stream = &mut session.as_mut().unwrap().stream;
+        let exchange = (|| -> Result<Result<serde_json::Value, String>, String> {
+            crate::diagnostics::step("worker send request", || send(stream, &operation))?;
+            loop {
+                match crate::diagnostics::step("worker wait response", || {
+                    receive::<Response>(stream)
+                })? {
+                    Response::Progress(event) => progress(event),
+                    Response::Status(event) => status(event),
+                    Response::Finished(result) => return Ok(result),
+                    Response::Ready(_) => return Err("SD操作プロセスの応答が不正です".into()),
+                }
+            }
+        })();
+        match exchange {
+            Ok(result) => result,
+            Err(error) => {
+                if let Some(disconnected) = session.take() {
+                    crate::diagnostics::record(
+                        "BEGIN",
+                        "disconnected worker: wait for process exit",
+                    );
+                    let _ = disconnected.stream.shutdown(std::net::Shutdown::Both);
+                    // Do not unlock the UI while a disconnected worker may still write.
+                    unsafe {
+                        WaitForSingleObject(disconnected.process.0, u32::MAX);
+                    }
+                }
+                crate::diagnostics::record("END", "disconnected worker: process exited");
+                STATUS.store(3, Ordering::SeqCst);
+                Err(format!("SD操作プロセスとの通信に失敗しました: {error}"))
+            }
+        }
+    })
 }
 
 pub async fn invoke<T: DeserializeOwned>(operation: Operation) -> Result<T, String> {
-    let result = tauri::async_runtime::spawn_blocking(move || invoke_blocking(operation, |_| {}))
-        .await
-        .map_err(|e| e.to_string())??;
+    let result =
+        tauri::async_runtime::spawn_blocking(move || invoke_blocking(operation, |_| {}, |_| {}))
+            .await
+            .map_err(|e| e.to_string())??;
     serde_json::from_value(result).map_err(|e| e.to_string())
 }
 
@@ -428,9 +459,17 @@ pub async fn write_batch(
 ) -> Result<crate::sd_batch::Progress, String> {
     use tauri::Emitter;
     let result = tauri::async_runtime::spawn_blocking(move || {
-        invoke_blocking(Operation::Batch(plan), |event| {
-            let _ = app.emit("sd-progress", event);
-        })
+        let log_path = crate::diagnostics::path()?;
+        let status_app = app.clone();
+        invoke_blocking(
+            Operation::Batch { plan, log_path },
+            |event| {
+                let _ = app.emit("sd-progress", event);
+            },
+            move |status| {
+                let _ = status_app.emit("sd-operation", status);
+            },
+        )
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -441,9 +480,25 @@ fn serve_requests(stream: &mut TcpStream) -> Result<(), String> {
     loop {
         let operation = receive::<Operation>(stream)?;
         let result = match operation {
-            Operation::Batch(plan) => {
-                crate::sd_batch::execute(plan, |event| send(stream, &Response::Progress(event)))
-                    .and_then(|done| serde_json::to_value(done).map_err(|e| e.to_string()))
+            Operation::Batch { plan, log_path } => {
+                if !LOG_ATTACHED.swap(true, Ordering::SeqCst) {
+                    crate::diagnostics::attach(log_path)?;
+                }
+                let run = crate::diagnostics::Run::start_segment(&plan.run_id, "worker_batch");
+                let writer = Arc::new(Mutex::new(stream.try_clone().map_err(|e| e.to_string())?));
+                let monitor_writer = writer.clone();
+                let _monitor = run.monitor(move |status| {
+                    if let Ok(mut writer) = monitor_writer.lock() {
+                        let _ = send(&mut *writer, &Response::Status(status));
+                    }
+                });
+                crate::sd_batch::execute(plan, |event| {
+                    send(
+                        &mut *writer.lock().map_err(|e| e.to_string())?,
+                        &Response::Progress(event),
+                    )
+                })
+                .and_then(|done| serde_json::to_value(done).map_err(|e| e.to_string()))
             }
             operation => execute(operation),
         };

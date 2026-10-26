@@ -90,6 +90,15 @@ function requestWrite() {
 	if (canRequestWrite.value) emit('write', selectedDrive.value);
 }
 
+async function openDiagnosticLog() {
+	actionsOpen.value = false;
+	try {
+		await invoke('open_diagnostic_log');
+	} catch (error) {
+		emit('error', `ログを開けませんでした: ${String(error)}`);
+	}
+}
+
 function onKeydown(event: KeyboardEvent) {
 	if (event.key === 'Escape' && actionsOpen.value) {
 		actionsOpen.value = false;
@@ -144,17 +153,18 @@ onUnmounted(() => {
 			</label>
 		</div>
 		<div ref="actionsContainer" class="menu-actions" @focusout="onActionsFocusout">
-			<button ref="actionsButton" type="button" class="menu-toggle" title="メニュー" aria-label="メニュー" :disabled="busy"
+			<button ref="actionsButton" type="button" class="menu-toggle" title="メニュー" aria-label="メニュー"
 				:aria-expanded="actionsOpen" aria-controls="sd-actions" @click="actionsOpen = !actionsOpen">
 				<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
 			</button>
 			<div v-if="actionsOpen" id="sd-actions" class="menu-dropdown" role="group" aria-label="メニュー操作">
-				<button type="button">全エリアSD読み込み</button>
-				<button type="button">選択エリアSD読み込み</button>
-				<button type="button">全エリアSD書き込み</button>
-				<button type="button">選択エリアSD書き込み</button>
-				<button type="button">全エリアSD FF初期化</button>
-				<button type="button">SD選択エリア FF初期化</button>
+				<button type="button" @click="openDiagnosticLog">ログ表示</button>
+				<button type="button" :disabled="busy">全エリアSD読み込み</button>
+				<button type="button" :disabled="busy">選択エリアSD読み込み</button>
+				<button type="button" :disabled="busy">全エリアSD書き込み</button>
+				<button type="button" :disabled="busy">選択エリアSD書き込み</button>
+				<button type="button" :disabled="busy">全エリアSD FF初期化</button>
+				<button type="button" :disabled="busy">SD選択エリア FF初期化</button>
 			</div>
 		</div>
 	</div>
