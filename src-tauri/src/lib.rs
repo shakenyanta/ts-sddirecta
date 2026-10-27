@@ -7,6 +7,7 @@ fn greet(name: &str) -> String {
 mod diagnostics;
 mod matching_files;
 mod sd_batch;
+mod sd_read_batch;
 mod sd_worker;
 mod source_directory;
 mod startup_csv;
@@ -38,6 +39,19 @@ async fn open_diagnostic_log() -> Result<(), String> {
 #[tauri::command]
 fn sd_admin_status() -> &'static str {
     sd_worker::status()
+}
+
+#[tauri::command]
+async fn open_sd_output() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let path = sd_read_batch::output_directory()?;
+        if !path.is_dir() {
+            return Err("outputフォルダーがありません。SD読み込みを実行してください".into());
+        }
+        tauri_plugin_opener::open_path(path, None::<&str>).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -125,6 +139,44 @@ async fn run_sd_write(run_id: String, app: tauri::AppHandle) -> Result<sd_batch:
         .await
         .map_err(|e| e.to_string())??;
     sd_worker::write_batch(checked, app).await
+}
+
+#[tauri::command]
+async fn run_sd_read(
+    directory: String,
+    drive: String,
+    run_id: String,
+    app: tauri::AppHandle,
+) -> Result<sd_batch::Progress, String> {
+    if EXIT_WAITING.load(Ordering::SeqCst) {
+        return Err("アプリの終了処理中です".into());
+    }
+    if WRITE_RUNNING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("SD処理中です".into());
+    }
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            WRITE_RUNNING.store(false, Ordering::SeqCst);
+        }
+    }
+    let _guard = Guard;
+    let prepare_app = app.clone();
+    let plan = tauri::async_runtime::spawn_blocking(move || {
+        diagnostics::path()?;
+        let run = diagnostics::Run::start_segment(&run_id, "read_prepare");
+        let _monitor = run.monitor(move |status| {
+            use tauri::Emitter;
+            let _ = prepare_app.emit("sd-operation", status);
+        });
+        sd_read_batch::prepare(&directory, &drive, &run_id)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    sd_worker::read_batch(plan, app).await
 }
 
 #[tauri::command]
@@ -334,9 +386,11 @@ pub fn run() {
             get_drives,
             sd_admin_status,
             open_diagnostic_log,
+            open_sd_output,
             prepare_sd_write,
             discard_sd_write,
             run_sd_write,
+            run_sd_read,
             sd_read,
             sd_write,
             sd_fill,

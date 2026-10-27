@@ -173,8 +173,8 @@ pub fn removable_target(drive: &str) -> Result<(u32, u64), String> {
     })
 }
 
-// One physical handle and one mandatory volume lock per batch. Large, aligned,
-// unbuffered transfers avoid stale read-back data and repeated open/close costs.
+// One physical handle per batch; writes also require a volume lock. Read-only
+// exports request no write access. Aligned, unbuffered I/O avoids stale cache data.
 struct DiskHandle(HANDLE);
 impl DiskHandle {
     fn open(path: &str, access: u32, flags: u32) -> io::Result<Self> {
@@ -247,9 +247,26 @@ pub struct BatchDisk {
 }
 impl BatchDisk {
     pub fn open(drive: &str, expected_disk: u32, expected_capacity: u64) -> Result<Self, String> {
+        Self::open_mode(drive, expected_disk, expected_capacity, false)
+    }
+
+    pub fn open_read(
+        drive: &str,
+        expected_disk: u32,
+        expected_capacity: u64,
+    ) -> Result<Self, String> {
+        Self::open_mode(drive, expected_disk, expected_capacity, true)
+    }
+
+    fn open_mode(
+        drive: &str,
+        expected_disk: u32,
+        expected_capacity: u64,
+        read_only: bool,
+    ) -> Result<Self, String> {
         crate::diagnostics::step(
             format!(
-                "BatchDisk::open drive={drive} disk={expected_disk} capacity={expected_capacity}"
+                    "BatchDisk::open drive={drive} disk={expected_disk} capacity={expected_capacity} read_only={read_only}"
             ),
             || {
                 use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
@@ -269,7 +286,8 @@ impl BatchDisk {
                 let drives = unsafe { GetLogicalDrives() };
                 for i in 0..26 {
                     let other = format!("{}:", (b'A' + i) as char);
-                    if drives & (1u32 << i) != 0
+                    if !read_only
+                        && drives & (1u32 << i) != 0
                         && other != drive
                         && get_disk_extents(&format!("\\\\.\\{other}")).ok() == Some(disk)
                     {
@@ -280,33 +298,43 @@ impl BatchDisk {
                 }
                 let volume = DiskHandle::open(
                     &volume_path,
-                    GENERIC_READ | GENERIC_WRITE,
+                    if read_only {
+                        GENERIC_READ
+                    } else {
+                        GENERIC_READ | GENERIC_WRITE
+                    },
                     FILE_ATTRIBUTE_NORMAL,
                 )
                 .map_err(|e| format!("SDボリュームを開けません: {e}"))?;
                 let mut count = 0;
-                if let Err(error) =
-                    crate::diagnostics::device_control("FSCTL_LOCK_VOLUME", || unsafe {
-                        DeviceIoControl(
-                            volume.0,
-                            FSCTL_LOCK_VOLUME,
-                            std::ptr::null(),
-                            0,
-                            std::ptr::null_mut(),
-                            0,
-                            &mut count,
-                            std::ptr::null_mut(),
-                        )
-                    })
-                {
-                    return Err(format!(
-                        "SDをロックできません。SDを使用中のファイルを閉じてください: {}",
-                        error
-                    ));
+                if !read_only {
+                    if let Err(error) =
+                        crate::diagnostics::device_control("FSCTL_LOCK_VOLUME", || unsafe {
+                            DeviceIoControl(
+                                volume.0,
+                                FSCTL_LOCK_VOLUME,
+                                std::ptr::null(),
+                                0,
+                                std::ptr::null_mut(),
+                                0,
+                                &mut count,
+                                std::ptr::null_mut(),
+                            )
+                        })
+                    {
+                        return Err(format!(
+                            "SDをロックできません。SDを使用中のファイルを閉じてください: {}",
+                            error
+                        ));
+                    }
                 }
                 let physical = DiskHandle::open(
                     &format!("\\\\.\\PhysicalDrive{disk}"),
-                    GENERIC_READ | GENERIC_WRITE,
+                    if read_only {
+                        GENERIC_READ
+                    } else {
+                        GENERIC_READ | GENERIC_WRITE
+                    },
                     FILE_ATTRIBUTE_NORMAL | FILE_FLAG_NO_BUFFERING,
                 )
                 .map_err(|e| e.to_string())?;

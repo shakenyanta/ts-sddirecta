@@ -2,8 +2,8 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 
-const props = defineProps<{ canWrite: boolean; busy?: boolean; writeLabel?: string }>();
-const emit = defineEmits<{ write: [drive: string]; error: [message: string] }>();
+const props = defineProps<{ canWrite: boolean; canRead?: boolean; busy?: boolean; writeLabel?: string }>();
+const emit = defineEmits<{ write: [drive: string]; read: [drive: string]; action: [label: string]; error: [message: string] }>();
 const actionsOpen = ref(false);
 const actionsContainer = ref<HTMLElement | null>(null);
 const actionsButton = ref<HTMLButtonElement | null>(null);
@@ -22,6 +22,11 @@ const drives = ref<DriveInfo[]>([]);
 const selectedDrive = ref('');
 const selectedDriveHasMedia = computed(() => drives.value.some(drive => drive.drive === selectedDrive.value && drive.size > 0));
 const canRequestWrite = computed(() => props.canWrite && selectedDriveHasMedia.value && !props.busy);
+const canRequestRead = computed(() => props.canRead && selectedDriveHasMedia.value && !props.busy);
+const readTitle = computed(() => props.busy ? 'SDカードの処理中です'
+    : !props.canRead ? 'CSVの読込対象領域がありません'
+    : !selectedDriveHasMedia.value ? 'SDカードが挿入されたドライブを選択してください'
+    : 'CSVの全領域をexeと同じ場所のoutputへ保存します（直下の既存ファイルはすべて削除）');
 const writeTitle = computed(() => {
 	if (props.busy) return 'SDカードの処理中です';
 	if (!props.canWrite) return '全エリアと一致するファイルがありません';
@@ -87,10 +92,24 @@ async function refreshAdmin() {
 }
 
 function requestWrite() {
-	if (canRequestWrite.value) emit('write', selectedDrive.value);
+	if (!canRequestWrite.value) return;
+    recordAction('SD書込');
+    emit('write', selectedDrive.value);
+}
+
+function recordAction(label: string) {
+    emit('action', label);
+}
+
+function requestRead() {
+    if (!canRequestRead.value) return;
+    recordAction('全エリアSD読込');
+    actionsOpen.value = false;
+    emit('read', selectedDrive.value);
 }
 
 async function openDiagnosticLog() {
+    recordAction('ログ表示');
 	actionsOpen.value = false;
 	try {
 		await invoke('open_diagnostic_log');
@@ -159,10 +178,9 @@ onUnmounted(() => {
 			</button>
 			<div v-if="actionsOpen" id="sd-actions" class="menu-dropdown" role="group" aria-label="メニュー操作">
 				<div class="menu-operation-buttons">
-					<button type="button" :disabled="busy">全エリアSD読み込み</button>
-					<button type="button" :disabled="busy">選択エリアSD読み込み</button>
-					<button type="button" :disabled="busy">全エリアSD FF初期化</button>
-					<button type="button" :disabled="busy">SD選択エリア FF初期化</button>
+					<button type="button" :disabled="!canRequestRead" :title="readTitle" @click="requestRead">全エリアSD読込</button>
+					<button type="button" :disabled="busy" @click="recordAction('全エリアSD FF初期化')">全エリアSD FF初期化</button>
+					<button type="button" :disabled="busy" @click="recordAction('SD選択エリア FF初期化')">SD選択エリア FF初期化</button>
 				</div>
 				<div class="menu-log-section">
 					<button type="button" @click="openDiagnosticLog">ログ表示</button>

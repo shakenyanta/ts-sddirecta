@@ -35,6 +35,10 @@ pub enum Operation {
         plan: crate::sd_batch::Plan,
         log_path: std::path::PathBuf,
     },
+    ReadBatch {
+        plan: crate::sd_batch::Plan,
+        log_path: std::path::PathBuf,
+    },
     Read {
         drive: String,
         address: u64,
@@ -73,7 +77,9 @@ fn disk_number(drive: &str) -> Result<u32, String> {
 fn execute(operation: Operation) -> Result<serde_json::Value, String> {
     use crate::windows_api;
     match operation {
-        Operation::Batch { .. } => Err("一括書込は専用の実行経路を使用してください".into()),
+        Operation::Batch { .. } | Operation::ReadBatch { .. } => {
+            Err("一括書込は専用の実行経路を使用してください".into())
+        }
         Operation::Read {
             drive,
             address,
@@ -358,7 +364,7 @@ fn invoke_blocking(
     status: impl Fn(crate::diagnostics::OperationStatus) + Send + Sync + 'static,
 ) -> Result<serde_json::Value, String> {
     let run_id = match &operation {
-        Operation::Batch { plan, .. } => plan.run_id.as_str(),
+        Operation::Batch { plan, .. } | Operation::ReadBatch { plan, .. } => plan.run_id.as_str(),
         _ => "single",
     };
     let run = crate::diagnostics::Run::start_segment(run_id, "gui_worker_request");
@@ -476,15 +482,46 @@ pub async fn write_batch(
     serde_json::from_value(result).map_err(|e| e.to_string())
 }
 
+pub async fn read_batch(
+    plan: crate::sd_batch::Plan,
+    app: tauri::AppHandle,
+) -> Result<crate::sd_batch::Progress, String> {
+    use tauri::Emitter;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let log_path = crate::diagnostics::path()?;
+        let status_app = app.clone();
+        invoke_blocking(
+            Operation::ReadBatch { plan, log_path },
+            |event| {
+                let _ = app.emit("sd-progress", event);
+            },
+            move |status| {
+                let _ = status_app.emit("sd-operation", status);
+            },
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    serde_json::from_value(result).map_err(|e| e.to_string())
+}
+
 fn serve_requests(stream: &mut TcpStream) -> Result<(), String> {
     loop {
         let operation = receive::<Operation>(stream)?;
+        let reading = matches!(&operation, Operation::ReadBatch { .. });
         let result = match operation {
-            Operation::Batch { plan, log_path } => {
+            Operation::Batch { plan, log_path } | Operation::ReadBatch { plan, log_path } => {
                 if !LOG_ATTACHED.swap(true, Ordering::SeqCst) {
                     crate::diagnostics::attach(log_path)?;
                 }
-                let run = crate::diagnostics::Run::start_segment(&plan.run_id, "worker_batch");
+                let run = crate::diagnostics::Run::start_segment(
+                    &plan.run_id,
+                    if reading {
+                        "worker_read_batch"
+                    } else {
+                        "worker_batch"
+                    },
+                );
                 let writer = Arc::new(Mutex::new(stream.try_clone().map_err(|e| e.to_string())?));
                 let monitor_writer = writer.clone();
                 let _monitor = run.monitor(move |status| {
@@ -492,11 +529,16 @@ fn serve_requests(stream: &mut TcpStream) -> Result<(), String> {
                         let _ = send(&mut *writer, &Response::Status(status));
                     }
                 });
-                crate::sd_batch::execute(plan, |event| {
+                let notify = |event| {
                     send(
                         &mut *writer.lock().map_err(|e| e.to_string())?,
                         &Response::Progress(event),
                     )
+                };
+                (if reading {
+                    crate::sd_read_batch::execute(plan, notify)
+                } else {
+                    crate::sd_batch::execute(plan, notify)
                 })
                 .and_then(|done| serde_json::to_value(done).map_err(|e| e.to_string()))
             }

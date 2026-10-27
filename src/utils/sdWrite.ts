@@ -25,7 +25,7 @@ export function writePercent(progress: WriteProgress | null): number {
 
 export function writeStageLabel(stage: string): string {
   return ({ prepare: '準備中', confirm: '確認中', waiting: '権限確認待ち',
-    write: '書込中', verify: '照合中', file_done: '処理中', final_verify: '最終照合中',
+    clean: '出力先を初期化中', read: '読込中', write: '書込中', verify: '照合中', file_done: '処理中', final_verify: '最終照合中',
     final_file_done: '最終照合中', final_failed: '最終照合失敗', done: '完了', failed: '失敗' } as Record<string, string>)[stage] ?? '準備中';
 }
 

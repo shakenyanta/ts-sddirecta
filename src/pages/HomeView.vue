@@ -13,6 +13,8 @@ const menuHeight = ref(48);
 const minimumMenuHeight = ref(48);
 const menuContent = ref<HTMLElement | null>(null);
 let menuObserver: ResizeObserver | undefined;
+let textObserver: ResizeObserver | undefined;
+let textScrollMaximum = 0;
 const sdHeight = ref(120);
 const sourceDirectory = ref('');
 const dragging = ref(false);
@@ -30,7 +32,10 @@ const writeLogPanel = ref<HTMLElement | null>(null);
 const writeLogScroller = createLogScroller(() => writeLogPanel.value);
 const writeTotal = ref(0);
 const copyStatus = ref('');
+const operationKind = ref<'read' | 'write'>('write');
+const operationName = computed(() => operationKind.value === 'read' ? 'SD読込' : 'SD書込');
 const popupTitle = computed(() => writing.value ? `${statusLabel.value}…`
+    : operationKind.value === 'read' ? (writeStage.value === 'done' ? '読込完了' : '読込失敗')
     : writeStage.value === 'done' ? '書込完了' : writeStage.value === 'failed' ? '書込失敗' : '書込対象なし');
 let progressUnlisten: UnlistenFn | undefined;
 let operationUnlisten: UnlistenFn | undefined;
@@ -70,6 +75,7 @@ const sdAddressRange = ref<AddressRange | null>(null);
 const matchedFiles = ref<string[]>([]);
 const warningFiles = ref<string[]>([]);
 const canSdWrite = computed(() => !initializing.value && !writing.value && !closing.value && allFileCount.value > 0);
+const canSdRead = computed(() => !initializing.value && !writing.value && !closing.value && sdDirectDictionary.value.size > 0);
 let matchingGeneration: number | undefined;
 let disposed = false;
 let lastMatchError = '';
@@ -106,6 +112,18 @@ onMounted(async () => {
 		});
 		menuObserver.observe(menuContent.value);
 	}
+    if (typeof ResizeObserver !== 'undefined' && textPanel.value) {
+        textObserver = new ResizeObserver(() => {
+            const panel = textPanel.value;
+            if (!panel) return;
+            // Menu wrapping/resizing changes the viewport after nextTick. Keep
+            // the bottom only when it was already visible; preserve manual scroll.
+            const wasAtBottom = panel.scrollTop >= textScrollMaximum - 1;
+            textScrollMaximum = Math.max(0, panel.scrollHeight - panel.clientHeight);
+            if (wasAtBottom) panel.scrollTop = textScrollMaximum;
+        });
+        textObserver.observe(textPanel.value);
+    }
 	try {
 		const unlisten = await getCurrentWebview().onDragDropEvent(event => {
 			if (writing.value || closing.value) {
@@ -215,6 +233,7 @@ onUnmounted(() => {
 	clearInterval(elapsedTimer);
 	clearTimeout(noticeTimer);
 	menuObserver?.disconnect();
+    textObserver?.disconnect();
 	window.removeEventListener('keydown', onRefreshKey, true);
 });
 
@@ -277,7 +296,10 @@ async function refreshMatchedFiles(report = false) {
 async function appendMessage(...newMessages: PanelMessage[]) {
     messages.value.push(...newMessages);
     await nextTick();
-    if (textPanel.value) textPanel.value.scrollTop = textPanel.value.scrollHeight;
+    if (textPanel.value) {
+        textPanel.value.scrollTop = textPanel.value.scrollHeight;
+        textScrollMaximum = Math.max(0, textPanel.value.scrollHeight - textPanel.value.clientHeight);
+    }
 }
 
 function appendWriteMessage(...newMessages: PanelMessage[]) {
@@ -285,9 +307,14 @@ function appendWriteMessage(...newMessages: PanelMessage[]) {
     writeLogScroller.append();
 }
 
+function logButtonPress(label: string) {
+    void appendMessage(`「${label}」ボタン押下`);
+}
+
 async function onSdWrite(drive: string) {
 	if (writeDialogOpen.value || writing.value || closing.value || initializing.value || !drive || !sourceDirectory.value) return;
 	if (!progressUnlisten) { await appendMessage('進捗通知を受信できません。アプリを再起動してください'); return; }
+    operationKind.value = 'write';
 	writing.value = true;
 	dragging.value = false;
 	writeStage.value = 'prepare';
@@ -349,6 +376,52 @@ async function onSdWrite(drive: string) {
 	}
 }
 
+async function onSdRead(drive: string) {
+    if (writeDialogOpen.value || writing.value || closing.value || initializing.value || !drive || !sourceDirectory.value) return;
+    if (!progressUnlisten) { await appendMessage('進捗通知を受信できません。アプリを再起動してください'); return; }
+    operationKind.value = 'read';
+    writing.value = true;
+    dragging.value = false;
+    writeStage.value = 'prepare';
+    currentRun.value = crypto.randomUUID();
+    progress.value = null;
+    elapsedMs.value = 0;
+    operationStatus.value = null;
+    elapsedAnchor = performance.now();
+    elapsedTimer = setInterval(() => { elapsedMs.value = Math.max(0, performance.now() - elapsedAnchor); }, 100);
+    writeLog.value = [];
+    writeLogScroller.reset();
+    writeTotal.value = 0;
+    copyStatus.value = '';
+    writeDialogOpen.value = true;
+    try {
+        await nextTick();
+        writeDialog.value?.showModal();
+        const executableDirectory = await invoke<string>('get_executable_directory');
+        appendWriteMessage(`SD読込元: ${drive}`, `保存先: ${executableDirectory.replace(/[\\/]+$/, '')}\\output`,
+            'CSV・SDの検査後、output直下のファイルをすべて削除します。サブフォルダーは残します。');
+        writeStage.value = 'waiting';
+        const done = await invoke<WriteProgress>('run_sd_read', { directory: sourceDirectory.value, drive, runId: currentRun.value });
+        acceptProgress(done);
+        if (latestProgress()?.stage !== 'done') throw new Error('正常完了通知を確認できませんでした');
+    } catch (error) {
+        writeStage.value = 'failed';
+        const last = latestProgress();
+        if (last) progress.value = { ...last, stage: 'failed' };
+        appendWriteMessage({ text: `SD読込を停止しました: ${String(error)}`, warning: true });
+        if (last) {
+            appendWriteMessage(`保存完了 ${last.completed}/${last.total}`);
+            if (last.index > last.completed) appendWriteMessage({ text: `${last.filename}: 不完全なファイルが残っている可能性があります`, warning: true });
+        }
+    } finally {
+        clearInterval(elapsedTimer);
+        elapsedTimer = undefined;
+        writing.value = false;
+        operationStatus.value = null;
+        transientNotice.value = '';
+    }
+}
+
 function latestProgress(): WriteProgress | null { return progress.value; }
 
 function closeWriteDialog() {
@@ -367,6 +440,16 @@ async function copyWriteLog() {
     }
 }
 
+async function openOutput() {
+    if (writing.value) return;
+    logButtonPress('outputを開く');
+    try {
+        await invoke('open_sd_output');
+    } catch (error) {
+        appendWriteMessage({ text: `outputを開けませんでした: ${String(error)}`, warning: true });
+    }
+}
+
 function showNotice(message: string) {
 	transientNotice.value = message;
 	clearTimeout(noticeTimer);
@@ -378,6 +461,7 @@ function acceptProgress(event: WriteProgress) {
 	if (progress.value?.stage === 'done' || progress.value?.stage === 'failed' || progress.value?.stage === 'final_failed') return;
     operationStatus.value = null;
 	progress.value = event;
+    if (operationKind.value === 'read') writeTotal.value = event.total;
 	writeStage.value = event.stage;
     const now = performance.now();
 	elapsedMs.value = Math.max(elapsedMs.value, now - elapsedAnchor, event.elapsed_ms);
@@ -386,6 +470,7 @@ function acceptProgress(event: WriteProgress) {
 		elapsedTimer = setInterval(() => { elapsedMs.value = Math.max(0, performance.now() - elapsedAnchor); }, 100);
 	}
 	if (event.stage === 'file_done') void appendWriteMessage(`${event.index}/${event.total} ${event.filename} ${event.file_ms}ms ✓`);
+    if (event.stage === 'clean') appendWriteMessage(`読込対象: ${event.total}件 / ${formatByteCount(event.total_bytes)}バイト。output直下のファイルを削除します。`);
     if (event.stage === 'final_file_done') void appendWriteMessage(`最終照合 ${event.completed}/${event.total} ${event.filename} ${event.file_ms}ms ✓`);
 	if (event.stage === 'failed' || event.stage === 'final_failed') void appendWriteMessage({ text: `${event.stage === 'final_failed' ? '最終照合失敗' : '失敗'} ${event.index}/${event.total} ${event.filename} ${event.file_ms}ms: ${event.error}`, warning: true });
 	if (event.stage === 'done' || event.stage === 'failed' || event.stage === 'final_failed') {
@@ -445,8 +530,8 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 			<div class="panel-base" :style="{ gridTemplateRows: `${Math.max(menuHeight, minimumMenuHeight)}px 1px ${sdHeight}px 1px minmax(0, 1fr) minmax(28px, auto)` }">
 				<div id="panel_menu" class="panel_menu">
 					<div ref="menuContent" class="menu-content">
-						<SdMenu :can-write="canSdWrite" :busy="initializing || writing || closing" :write-label="closing ? '終了待ち…' : writing ? `${statusLabel}…` : 'SD書込'"
-							@write="onSdWrite" @error="appendMessage" />
+						<SdMenu :can-write="canSdWrite" :can-read="canSdRead" :busy="initializing || writing || closing" :write-label="closing ? '終了待ち…' : writing ? `${statusLabel}…` : 'SD書込'"
+							@write="onSdWrite" @read="onSdRead" @action="logButtonPress" @error="appendMessage" />
 					</div>
 				</div>
 				<div id="resizer1" class="resizer" @pointerdown="resize($event, 1)"></div>
@@ -492,16 +577,17 @@ function resize(event: PointerEvent, divider: 1 | 2) {
                 <h2 id="write-title" :class="{ 'write-failed': writeStage === 'failed' }">{{ popupTitle }}</h2>
                 <p class="write-count" role="status">{{ progress?.completed ?? 0 }}/{{ progress?.total ?? writeTotal }} ({{ percent }}%)</p>
             </div>
-            <progress :value="percent" max="100" aria-label="SD書込・照合の全体進捗"></progress>
+            <progress :value="percent" max="100" :aria-label="`${operationName}の全体進捗`"></progress>
             <p class="write-detail">
                 <span class="write-current" :title="progress?.filename ? `${statusLabel} ${progress.filename}` : statusLabel">{{ statusLabel }}<template v-if="progress?.filename"> {{ progress.filename }}</template></span>
             </p>
             <p class="write-operation" :title="operationDetail" role="status">{{ writing ? operationDetail : '' }}</p>
-            <div ref="writeLogPanel" class="write-log" role="log" aria-label="SD書込ログ" tabindex="0" @scroll="writeLogScroller.onScroll">
+            <div ref="writeLogPanel" class="write-log" role="log" :aria-label="`${operationName}ログ`" tabindex="0" @scroll="writeLogScroller.onScroll">
                 <p v-for="(message, index) in writeLog" :key="index" :class="{ 'log-warning': typeof message !== 'string' && message.warning, 'log-done': typeof message === 'string' && message.startsWith('全件完了') }">{{ typeof message === 'string' ? message : message.text }}</p>
             </div>
             <p v-if="transientNotice" class="write-notice" role="status">{{ transientNotice }}</p>
             <div class="write-actions">
+                <button v-if="operationKind === 'read'" type="button" class="copy-log open-output" :disabled="writing" @click="openOutput">outputを開く</button>
                 <button type="button" class="copy-log" aria-live="polite" @click="copyWriteLog">{{ copyStatus || 'ログをコピー' }}</button>
                 <button type="button" class="close-write" :disabled="writing" @click="closeWriteDialog">閉じる</button>
             </div>
@@ -534,6 +620,8 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 .write-actions { display: flex; flex-shrink: 0; justify-content: flex-end; align-items: center; gap: 6px; }
 .write-actions button { flex-shrink: 0; border-radius: 20px; padding: 5px 12px; font: inherit; line-height: 1.2; cursor: pointer; }
 .copy-log { border: 1px solid #c5cad3; background: #e9ecf2; color: #242424; }
+.open-output { margin-right: auto; }
+.open-output:disabled { opacity: .45; cursor: default; }
 .close-write { border: 1px solid #1a73df; background: #1a73df; color: white; font-weight: bold !important; }
 .close-write:disabled { opacity: .45; cursor: default; }
 .write-actions button:focus-visible, .write-log:focus-visible { outline: 2px solid #1a73df; outline-offset: 2px; }
@@ -665,17 +753,21 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 	overflow-wrap: anywhere;
 }
 .panel_text {
-	display: flex;
-	flex-direction: column;
+	display: grid;
+	grid-template-rows: auto minmax(0, 1fr);
+	overflow: hidden;
 	line-height: 13px;
 }
 .text-header {
 	justify-content: space-between;
 }
 .text-messages {
-	flex: 1;
 	min-height: 0;
 	overflow: auto;
+	overflow-anchor: none;
+	overscroll-behavior: contain;
+	scrollbar-gutter: stable;
+	padding-bottom: 2px;
 }
 .panel_text .path-message {
 	margin: 0 4px;

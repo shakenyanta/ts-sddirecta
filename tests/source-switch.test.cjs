@@ -45,7 +45,7 @@ function view(invoke) {
   const api = new Function(...Object.keys(bindings), transpile(source) + `
     return { initializeSource, refreshMatchedFiles, sourceDirectory, displayedDirectory,
       sdDirectDictionary, sdloadingDictionary, sdAddressRange, matchedFiles, canSdWrite, writeFileCount, allFileCount, initializing, messages, folders, pathError,
-      onSdWrite, closeWriteDialog, copyWriteLog, writeDialogOpen, writeLog, writing, pendingPlan, progress, percent, currentRun, transientNotice, operationStatus, operationDetail };
+      onSdWrite, onSdRead, canSdRead, popupTitle, closeWriteDialog, copyWriteLog, writeDialogOpen, writeLog, writing, pendingPlan, progress, percent, currentRun, transientNotice, operationStatus, operationDetail };
   `)(...Object.values(bindings));
   return { ...api, mount: () => mount(), unmount: () => unmount(),
     drop: paths => listener({ payload: { type: 'drop', paths } }),
@@ -245,6 +245,69 @@ function backend(overrides = {}) {
     }
   };
 }
+
+test('all-area read works without PC matches, shows export progress and locks changes until completion', async () => {
+  let args, release;
+  const waiting = new Promise(resolve => { release = resolve; });
+  const ui = view(backend({
+    find_dictionary_files: () => ({ files: [], from_input: false, input_exists: false }),
+    run_sd_read: value => { args = value; return waiting; },
+  }));
+  await ui.mount();
+  await ui.initializeSource(['C:\\chosen']);
+  assert.equal(ui.canSdWrite.value, false);
+  assert.equal(ui.canSdRead.value, true);
+  const task = ui.onSdRead('E:');
+  await until(() => !!args);
+  assert.equal(args.directory, 'C:\\chosen');
+  assert.equal(args.drive, 'E:');
+  assert.equal(ui.writeDialogOpen.value, true);
+  assert.equal(ui.canSdRead.value, false);
+  assert.ok(ui.writeLog.value.includes('保存先: C:\\app\\output'));
+  ui.closeWriteDialog();
+  assert.equal(ui.writeDialogOpen.value, true);
+  ui.drop(['C:\\different']);
+  assert.equal(ui.sourceDirectory.value, 'C:\\chosen');
+  ui.key('F5');
+  const event = { run_id: args.runId, filename: 'one', index: 1, total: 2, completed: 0,
+    stage: 'read', processed_bytes: 512, total_bytes: 1024, elapsed_ms: 30, file_ms: 20, error: null };
+  ui.event('sd-progress', { ...event, run_id: 'stale' });
+  assert.equal(ui.percent.value, 0);
+  ui.event('sd-progress', event);
+  assert.equal(ui.percent.value, 50);
+  release({ ...event, filename: '', index: 2, completed: 2, stage: 'done', processed_bytes: 1024 });
+  await task;
+  assert.equal(ui.percent.value, 100);
+  assert.equal(ui.popupTitle.value, '読込完了');
+  assert.equal(ui.writing.value, false);
+  assert.equal(ui.hasTimer, false);
+  assert.equal(ui.writeDialogOpen.value, true);
+  assert.ok(ui.writeLog.value.some(m => typeof m === 'string' && m.startsWith('全件完了 2/2')));
+  ui.closeWriteDialog();
+  assert.equal(ui.writeDialogOpen.value, false);
+  ui.unmount();
+});
+
+test('read failure retains saved count and partial-file warning without claiming completion', async () => {
+  let ui;
+  ui = view(backend({ run_sd_read: args => {
+    ui.event('sd-progress', { run_id: args.runId, filename: 'failed.bin', index: 2, total: 3,
+      completed: 1, stage: 'failed', processed_bytes: 600, total_bytes: 1536,
+      elapsed_ms: 30, file_ms: 20, error: 'SD読込サイズが不足しています' });
+    throw new Error('SD読込サイズが不足しています');
+  } }));
+  await ui.mount();
+  await ui.onSdRead('E:');
+  assert.equal(ui.popupTitle.value, '読込失敗');
+  assert.notEqual(ui.percent.value, 100);
+  assert.equal(ui.writeDialogOpen.value, true);
+  assert.equal(ui.hasTimer, false);
+  const logs = ui.writeLog.value.map(m => typeof m === 'string' ? m : m.text);
+  assert.ok(logs.includes('保存完了 1/3'));
+  assert.ok(logs.some(m => /failed.bin: 不完全/.test(m)));
+  assert.ok(logs.every(m => !/全件完了|最終照合|書込を停止/.test(m)));
+  ui.unmount();
+});
 
 test('startup and native drop share initialization and use the selected source for all IPC', async () => {
   const calls = [];

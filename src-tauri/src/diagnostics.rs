@@ -172,6 +172,10 @@ pub fn operation_label(name: &str) -> String {
         "ドライブと物理ディスクの対応を確認しています"
     } else if name.starts_with("ReadFile") {
         "SDから読み込んでいます"
+    } else if name.starts_with("output reset") || name.starts_with("output delete") {
+        "output直下のファイルを初期化しています"
+    } else if name.starts_with("output save") {
+        "読み込んだデータをファイルへ保存しています"
     } else if name.starts_with("WriteFile") {
         "SDへ書き込んでいます"
     } else if name == "FlushFileBuffers" {
