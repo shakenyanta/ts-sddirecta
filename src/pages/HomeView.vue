@@ -367,14 +367,6 @@ async function copyWriteLog() {
     }
 }
 
-async function openDiagnosticLog() {
-    try {
-        await invoke('open_diagnostic_log');
-    } catch (error) {
-        await appendWriteMessage({ text: `ログを開けませんでした: ${String(error)}`, warning: true });
-    }
-}
-
 function showNotice(message: string) {
 	transientNotice.value = message;
 	clearTimeout(noticeTimer);
@@ -510,9 +502,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
             </div>
             <p v-if="transientNotice" class="write-notice" role="status">{{ transientNotice }}</p>
             <div class="write-actions">
-                <span class="write-time">{{ (elapsedMs / 1000).toFixed(2) }}秒</span>
                 <button type="button" class="copy-log" aria-live="polite" @click="copyWriteLog">{{ copyStatus || 'ログをコピー' }}</button>
-                <button type="button" @click="openDiagnosticLog">ログ表示</button>
                 <button type="button" class="close-write" :disabled="writing" @click="closeWriteDialog">閉じる</button>
             </div>
         </div>
@@ -534,7 +524,6 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 .write-count { flex-shrink: 0; margin: 0; color: #155bb5; font-size: 11px; white-space: nowrap; }
 .write-detail { display: flex; flex-shrink: 0; margin: 0; color: #536176; font-size: 11px; line-height: 1.2; white-space: nowrap; }
 .write-current { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.write-time { flex: 1; min-width: 0; color: #536176; font-size: 11px; white-space: nowrap; }
 .write-log { flex: 1; min-height: 0; overflow: auto; overflow-anchor: none; scrollbar-gutter: stable; padding: 4px; border-radius: 3px; background: #1e1e1e; color: #36dbc3; font: 11px/1.25 Consolas, 'Yu Gothic UI', monospace; scrollbar-color: #888 #eee; scrollbar-width: thin; }
 .write-log::-webkit-scrollbar { width: 8px; height: 8px; }
 .write-log::-webkit-scrollbar-thumb { border-radius: 4px; background: #888; }

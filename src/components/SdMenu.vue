@@ -158,13 +158,15 @@ onUnmounted(() => {
 				<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
 			</button>
 			<div v-if="actionsOpen" id="sd-actions" class="menu-dropdown" role="group" aria-label="メニュー操作">
-				<button type="button" @click="openDiagnosticLog">ログ表示</button>
-				<button type="button" :disabled="busy">全エリアSD読み込み</button>
-				<button type="button" :disabled="busy">選択エリアSD読み込み</button>
-				<button type="button" :disabled="busy">全エリアSD書き込み</button>
-				<button type="button" :disabled="busy">選択エリアSD書き込み</button>
-				<button type="button" :disabled="busy">全エリアSD FF初期化</button>
-				<button type="button" :disabled="busy">SD選択エリア FF初期化</button>
+				<div class="menu-operation-buttons">
+					<button type="button" :disabled="busy">全エリアSD読み込み</button>
+					<button type="button" :disabled="busy">選択エリアSD読み込み</button>
+					<button type="button" :disabled="busy">全エリアSD FF初期化</button>
+					<button type="button" :disabled="busy">SD選択エリア FF初期化</button>
+				</div>
+				<div class="menu-log-section">
+					<button type="button" @click="openDiagnosticLog">ログ表示</button>
+				</div>
 			</div>
 		</div>
 	</div>
@@ -176,10 +178,16 @@ onUnmounted(() => {
 .menu-toggle { display: flex; align-items: center; justify-content: center; width: 32px; height: 34px; padding: 0; border: 1px solid transparent; border-radius: 6px; background: transparent; color: #526171; cursor: pointer; }
 .menu-toggle:hover, .menu-toggle[aria-expanded="true"] { background: #e8f0fe; border-color: #c6d8f4; color: #245da6; }
 .menu-toggle:focus-visible, .menu-dropdown button:focus-visible { outline: 2px solid #174a75; outline-offset: 1px; }
-.menu-dropdown { position: absolute; top: calc(100% + 5px); right: 0; z-index: 10; width: 212px; max-width: calc(100vw - 20px); padding: 4px; border: 1px solid #d9dfe5; border-radius: 8px; background: #fff; box-shadow: 0 5px 18px #22334426; }
-.menu-dropdown button { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 8px; border: 0; border-radius: 4px; background: transparent; color: #333; font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+.menu-dropdown { position: absolute; top: calc(100% + 5px); right: 0; z-index: 10; width: max-content; max-width: calc(100vw - 20px); padding: 4px; border: 1px solid #d9dfe5; border-radius: 8px; background: #fff; box-shadow: 0 5px 18px #22334426; }
+.menu-dropdown button { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 4px 8px; border: 0; border-radius: 4px; background: transparent; color: #333; font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
 .menu-dropdown button:hover:not(:disabled) { background: #e8f0fe; }
 .menu-dropdown button:disabled { color: #9ca3af; cursor: default; }
+.menu-operation-buttons { display: grid; gap: 4px; }
+.menu-operation-buttons button { box-sizing: border-box; justify-content: center; border: 1px solid #2a67c8; border-radius: 6px; background: linear-gradient(135deg, #4285f4 0%, #357ae8 100%); color: #fff; font-weight: 600; text-align: center; box-shadow: 0 1px 3px rgba(66, 133, 244, 0.2); transition: background 0.15s, box-shadow 0.15s; }
+.menu-operation-buttons button:hover:not(:disabled) { background: linear-gradient(135deg, #357ae8 0%, #2a67c8 100%); box-shadow: 0 2px 5px rgba(66, 133, 244, 0.3); }
+.menu-operation-buttons button:active:not(:disabled) { background: #2a67c8; box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.2); }
+.menu-operation-buttons button:disabled { border-color: #d5d9df; background: #e0e0e0; color: #9e9e9e; box-shadow: none; cursor: not-allowed; }
+.menu-log-section { margin-top: 6px; padding-top: 4px; border-top: 1px solid #d9dfe5; }
 .drive-select-inline { display: flex; flex: 1; min-width: 0; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
 .no-drive-warning-inline { display: flex; align-items: center; gap: 0.4rem; padding: 0.45rem 1rem; background: linear-gradient(135deg, #fff9e6 0%, #fff3cd 100%); border: 1.5px solid #ffc107; border-radius: 8px; color: #856404; font-size: 0.95rem; font-weight: 500; white-space: nowrap; }
 .no-drive-warning-inline svg { flex-shrink: 0; }
