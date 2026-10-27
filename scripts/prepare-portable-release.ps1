@@ -7,13 +7,15 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Push-Location -LiteralPath $projectRoot
 try {
+    & node scripts/sync-version.mjs
+    if ($LASTEXITCODE -ne 0) { throw 'バージョンの自動同期に失敗しました。' }
     $package = Get-Content -LiteralPath 'package.json' -Raw -Encoding UTF8 | ConvertFrom-Json
     $tauri = Get-Content -LiteralPath 'src-tauri/tauri.conf.json' -Raw -Encoding UTF8 | ConvertFrom-Json
     $cargoText = [System.IO.File]::ReadAllText((Join-Path $projectRoot 'src-tauri/Cargo.toml'))
     $cargoVersion = [regex]::Match($cargoText, '(?m)^version\s*=\s*"([^"]+)"').Groups[1].Value
     $version = $package.version
     if ($version -ne $tauri.version -or $version -ne $cargoVersion) {
-        throw 'package.json / tauri.conf.json / Cargo.toml のバージョンを一致させてください。'
+        throw 'バージョンの自動同期後も不一致があります。同期対象ファイルを確認してください。'
     }
     if (-not (Test-Path -LiteralPath $PrivateKeyPath -PathType Leaf)) {
         throw "署名用の秘密鍵がありません: $PrivateKeyPath"

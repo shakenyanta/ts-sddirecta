@@ -82,12 +82,13 @@ CSV・config・input・outputなどの利用者データは変更しません。
 署名用の秘密鍵は `$env:USERPROFILE\.tauri\ts-sddirecta.key` に保管し、アプリへは対応する公開鍵 `src-tauri/update-public-key.txt` だけを組み込みます。
 秘密鍵とパスワードはリポジトリやリリースへ公開しないでください。継続して更新を提供するため、秘密鍵をバックアップしてください。
 
-1. `package.json`・`src-tauri/Cargo.toml`・`src-tauri/tauri.conf.json` のバージョンを同じ値に更新します。更新として配布するときは前回より大きい値にします。
-2. PowerShellで `npm.cmd run release:prepare -- -Notes "今回の変更内容"` を実行します。秘密鍵を暗号化している場合は署名時にパスワードを入力します。
+1. `package.json` の `version` だけを更新します。更新として配布するときは前回より大きい値にします。
+2. PowerShellで `npm.cmd run release:prepare -- -Notes "今回の変更内容"` を実行します。ビルド前に `Cargo.toml`・`tauri.conf.json`・`package-lock.json` のアプリ自身のバージョンへ自動反映します。秘密鍵を暗号化している場合は署名時にパスワードを入力します。
 3. `dist-update/v<バージョン>/` の `ts-sddirecta.exe`・`latest.json`・`latest.json.sig` の3ファイルを確認します。
 4. 配布用GitHubリポジトリで `v<バージョン>` タグのReleaseを作成し、3ファイルを同じ名前のまま添付して公開します。通常の最新版として公開し、ドラフト・プレリリースにはしません。
 
 初回は利用者がexeを手動で配置して起動します。以降の新バージョンはアプリ内から更新できます。
+通常のビルド・開発起動のnpmコマンドでもバージョンを自動同期します。同期だけ行う場合は `npm.cmd run version:sync` を実行します。
 `latest.json` にはバージョン・対象CPU・exeのURL・サイズ・SHA-256・変更内容を記録し、そのJSON全体をTauri CLIで署名します。
 更新処理はインストーラーを使用しません。現在の配布スクリプトは1リリースにつき1つのWindows CPU構成を対象にします。
 初回公開前に、テスト用フォルダーに置いた旧バージョンから新バージョンへの更新と再起動を確認してください。

@@ -39,16 +39,30 @@ explorer.exe "$env:USERPROFILE\.tauri"
 
 ## 2. バージョンと変更内容を更新する
 
-次の3か所を、すべて同じバージョンに変更します。
+**手入力で変更するのは、`package.json` の `"version"` だけです。**
+今回の例では、次のように `0.1.0` から `0.1.1` に変更して保存します。
 
-| ファイル | 変更する項目 | 今回の例 |
-| --- | --- | --- |
-| `package.json` | 先頭付近の `"version"` | `"0.1.1"` |
-| `src-tauri/Cargo.toml` | `[package]` 内の `version` | `"0.1.1"` |
-| `src-tauri/tauri.conf.json` | 先頭付近の `"version"` | `"0.1.1"` |
+```json
+"version": "0.1.1"
+```
+
+手順3の `release:prepare` を実行すると、ビルド前に次の項目へ自動反映されます。
+
+| 自動で更新するファイル | 反映する項目 |
+| --- | --- |
+| `src-tauri/Cargo.toml` | `[package]` 内の `version` |
+| `src-tauri/tauri.conf.json` | アプリの `version` |
+| `package-lock.json` | アプリ自身の `version`（先頭と `packages[""]`） |
 
 依存ライブラリのバージョンは変更しません。
-ここで指定する値には `v` を付けず、GitHubのタグには `v` を付けます。
+`package.json` では `v` を付けず、GitHubのタグには `v` を付けます。
+
+`npm.cmd run build:exe`・`npm.cmd run build`・`npm.cmd run dev`・`npm.cmd run tauri -- dev` でも、実行前に自動同期します。
+ビルドせずに同期だけ行う場合は、プロジェクトのフォルダーで次を実行します。
+
+```powershell
+npm.cmd run version:sync
+```
 
 **公開済みの番号は使い回さず、前回より大きい番号にしてください。**
 アプリは、公開版が自分より新しい場合だけ更新を案内します。
@@ -71,7 +85,7 @@ Set-Location 'C:\Users\SYSTEM-PC7\source\repos\electron3\ts-sddirecta'
 npm.cmd run release:prepare -- -Notes "SD書込の表示を改善しました。"
 ```
 
-このコマンドで、バージョンと公開鍵の一致確認、exeのビルド、更新情報の生成、署名を行います。
+このコマンドで、`package.json` からのバージョンの自動同期、公開鍵の一致確認、exeのビルド、更新情報の生成、署名を行います。
 鍵のパスワードを求められた場合は、PowerShell上で入力します。
 処理が終わるまで待ち、最後に **「配布ファイルの作成が完了しました」** と表示されることを確認してください。
 途中にビルド完了の表示があっても、署名まで完了している必要があります。
@@ -214,7 +228,7 @@ latest.json、latest.json.sig、Source codeはダウンロード不要です。
 
 | 状況 | 確認・対処 |
 | --- | --- |
-| バージョンが一致しないというエラー | 手順2の3ファイルが、すべて同じ値になっているか確認する。 |
+| バージョンの自動同期でエラー | `package.json` の `version` が `0.1.1` のような値か確認する。JSONの構文エラーや、`Cargo.toml` の `[package]` 内に `version` がない場合も同期を停止する。 |
 | 秘密鍵がない／公開鍵が一致しない | 元の鍵の保存先と `-PrivateKeyPath` を確認する。対処のために新しい鍵へ作り替えない。 |
 | ビルドや署名が失敗した | エラーを解消して作成コマンドを再実行する。以前の生成物を誤って公開しない。 |
 | 説明欄の下に `We don't support that file type.` が出た | 説明欄への添付エラー。説明欄に入ったファイルリンクを削除し、配布ファイルは手順5-3の点線枠へ添付する。 |
