@@ -6,6 +6,7 @@ fn greet(name: &str) -> String {
 
 mod diagnostics;
 mod matching_files;
+mod portable_update;
 mod sd_batch;
 mod sd_ff_batch;
 mod sd_read_batch;
@@ -13,6 +14,7 @@ mod sd_worker;
 mod source_directory;
 mod startup_csv;
 mod windows_api;
+pub use portable_update::run_if_helper;
 pub use sd_worker::run_if_worker;
 
 use serde::Serialize;
@@ -25,6 +27,61 @@ static WRITE_RUNNING: AtomicBool = AtomicBool::new(false);
 static EXIT_WAITING: AtomicBool = AtomicBool::new(false);
 static EXIT_READY: AtomicBool = AtomicBool::new(false);
 static WRITE_PLAN: Mutex<Option<sd_batch::Plan>> = Mutex::new(None);
+
+#[tauri::command]
+async fn check_portable_update(
+    app: tauri::AppHandle,
+) -> Result<portable_update::UpdateCheck, String> {
+    let version = app.package_info().version.to_string();
+    tauri::async_runtime::spawn_blocking(move || portable_update::check(&version))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn install_portable_update(version: String, app: tauri::AppHandle) -> Result<(), String> {
+    if EXIT_WAITING.load(Ordering::SeqCst)
+        || sd_worker::is_busy()
+        || WRITE_RUNNING
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+    {
+        return Err("SD処理中または終了処理中のため更新できません".into());
+    }
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            WRITE_RUNNING.store(false, Ordering::SeqCst);
+        }
+    }
+    let _guard = Guard;
+    tauri::async_runtime::spawn_blocking(move || {
+        let prepared = portable_update::prepare(&version)?;
+        if EXIT_WAITING
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Err("アプリの終了処理中です".into());
+        }
+        if let Err(error) = sd_worker::shutdown() {
+            EXIT_WAITING.store(false, Ordering::SeqCst);
+            return Err(format!(
+                "SD処理用プロセスの終了に失敗しました。アプリを再起動してください: {error}"
+            ));
+        }
+        if let Err(error) = prepared.launch() {
+            sd_worker::resume_after_update_failure();
+            EXIT_WAITING.store(false, Ordering::SeqCst);
+            return Err(error);
+        }
+        EXIT_READY.store(true, Ordering::SeqCst);
+        diagnostics::record("INFO", "portable update helper ready; exiting application");
+        app.exit(0);
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
 
 #[tauri::command]
 async fn open_diagnostic_log() -> Result<(), String> {
@@ -417,6 +474,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             greet,
+            check_portable_update,
+            install_portable_update,
             get_executable_directory,
             resolve_drop_directory,
             check_startup_csv,

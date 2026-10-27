@@ -1,5 +1,5 @@
 // Render the built app in Chromium with mocked IPC. Never access an SD card.
-// Usage: node scripts/verify-panel-scroll.mjs [path-to-chrome-or-edge] [--ff] [--write]
+// Usage: node scripts/verify-panel-scroll.mjs [path-to-chrome-or-edge] [--ff] [--write] [--update]
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { readFile, mkdtemp } from 'node:fs/promises';
@@ -10,15 +10,27 @@ import { spawn } from 'node:child_process';
 const browser = process.argv.slice(2).find(arg => !arg.startsWith('--')) || 'C:/Program Files/Google/Chrome/Application/chrome.exe';
 const verifyFf = process.argv.includes('--ff');
 const verifyWrite = process.argv.includes('--write');
+const verifyUpdate = process.argv.includes('--update');
 const root = resolve('dist');
 const csv = await readFile('config/sdDirectaxs.csv', 'utf8');
 const bootstrap = `
 localStorage.setItem('sddirecta-selected-drive', 'H:');
 const callbacks = new Map(); const listeners = new Map(); let next = 1;
+let updateChecks = 0; let updateInstalls = 0;
 window.__TAURI_INTERNALS__ = {
   metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main' } },
   transformCallback(fn) { const id = next++; callbacks.set(id, fn); return id; },
   async invoke(command, args = {}) {
+    if (command === 'plugin:app|name') return 'ts-sddirecta';
+    if (command === 'plugin:app|version') return '0.1.0';
+    if (command === 'check_portable_update') {
+      updateChecks++;
+      return { status: 'available', current_version: '0.1.0', version: '0.2.0', notes: 'Test update' };
+    }
+    if (command === 'install_portable_update') {
+      updateInstalls++;
+      throw Error('Simulated signature failure');
+    }
     if (command === 'plugin:event|listen') { listeners.set(args.event, callbacks.get(args.handler)); return next++; }
     if (command.startsWith('plugin:event|')) return next++;
     if (command === 'prepare_sd_write') return { run_id: args.runId, drive: args.drive, directory: args.directory,
@@ -122,6 +134,34 @@ window.addEventListener('load', async () => {
       preparationInPopup: dialog.querySelector('.write-log').textContent.includes(prepare),
       closed: !dialog.open, title: dialog.querySelector('h2').textContent } });
   }
+  if (${verifyUpdate}) {
+    const writeDialog = document.querySelector('.write-dialog');
+    if (writeDialog.open) writeDialog.querySelector('.close-write').click();
+    const openMenuItem = async label => {
+      document.querySelector('[aria-controls="sd-actions"]').click(); await render();
+      [...document.querySelectorAll('.menu-dropdown button')].find(b => b.textContent === label).click();
+      await delay(100); await render();
+    };
+    const startupCheckCount = updateChecks;
+    await openMenuItem('バージョン情報');
+    const info = document.querySelector('.app-info-dialog');
+    const versionShown = info.open && info.textContent.includes('0.1.0');
+    const versionCheckCount = updateChecks;
+    info.querySelector('button[type="submit"]').click(); await render();
+    await openMenuItem('アップデート確認');
+    const confirmation = info.open && info.textContent.includes('実行しますか？');
+    const no = [...info.querySelectorAll('button')].find(b => b.textContent === 'No');
+    const noFocused = document.activeElement === no;
+    no.click(); await render();
+    const noInstalls = updateInstalls;
+    await openMenuItem('アップデート確認');
+    [...info.querySelectorAll('button')].find(b => b.textContent === 'YES').click();
+    await delay(100); await render();
+    const failureVisible = info.open && info.textContent.includes('Simulated signature failure');
+    const closeEnabled = !info.querySelector('button[type="submit"]').disabled;
+    results.push({ update: { startupCheckCount, versionCheckCount, versionShown, confirmation, noFocused,
+      noInstalls, yesInstalls: updateInstalls, failureVisible, closeEnabled } });
+  }
   document.body.dataset.panelAudit = JSON.stringify(results);
 });`;
 
@@ -185,6 +225,16 @@ try {
   const results = JSON.parse(encoded);
   console.log(JSON.stringify(results, null, 2));
   for (const result of results) {
+    if (result.update) {
+      const update = result.update;
+      assert.equal(update.startupCheckCount, 0);
+      assert.equal(update.versionCheckCount, 0);
+      assert.equal(update.noInstalls, 0);
+      assert.equal(update.yesInstalls, 1);
+      assert.ok(update.versionShown && update.confirmation && update.noFocused && update.failureVisible && update.closeEnabled,
+        JSON.stringify(update));
+      continue;
+    }
     if (result.write) {
       assert.ok(result.write.enabled && result.write.busy && result.write.closed && result.write.historyPreserved
         && result.write.pressFollowsWarning && result.write.preparationInPopup,

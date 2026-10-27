@@ -1,12 +1,79 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { getName, getVersion } from '@tauri-apps/api/app';
 
 const props = defineProps<{ canWrite: boolean; canRead?: boolean; canInitialize?: boolean; busy?: boolean; writeLabel?: string }>();
 const emit = defineEmits<{ write: [drive: string]; read: [drive: string]; initialize: [drive: string]; action: [label: string]; error: [message: string] }>();
 const actionsOpen = ref(false);
 const actionsContainer = ref<HTMLElement | null>(null);
 const actionsButton = ref<HTMLButtonElement | null>(null);
+const infoDialog = ref<HTMLDialogElement | null>(null);
+const infoTitle = ref('');
+const appName = ref('');
+const appVersion = ref('');
+const infoMessage = ref('');
+interface UpdateCheck { status: 'available' | 'latest' | 'unpublished'; current_version: string; version: string | null; notes: string }
+const availableUpdate = ref<UpdateCheck | null>(null);
+const installingUpdate = ref(false);
+let infoRequest = 0;
+
+async function showAppInfo(title: 'アップデート確認' | 'バージョン情報') {
+    if (installingUpdate.value || (title === 'アップデート確認' && props.busy)) return;
+    recordAction(title);
+    actionsOpen.value = false;
+    infoTitle.value = title;
+    appName.value = '';
+    appVersion.value = '';
+    availableUpdate.value = null;
+    infoMessage.value = 'バージョン情報を取得しています…';
+    const request = ++infoRequest;
+    await nextTick();
+    infoDialog.value?.showModal();
+    try {
+        const [name, version] = await Promise.all([getName(), getVersion()]);
+        if (disposed || request !== infoRequest) return;
+        appName.value = name;
+        appVersion.value = version;
+        infoMessage.value = '';
+        if (title === 'アップデート確認') {
+            infoMessage.value = 'アップデートを確認しています…';
+            const result = await invoke<UpdateCheck>('check_portable_update');
+            if (disposed || request !== infoRequest) return;
+            if (result.status === 'available') {
+                availableUpdate.value = result;
+                infoMessage.value = `バージョン ${result.version} のアップデートがあります。実行しますか？`;
+            } else {
+                infoMessage.value = result.status === 'latest' ? '最新バージョンです。' : '更新情報はまだ公開されていません。';
+            }
+        }
+    } catch (error) {
+        if (!disposed && request === infoRequest) infoMessage.value = `${title}に失敗しました: ${String(error)}`;
+    }
+}
+
+async function installUpdate() {
+    const version = availableUpdate.value?.version;
+    if (!version || installingUpdate.value || props.busy) return;
+    recordAction('アップデート実行');
+    installingUpdate.value = true;
+    infoMessage.value = '更新ファイルをダウンロード・検証しています。完了後、SD処理用プロセスを終了し、アプリを更新して再起動します。';
+    try {
+        await invoke('install_portable_update', { version });
+        infoMessage.value = '更新の準備が完了しました。アプリを再起動しています…';
+    } catch (error) {
+        availableUpdate.value = null;
+        infoMessage.value = `更新を実行できませんでした: ${String(error)}`;
+        installingUpdate.value = false;
+    }
+}
+
+function closeAppInfo() {
+    if (installingUpdate.value) return;
+    ++infoRequest;
+    infoDialog.value?.close();
+    actionsButton.value?.focus();
+}
 
 function closeActions(event: Event) {
 	if (!actionsOpen.value) return;
@@ -194,13 +261,34 @@ onUnmounted(() => {
 				</div>
 				<div class="menu-log-section">
 					<button type="button" @click="openDiagnosticLog">ログ表示</button>
+					<button type="button" :disabled="busy || installingUpdate" @click="showAppInfo('アップデート確認')">アップデート確認</button>
+					<button type="button" @click="showAppInfo('バージョン情報')">バージョン情報</button>
 				</div>
 			</div>
 		</div>
+		<dialog ref="infoDialog" class="app-info-dialog" aria-labelledby="app-info-title" @cancel.prevent="closeAppInfo">
+			<h2 id="app-info-title">{{ infoTitle }}</h2>
+			<p v-if="appName">{{ appName }}</p>
+			<p v-if="appVersion">バージョン {{ appVersion }}</p>
+			<p v-if="infoMessage" role="status">{{ infoMessage }}</p>
+			<p v-if="availableUpdate?.notes" class="update-notes">{{ availableUpdate.notes }}</p>
+			<form method="dialog" @submit.prevent="closeAppInfo">
+				<button v-if="availableUpdate" type="button" :disabled="busy || installingUpdate" @click="installUpdate">YES</button>
+				<button type="submit" :disabled="installingUpdate" autofocus>{{ availableUpdate ? 'No' : '閉じる' }}</button>
+			</form>
+		</dialog>
 	</div>
 </template>
 
 <style scoped>
+.app-info-dialog { width: min(360px, calc(100vw - 32px)); max-height: calc(100vh - 32px); box-sizing: border-box; padding: 16px; border: 1px solid #d9dfe5; border-radius: 10px; color: #333; overflow: auto; overflow-wrap: anywhere; }
+.app-info-dialog::backdrop { background: rgb(0 0 0 / 35%); }
+.app-info-dialog h2 { margin: 0 0 12px; font-size: 1.05rem; }
+.app-info-dialog p { margin: 8px 0; font-size: 0.85rem; line-height: 1.5; }
+.app-info-dialog form { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.app-info-dialog .update-notes { white-space: pre-wrap; }
+.app-info-dialog button:disabled { opacity: 0.5; cursor: default; }
+.app-info-dialog button { padding: 5px 16px; border: 1px solid #c5cdd5; border-radius: 5px; background: #f5f7fa; color: #333; cursor: pointer; font: inherit; }
 .sd-menu { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 6px; width: 100%; min-height: 48px; padding: 5px 6px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', Meiryo, sans-serif; font-size: 14px; line-height: 1.5; color: #333; }
 .menu-actions { position: relative; }
 .menu-toggle { display: flex; align-items: center; justify-content: center; width: 32px; height: 34px; padding: 0; border: 1px solid transparent; border-radius: 6px; background: transparent; color: #526171; cursor: pointer; }

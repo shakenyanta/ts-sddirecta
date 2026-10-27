@@ -222,6 +222,13 @@ pub fn request_shutdown() {
     STOPPING.store(true, Ordering::SeqCst);
 }
 
+pub fn resume_after_update_failure() {
+    // Only resume after shutdown actually released the worker session.
+    if SESSION.lock().is_ok_and(|session| session.is_none()) {
+        STOPPING.store(false, Ordering::SeqCst);
+    }
+}
+
 fn elevated() -> Result<bool, String> {
     use windows_sys::Win32::{
         Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY},

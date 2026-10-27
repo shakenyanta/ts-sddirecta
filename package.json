@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "vue-tsc && vite build",
     "build:exe": "tauri build --no-bundle",
+    "release:prepare": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-portable-release.ps1",
     "preview": "vite preview",
     "tauri": "tauri"
   },

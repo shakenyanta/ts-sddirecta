@@ -21,6 +21,7 @@ pnpm-debug.log*
 # ===========================
 dist/
 dist-ssr/
+dist-update/
 .vite/
 
 # Vite cache
@@ -48,6 +49,9 @@ target/
 .env.development.local
 .env.test.local
 .env.production.local
+
+# Update signing private keys (public key is embedded separately)
+*.key
 
 # ===========================
 # OS generated files
