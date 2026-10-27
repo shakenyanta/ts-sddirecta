@@ -34,8 +34,7 @@ export function formatByteCount(bytes: number): string {
 }
 
 export function sizeComment(entry: WriteEntry): string | null {
-  if (entry.file_size > entry.size) return `注意: ${entry.filename} は領域サイズを超えています。ファイル: ${formatByteCount(entry.file_size)}バイト、領域: ${formatByteCount(entry.size)}バイト。末尾${formatByteCount(entry.file_size - entry.size)}バイトを無視して書き込みます。`;
-  if (entry.file_size === 0) return `${entry.filename}: ${formatByteCount(0)}バイトのため、対象領域${formatByteCount(entry.size)}バイト全体を0xFFで埋めます。`;
-  if (entry.file_size < entry.size) return `${entry.filename}: ファイル${formatByteCount(entry.file_size)}バイトを書き込み、残り${formatByteCount(entry.size - entry.file_size)}バイトを0xFFで埋めます。`;
+  if (entry.file_size > entry.size) return `${entry.filename}:[警告]容量オーバー`;
+  if (entry.file_size === 0 || entry.file_size < entry.size) return `${entry.filename}:[注意]容量不足 → FF埋め`;
   return null;
 }

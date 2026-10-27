@@ -188,6 +188,10 @@ pub fn operation_label(name: &str) -> String {
         "入力ファイルを確認しています"
     } else if name.starts_with("batch execute") {
         "SD書込・照合を実行しています"
+    } else if name.starts_with("FF batch execute") {
+        "SDのFF初期化・照合を実行しています"
+    } else if name.starts_with("FF prepare") {
+        "FF初期化のCSV・対象領域を確認しています"
     } else if name.starts_with("prepare ") {
         "CSV・対象ファイルを確認しています"
     } else {

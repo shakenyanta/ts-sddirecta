@@ -428,7 +428,7 @@ pub fn execute(
 
 // Shared with fault-injection tests so final verification and completion rules
 // are exercised without touching a physical disk.
-fn run_entries(
+pub(crate) fn run_entries(
     plan: &Plan,
     files: &mut [impl Read + Seek],
     disk: &mut impl Disk,

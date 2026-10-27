@@ -32,9 +32,10 @@ const writeLogPanel = ref<HTMLElement | null>(null);
 const writeLogScroller = createLogScroller(() => writeLogPanel.value);
 const writeTotal = ref(0);
 const copyStatus = ref('');
-const operationKind = ref<'read' | 'write'>('write');
-const operationName = computed(() => operationKind.value === 'read' ? 'SD読込' : 'SD書込');
+const operationKind = ref<'read' | 'write' | 'ff'>('write');
+const operationName = computed(() => operationKind.value === 'ff' ? 'SD FF初期化' : operationKind.value === 'read' ? 'SD読込' : 'SD書込');
 const popupTitle = computed(() => writing.value ? `${statusLabel.value}…`
+    : operationKind.value === 'ff' ? (writeStage.value === 'done' ? 'FF初期化完了' : 'FF初期化失敗')
     : operationKind.value === 'read' ? (writeStage.value === 'done' ? '読込完了' : '読込失敗')
     : writeStage.value === 'done' ? '書込完了' : writeStage.value === 'failed' ? '書込失敗' : '書込対象なし');
 let progressUnlisten: UnlistenFn | undefined;
@@ -56,7 +57,8 @@ const elapsedMs = ref(0);
 const transientNotice = ref('');
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 const percent = computed(() => writePercent(progress.value));
-const statusLabel = computed(() => writeStageLabel(writeStage.value));
+const statusLabel = computed(() => operationKind.value === 'ff' && writeStage.value === 'write'
+    ? 'FF初期化中' : writeStageLabel(writeStage.value));
 const writeFileCount = computed(() => [...sdloadingDictionary.value.values()].filter(area => area.accessFlag === 'A' || area.accessFlag === 'W').length);
 const allFileCount = computed(() => [...sdloadingDictionary.value.values()].filter(area => area.accessFlag !== 'E').length);
 let unlistenDrop: UnlistenFn | undefined;
@@ -156,9 +158,9 @@ function onRefreshKey(event: KeyboardEvent) {
 	void initializeSource(undefined, sourceDirectory.value || undefined);
 }
 
-async function initializeSource(paths?: string[], refreshDirectory?: string, forWrite = false) {
+async function initializeSource(paths?: string[], refreshDirectory?: string) {
 	if (closing.value) return;
-	if (writing.value && !forWrite) { showNotice('SD処理中のため変更できません'); return; }
+	if (writing.value) { showNotice('SD処理中のため変更できません'); return; }
 	if (paths) messages.value = [];
 	const current = ++generation;
 	const active = () => !disposed && current === generation;
@@ -179,7 +181,7 @@ async function initializeSource(paths?: string[], refreshDirectory?: string, for
 			: await invoke<string>('get_executable_directory'));
 		if (!active()) return;
 		sourceDirectory.value = directory;
-		if (refreshDirectory) await appendMessage(forWrite ? '書込前：対象情報を更新' : 'F5：表示を更新');
+		if (refreshDirectory) await appendMessage('F5：表示を更新');
 		else if (paths) await appendMessage('ドラッグ＆ドロップ');
 		await nextTick();
 		if (!active()) return;
@@ -313,6 +315,7 @@ function logButtonPress(label: string) {
 
 async function onSdWrite(drive: string) {
 	if (writeDialogOpen.value || writing.value || closing.value || initializing.value || !drive || !sourceDirectory.value) return;
+    void appendMessage('「SD書込」ボタン押下');
 	if (!progressUnlisten) { await appendMessage('進捗通知を受信できません。アプリを再起動してください'); return; }
     operationKind.value = 'write';
 	writing.value = true;
@@ -333,8 +336,9 @@ async function onSdWrite(drive: string) {
 	try {
         await nextTick();
         writeDialog.value?.showModal();
-        await appendMessage('SD書込の準備を開始します');
-		await initializeSource(undefined, sourceDirectory.value, true);
+        appendWriteMessage('SD書込の準備を開始します');
+        // prepare_sd_write reads the latest CSV/files; run_sd_write revalidates
+        // them before writing. Do not replay startup logs after the click log.
 		plan = await invoke<WritePlan>('prepare_sd_write', { directory: sourceDirectory.value, drive, runId: currentRun.value });
 		if (!plan.entries.length) { await appendWriteMessage('書込対象なし（全エリアと一致するファイルがありません）'); return; }
 		pendingPlan.value = plan;
@@ -422,6 +426,54 @@ async function onSdRead(drive: string) {
     }
 }
 
+async function onSdFfInitialize(drive: string) {
+    if (writeDialogOpen.value || writing.value || closing.value || initializing.value || !drive || !sourceDirectory.value) return;
+    if (!progressUnlisten) { await appendMessage('進捗通知を受信できません。アプリを再起動してください'); return; }
+    operationKind.value = 'ff';
+    writing.value = true;
+    dragging.value = false;
+    writeStage.value = 'prepare';
+    currentRun.value = crypto.randomUUID();
+    progress.value = null;
+    elapsedMs.value = 0;
+    operationStatus.value = null;
+    elapsedAnchor = performance.now();
+    elapsedTimer = setInterval(() => { elapsedMs.value = Math.max(0, performance.now() - elapsedAnchor); }, 100);
+    writeLog.value = [];
+    writeLogScroller.reset();
+    writeTotal.value = 0;
+    copyStatus.value = '';
+    writeDialogOpen.value = true;
+    try {
+        await nextTick();
+        writeDialog.value?.showModal();
+        appendWriteMessage(`FF初期化先: ${drive}`, 'CSVの全領域を0xFFで初期化します。CSVに含まれる先頭32KiBも対象です。',
+            '各領域の初期化・照合後に、全領域を最終照合します。');
+        writeStage.value = 'waiting';
+        const done = await invoke<WriteProgress>('run_sd_ff_initialize', { directory: sourceDirectory.value, drive, runId: currentRun.value });
+        acceptProgress(done);
+        if (latestProgress()?.stage !== 'done') throw new Error('正常完了通知を確認できませんでした');
+    } catch (error) {
+        writeStage.value = 'failed';
+        const last = latestProgress();
+        if (last) progress.value = { ...last, stage: 'failed' };
+        appendWriteMessage({ text: `SD FF初期化を停止しました: ${String(error)}`, warning: true });
+        if (last) {
+            appendWriteMessage(`最終照合成功 ${last.completed}/${last.total}`);
+            if (last.filename) appendWriteMessage({ text: `${last.filename}: 初期化または照合が完了していません。書換え済みの内容は元に戻しません。`, warning: true });
+            const finalPass = ['final_verify', 'final_file_done', 'final_failed'].includes(last.stage);
+            appendWriteMessage(finalPass ? `最終照合未完了: ${last.total - last.completed}領域`
+                : `後続の未実行領域: ${Math.max(0, last.total - last.index)}件`);
+        }
+    } finally {
+        clearInterval(elapsedTimer);
+        elapsedTimer = undefined;
+        writing.value = false;
+        operationStatus.value = null;
+        transientNotice.value = '';
+    }
+}
+
 function latestProgress(): WriteProgress | null { return progress.value; }
 
 function closeWriteDialog() {
@@ -461,7 +513,11 @@ function acceptProgress(event: WriteProgress) {
 	if (progress.value?.stage === 'done' || progress.value?.stage === 'failed' || progress.value?.stage === 'final_failed') return;
     operationStatus.value = null;
 	progress.value = event;
-    if (operationKind.value === 'read') writeTotal.value = event.total;
+    if (operationKind.value !== 'write') writeTotal.value = event.total;
+    if (operationKind.value === 'ff' && event.stage === 'prepare') {
+        appendWriteMessage(`初期化対象: ${event.total}領域 / ${formatByteCount(event.total_bytes / 3)}バイト`,
+            `初期化・直後照合・最終照合の総処理量: ${formatByteCount(event.total_bytes)}バイト`);
+    }
 	writeStage.value = event.stage;
     const now = performance.now();
 	elapsedMs.value = Math.max(elapsedMs.value, now - elapsedAnchor, event.elapsed_ms);
@@ -530,8 +586,8 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 			<div class="panel-base" :style="{ gridTemplateRows: `${Math.max(menuHeight, minimumMenuHeight)}px 1px ${sdHeight}px 1px minmax(0, 1fr) minmax(28px, auto)` }">
 				<div id="panel_menu" class="panel_menu">
 					<div ref="menuContent" class="menu-content">
-						<SdMenu :can-write="canSdWrite" :can-read="canSdRead" :busy="initializing || writing || closing" :write-label="closing ? '終了待ち…' : writing ? `${statusLabel}…` : 'SD書込'"
-							@write="onSdWrite" @read="onSdRead" @action="logButtonPress" @error="appendMessage" />
+						<SdMenu :can-write="canSdWrite" :can-read="canSdRead" :can-initialize="canSdRead" :busy="initializing || writing || closing" :write-label="closing ? '終了待ち…' : writing ? `${statusLabel}…` : 'SD書込'"
+							@write="onSdWrite" @read="onSdRead" @initialize="onSdFfInitialize" @action="logButtonPress" @error="appendMessage" />
 					</div>
 				</div>
 				<div id="resizer1" class="resizer" @pointerdown="resize($event, 1)"></div>

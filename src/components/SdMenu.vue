@@ -2,8 +2,8 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 
-const props = defineProps<{ canWrite: boolean; canRead?: boolean; busy?: boolean; writeLabel?: string }>();
-const emit = defineEmits<{ write: [drive: string]; read: [drive: string]; action: [label: string]; error: [message: string] }>();
+const props = defineProps<{ canWrite: boolean; canRead?: boolean; canInitialize?: boolean; busy?: boolean; writeLabel?: string }>();
+const emit = defineEmits<{ write: [drive: string]; read: [drive: string]; initialize: [drive: string]; action: [label: string]; error: [message: string] }>();
 const actionsOpen = ref(false);
 const actionsContainer = ref<HTMLElement | null>(null);
 const actionsButton = ref<HTMLButtonElement | null>(null);
@@ -23,6 +23,11 @@ const selectedDrive = ref('');
 const selectedDriveHasMedia = computed(() => drives.value.some(drive => drive.drive === selectedDrive.value && drive.size > 0));
 const canRequestWrite = computed(() => props.canWrite && selectedDriveHasMedia.value && !props.busy);
 const canRequestRead = computed(() => props.canRead && selectedDriveHasMedia.value && !props.busy);
+const canRequestInitialize = computed(() => props.canInitialize && selectedDriveHasMedia.value && !props.busy);
+const initializeTitle = computed(() => props.busy ? 'SDカードの処理中です'
+    : !props.canInitialize ? 'CSVの初期化対象領域がありません'
+    : !selectedDriveHasMedia.value ? 'SDカードが挿入されたドライブを選択してください'
+    : 'CSVの全領域を0xFFで初期化し照合します。CSVに含まれる先頭32KiBも対象です');
 const readTitle = computed(() => props.busy ? 'SDカードの処理中です'
     : !props.canRead ? 'CSVの読込対象領域がありません'
     : !selectedDriveHasMedia.value ? 'SDカードが挿入されたドライブを選択してください'
@@ -93,7 +98,6 @@ async function refreshAdmin() {
 
 function requestWrite() {
 	if (!canRequestWrite.value) return;
-    recordAction('SD書込');
     emit('write', selectedDrive.value);
 }
 
@@ -106,6 +110,13 @@ function requestRead() {
     recordAction('全エリアSD読込');
     actionsOpen.value = false;
     emit('read', selectedDrive.value);
+}
+
+function requestInitialize() {
+    if (!canRequestInitialize.value) return;
+    recordAction('全エリアSD FF初期化');
+    actionsOpen.value = false;
+    emit('initialize', selectedDrive.value);
 }
 
 async function openDiagnosticLog() {
@@ -179,8 +190,7 @@ onUnmounted(() => {
 			<div v-if="actionsOpen" id="sd-actions" class="menu-dropdown" role="group" aria-label="メニュー操作">
 				<div class="menu-operation-buttons">
 					<button type="button" :disabled="!canRequestRead" :title="readTitle" @click="requestRead">全エリアSD読込</button>
-					<button type="button" :disabled="busy" @click="recordAction('全エリアSD FF初期化')">全エリアSD FF初期化</button>
-					<button type="button" :disabled="busy" @click="recordAction('SD選択エリア FF初期化')">SD選択エリア FF初期化</button>
+					<button type="button" :disabled="!canRequestInitialize" :title="initializeTitle" @click="requestInitialize">全エリアSD FF初期化</button>
 				</div>
 				<div class="menu-log-section">
 					<button type="button" @click="openDiagnosticLog">ログ表示</button>

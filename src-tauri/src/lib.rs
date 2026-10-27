@@ -7,6 +7,7 @@ fn greet(name: &str) -> String {
 mod diagnostics;
 mod matching_files;
 mod sd_batch;
+mod sd_ff_batch;
 mod sd_read_batch;
 mod sd_worker;
 mod source_directory;
@@ -189,6 +190,44 @@ fn get_executable_directory() -> Result<String, String> {
         .to_str()
         .map(str::to_owned)
         .ok_or_else(|| "保存先の文字コードを変換できませんでした".to_string())
+}
+
+#[tauri::command]
+async fn run_sd_ff_initialize(
+    directory: String,
+    drive: String,
+    run_id: String,
+    app: tauri::AppHandle,
+) -> Result<sd_batch::Progress, String> {
+    if EXIT_WAITING.load(Ordering::SeqCst) {
+        return Err("アプリの終了処理中です".into());
+    }
+    if WRITE_RUNNING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("SD処理中です".into());
+    }
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            WRITE_RUNNING.store(false, Ordering::SeqCst);
+        }
+    }
+    let _guard = Guard;
+    let prepare_app = app.clone();
+    let plan = tauri::async_runtime::spawn_blocking(move || {
+        diagnostics::path()?;
+        let run = diagnostics::Run::start_segment(&run_id, "ff_prepare");
+        let _monitor = run.monitor(move |status| {
+            use tauri::Emitter;
+            let _ = prepare_app.emit("sd-operation", status);
+        });
+        sd_ff_batch::prepare(&directory, &drive, &run_id)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    sd_worker::ff_batch(plan, app).await
 }
 
 #[derive(Serialize)]
@@ -391,6 +430,7 @@ pub fn run() {
             discard_sd_write,
             run_sd_write,
             run_sd_read,
+            run_sd_ff_initialize,
             sd_read,
             sd_write,
             sd_fill,

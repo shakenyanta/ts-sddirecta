@@ -45,7 +45,7 @@ function view(invoke) {
   const api = new Function(...Object.keys(bindings), transpile(source) + `
     return { initializeSource, refreshMatchedFiles, sourceDirectory, displayedDirectory,
       sdDirectDictionary, sdloadingDictionary, sdAddressRange, matchedFiles, canSdWrite, writeFileCount, allFileCount, initializing, messages, folders, pathError,
-      onSdWrite, onSdRead, canSdRead, popupTitle, closeWriteDialog, copyWriteLog, writeDialogOpen, writeLog, writing, pendingPlan, progress, percent, currentRun, transientNotice, operationStatus, operationDetail };
+      onSdWrite, onSdRead, onSdFfInitialize, canSdRead, popupTitle, statusLabel, closeWriteDialog, copyWriteLog, writeDialogOpen, writeLog, writing, pendingPlan, progress, percent, currentRun, transientNotice, operationStatus, operationDetail };
   `)(...Object.values(bindings));
   return { ...api, mount: () => mount(), unmount: () => unmount(),
     drop: paths => listener({ payload: { type: 'drop', paths } }),
@@ -309,6 +309,86 @@ test('read failure retains saved count and partial-file warning without claiming
   ui.unmount();
 });
 
+test('FF initialization runs without input matches, blocks changes and finishes only on final verification', async () => {
+  let args, release;
+  const waiting = new Promise(resolve => { release = resolve; });
+  const ui = view(backend({
+    find_dictionary_files: () => ({ files: [], from_input: false, input_exists: false }),
+    run_sd_ff_initialize: value => { args = value; return waiting; },
+  }));
+  await ui.mount();
+  assert.equal(ui.canSdWrite.value, false);
+  assert.equal(ui.canSdRead.value, true);
+  const task = ui.onSdFfInitialize('H:');
+  await until(() => !!args);
+  assert.equal(args.directory, 'C:\\app');
+  assert.equal(args.drive, 'H:');
+  assert.equal(ui.writeDialogOpen.value, true);
+  assert.equal(ui.writing.value, true);
+  assert.equal(ui.canSdRead.value, false);
+  ui.closeWriteDialog();
+  assert.equal(ui.writeDialogOpen.value, true);
+  ui.drop(['C:\\different']);
+  assert.equal(ui.sourceDirectory.value, 'C:\\app');
+  assert.equal(ui.key('F5'), true);
+  const event = { run_id: args.runId, filename: '', index: 0, total: 2, completed: 0,
+    stage: 'prepare', processed_bytes: 0, total_bytes: 1536, elapsed_ms: 1, file_ms: 0, error: null };
+  ui.event('sd-progress', event);
+  ui.event('sd-progress', { ...event, run_id: 'stale', stage: 'done', completed: 2 });
+  assert.equal(ui.percent.value, 0);
+  ui.event('sd-progress', { ...event, stage: 'write', filename: 'FILE-00.001', index: 1, processed_bytes: 256 });
+  assert.equal(ui.statusLabel.value, 'FF初期化中');
+  ui.event('sd-progress', { ...event, stage: 'file_done', filename: 'FILE-00.001', index: 1, processed_bytes: 512 });
+  assert.equal(ui.progress.value.completed, 0);
+  assert.notEqual(ui.percent.value, 100);
+  ui.event('sd-progress', { ...event, stage: 'final_verify', filename: 'last', index: 2, completed: 1, processed_bytes: 1280 });
+  assert.equal(ui.statusLabel.value, '最終照合中');
+  release({ ...event, stage: 'done', index: 2, completed: 2, processed_bytes: 1536 });
+  await task;
+  assert.equal(ui.percent.value, 100);
+  assert.equal(ui.popupTitle.value, 'FF初期化完了');
+  assert.equal(ui.writing.value, false);
+  assert.equal(ui.hasTimer, false);
+  assert.equal(ui.writeDialogOpen.value, true);
+  const logs = ui.writeLog.value.map(m => typeof m === 'string' ? m : m.text);
+  assert.ok(logs.some(m => m.includes('先頭32KiBも対象')));
+  assert.ok(logs.some(m => m.includes('初期化対象: 2領域')));
+  assert.ok(logs.some(m => m.startsWith('全件完了 2/2')));
+  ui.unmount();
+});
+
+test('FF final verification failure retains results, incomplete count and never reports completion', async () => {
+  let ui;
+  ui = view(backend({ run_sd_ff_initialize: args => {
+    ui.event('sd-progress', { run_id: args.runId, filename: 'bad', index: 2, total: 3,
+      completed: 1, stage: 'final_failed', processed_bytes: 3584, total_bytes: 4608,
+      elapsed_ms: 100, file_ms: 20, error: '照合不一致: アドレス 0x8000' });
+    throw new Error('照合不一致: アドレス 0x8000');
+  } }));
+  await ui.mount();
+  await ui.onSdFfInitialize('H:');
+  assert.equal(ui.popupTitle.value, 'FF初期化失敗');
+  assert.notEqual(ui.percent.value, 100);
+  assert.equal(ui.hasTimer, false);
+  assert.equal(ui.writeDialogOpen.value, true);
+  const logs = ui.writeLog.value.map(m => typeof m === 'string' ? m : m.text);
+  assert.ok(logs.includes('最終照合成功 1/3'));
+  assert.ok(logs.includes('最終照合未完了: 2領域'));
+  assert.ok(logs.every(m => !m.startsWith('全件完了')));
+  ui.unmount();
+});
+
+test('FF preparation errors keep the failed popup and stop the elapsed timer', async () => {
+  const ui = view(backend({ run_sd_ff_initialize: () => { throw new Error('CSVの終端Eがありません'); } }));
+  await ui.mount();
+  await ui.onSdFfInitialize('H:');
+  assert.equal(ui.popupTitle.value, 'FF初期化失敗');
+  assert.equal(ui.writing.value, false);
+  assert.equal(ui.hasTimer, false);
+  assert.ok(ui.writeLog.value.some(m => typeof m === 'object' && m.text.includes('CSVの終端Eがありません')));
+  ui.unmount();
+});
+
 test('startup and native drop share initialization and use the selected source for all IPC', async () => {
   const calls = [];
   const run = backend();
@@ -459,8 +539,11 @@ test('write workflow opens progress immediately, blocks target changes, rejects 
     discard_sd_write: () => { calls.push('discard'); },
   }));
   await ui.mount();
+  const initialMessages = [...ui.messages.value];
   const task = ui.onSdWrite('E:');
   await until(() => !!runArgs);
+  assert.equal(ui.messages.value.filter(m => m === '「SD書込」ボタン押下').length, 1);
+  assert.deepEqual(ui.messages.value, [...initialMessages, '「SD書込」ボタン押下']);
   assert.equal(ui.writing.value, true);
   assert.equal(ui.canSdWrite.value, false);
   assert.equal(ui.writeDialogOpen.value, true);
@@ -473,6 +556,7 @@ test('write workflow opens progress immediately, blocks target changes, rejects 
   assert.match(ui.transientNotice.value, /再読込できません/);
   await ui.onSdWrite('E:');
   assert.deepEqual(calls, ['run']);
+  assert.equal(ui.messages.value.filter(m => m === '「SD書込」ボタン押下').length, 1);
   const event = { run_id: runArgs.runId, filename: entry.filename, index: 1, total: 1, completed: 0, stage: 'verify', processed_bytes: 512, total_bytes: 1024, elapsed_ms: 100, file_ms: 100, error: null };
   ui.event('sd-progress', { ...event, run_id: 'stale', stage: 'done' });
   assert.equal(ui.progress.value, null);
@@ -493,15 +577,17 @@ test('write workflow opens progress immediately, blocks target changes, rejects 
   assert.equal(ui.canSdWrite.value, true);
   assert.equal(ui.hasTimer, false);
   assert.equal(ui.writeLog.value.filter(m => typeof m === 'string' && m.startsWith('全件完了')).length, 1);
-  assert.ok(ui.writeLog.value.some(m => typeof m === 'object' && /末尾256\(0x100\)バイトを無視/.test(m.text)));
+  assert.ok(ui.writeLog.value.some(m => typeof m === 'object' && m.text === 'FILE-AA.001:[警告]容量オーバー'));
   assert.ok(ui.writeLog.value.some(m => typeof m === 'string' && m === '1/1 FILE-AA.001 253ms ✓'));
   assert.ok(ui.writeLog.value.some(m => typeof m === 'string' && m === '全件完了 1/1 2.54秒'));
   const textOf = m => typeof m === 'string' ? m : m.text;
   const panelLog = ui.messages.value.map(textOf);
   const popupLog = ui.writeLog.value.map(textOf);
-  for (const pattern of [/SD書込の準備を開始します/, /書込前：対象情報を更新/, /sdDirectaxs.csv読込完了/, /dictionary作成/, /inputフォルダあり/, /inputフォルダへ移動/, /拡張子が異なる/]) {
+  assert.deepEqual(ui.messages.value, [...initialMessages, '「SD書込」ボタン押下']);
+  assert.ok(popupLog.includes('SD書込の準備を開始します'));
+  for (const pattern of [/sdDirectaxs.csv読込完了/, /dictionary作成/, /inputフォルダあり/, /inputフォルダへ移動/, /拡張子が異なる/]) {
     assert.ok(panelLog.some(text => pattern.test(text)), `missing panel message: ${pattern}`);
-    assert.ok(popupLog.every(text => !pattern.test(text)), `preparation leaked into popup: ${pattern}`);
+    assert.ok(popupLog.every(text => !pattern.test(text)), `startup log duplicated in popup: ${pattern}`);
   }
   assert.ok(popupLog.includes('SD書込先: E: / 対象: 1件 / 512(0x200)バイト'));
   assert.ok(popupLog.every(text => !panelLog.includes(text)), 'popup log must not be duplicated in panel_text');
@@ -526,6 +612,34 @@ test('empty plans and preparation failures keep a result popup without writing',
     assert.equal(ui.writeDialogOpen.value, false);
     ui.unmount();
   }
+});
+
+test('successive write clicks append after the existing warning without replaying or reordering logs', async () => {
+  let csvReads = 0;
+  let prepared = 0;
+  let written = 0;
+  const entry = { filename: 'FILE-AA.001', address: 0, size: 512, file_size: 512 };
+  const ui = view(backend({
+    read_startup_csv: () => { csvReads++; return csv; },
+    find_dictionary_files: () => ({ files: ['FILE-AA.001'], warning_files: ['input\\IM.016'], from_input: false, input_exists: true }),
+    prepare_sd_write: args => { prepared++; return { run_id: args.runId, drive: args.drive, total_bytes: 512, entries: [entry] }; },
+    run_sd_write: args => { written++; return { run_id: args.runId, stage: 'done', filename: '', index: 1, total: 1,
+      completed: 1, processed_bytes: 1536, total_bytes: 1536, elapsed_ms: 10, file_ms: 0, error: null }; },
+    discard_sd_write: () => {},
+  }));
+  await ui.mount();
+  const history = [...ui.messages.value];
+  assert.match(history.at(-1).text, /^警告：/);
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    await ui.onSdWrite('H:');
+    assert.equal(ui.popupTitle.value, '書込完了');
+    assert.deepEqual(ui.messages.value, [...history, ...Array(attempt).fill('「SD書込」ボタン押下')]);
+    ui.closeWriteDialog();
+  }
+  assert.equal(csvReads, 1, 'frontend startup logs must not be replayed for write preparation');
+  assert.equal(prepared, 2, 'each write must still prepare a fresh backend plan');
+  assert.equal(written, 2);
+  ui.unmount();
 });
 
 test('failed verification preserves progress and identifies the failed and unexecuted files', async () => {
@@ -556,13 +670,13 @@ test('size comments distinguish truncation, padding, zero-byte fill, and exact s
   for (const [value, expected] of [[0, '0(0x0)'], [1235, '1,235(0x4d3)'], [5539840, '5,539,840(0x548800)'], [89694, '89,694(0x15e5e)']]) {
     assert.equal(formatByteCount(value), expected);
   }
-  assert.equal(sizeComment({ filename: 'FILE-BT.001', file_size: 64301, size: 65536 }), 'FILE-BT.001: ファイル64,301(0xfb2d)バイトを書き込み、残り1,235(0x4d3)バイトを0xFFで埋めます。');
-  assert.equal(sizeComment({ filename: 'FILE-BR.001', file_size: 3783, size: 3072 }), '注意: FILE-BR.001 は領域サイズを超えています。ファイル: 3,783(0xec7)バイト、領域: 3,072(0xc00)バイト。末尾711(0x2c7)バイトを無視して書き込みます。');
-  assert.equal(sizeComment({ filename: 'empty', file_size: 0, size: 1024 }), 'empty: 0(0x0)バイトのため、対象領域1,024(0x400)バイト全体を0xFFで埋めます。');
+  assert.equal(sizeComment({ filename: 'FILE-BT.001', file_size: 64301, size: 65536 }), 'FILE-BT.001:[注意]容量不足 → FF埋め');
+  assert.equal(sizeComment({ filename: 'FILE-BR.001', file_size: 3783, size: 3072 }), 'FILE-BR.001:[警告]容量オーバー');
+  assert.equal(sizeComment({ filename: 'empty', file_size: 0, size: 1024 }), 'empty:[注意]容量不足 → FF埋め');
   const entry = { filename: 'a', size: 1024 };
-  assert.match(sizeComment({ ...entry, file_size: 1536 }), /末尾512\(0x200\)バイトを無視/);
-  assert.match(sizeComment({ ...entry, file_size: 512 }), /残り512\(0x200\)バイトを0xFF/);
-  assert.match(sizeComment({ ...entry, file_size: 0 }), /全体を0xFF/);
+  assert.equal(sizeComment({ ...entry, file_size: 1536 }), 'a:[警告]容量オーバー');
+  assert.equal(sizeComment({ ...entry, file_size: 512 }), 'a:[注意]容量不足 → FF埋め');
+  assert.equal(sizeComment({ ...entry, file_size: 0 }), 'a:[注意]容量不足 → FF埋め');
   assert.equal(sizeComment({ ...entry, file_size: 1024 }), null);
   assert.equal(writePercent({ stage: 'verify', processed_bytes: 2048, total_bytes: 2048 }), 99);
   assert.equal(writePercent({ stage: 'done', processed_bytes: 2048, total_bytes: 2048 }), 100);
