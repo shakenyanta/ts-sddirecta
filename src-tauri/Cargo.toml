@@ -37,3 +37,10 @@ windows-sys = { version = "0.52", features = [
 	"Win32_System_SystemServices",
 ] }
 tracing = "0.1"
+
+# Portable exe: optimize size without changing panic/unwind behavior.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
