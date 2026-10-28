@@ -24,7 +24,13 @@ const sdMenu = ref<InstanceType<typeof SdMenu> | null>(null);
 interface FormatPlan { run_id: string; drive: string; file_system: string; target: { capacity: number } }
 interface FormatResult { drive: string; file_system: string; capacity: number; label: string }
 const formatPlan = ref<FormatPlan | null>(null);
+const formatResult = ref<FormatResult | null>(null);
 const formatLabel = ref('');
+const formatSimpleTest = ref(false);
+const formatStep = ref(0);
+const formatTotal = computed(() => formatSimpleTest.value ? 6 : 5);
+const formatLoggedSteps = new Set<number>();
+let formatPreparationLogIndex: number | null = null;
 const formatLabelValid = computed(() => /^[A-Za-z0-9 _-]{0,11}$/.test(formatLabel.value));
 let formattedDrive = '';
 const closing = ref(false);
@@ -42,7 +48,7 @@ const copyStatus = ref('');
 const operationKind = ref<'read' | 'write' | 'ff' | 'format'>('write');
 const operationName = computed(() => operationKind.value === 'format' ? 'フォーマット' : operationKind.value === 'ff' ? 'SD FF初期化' : operationKind.value === 'read' ? 'SD読込' : 'SD書込');
 const popupTitle = computed(() => writing.value ? `${statusLabel.value}…`
-    : operationKind.value === 'format' ? (writeStage.value === 'confirm' ? 'フォーマット確認' : writeStage.value === 'done' ? 'フォーマット完了' : 'フォーマット失敗')
+    : operationKind.value === 'format' ? (writeStage.value === 'confirm' ? 'フォーマット' : writeStage.value === 'done' ? 'フォーマット完了' : 'フォーマット失敗')
     : operationKind.value === 'ff' ? (writeStage.value === 'done' ? 'FF初期化完了' : 'FF初期化失敗')
     : operationKind.value === 'read' ? (writeStage.value === 'done' ? '読込完了' : '読込失敗')
     : writeStage.value === 'done' ? '書込完了' : writeStage.value === 'failed' ? '書込失敗' : '書込対象なし');
@@ -65,7 +71,9 @@ const elapsedMs = ref(0);
 const transientNotice = ref('');
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 const percent = computed(() => writePercent(progress.value));
-const statusLabel = computed(() => operationKind.value === 'ff' && writeStage.value === 'write'
+const statusLabel = computed(() => operationKind.value === 'format' && writeStage.value === 'confirm'
+    ? 'よろしければ「開始」を押してください。'
+    : operationKind.value === 'ff' && writeStage.value === 'write'
     ? 'FF初期化中' : writeStageLabel(writeStage.value));
 const allFileCount = computed(() => [...sdloadingDictionary.value.values()].filter(area => area.accessFlag !== 'E').length);
 let unlistenDrop: UnlistenFn | undefined;
@@ -495,6 +503,11 @@ async function onSdFormat(drive: string) {
     operationStatus.value = null;
     formatPlan.value = null;
     formatLabel.value = '';
+    formatSimpleTest.value = false;
+    formatStep.value = 0;
+    formatLoggedSteps.clear();
+    formatPreparationLogIndex = null;
+    formatResult.value = null;
     formattedDrive = '';
     copyStatus.value = '';
     writeLog.value = [];
@@ -506,8 +519,7 @@ async function onSdFormat(drive: string) {
         appendWriteMessage(`フォーマット先: ${driveDisplay(drive)} / SDカードの情報を確認しています。`);
         formatPlan.value = await invoke<FormatPlan>('prepare_sd_format', { drive, runId: currentRun.value });
         writeStage.value = 'confirm';
-        appendWriteMessage(`対象: ${driveDisplay(formatPlan.value.drive)} / ${formatCardCapacity(formatPlan.value.target.capacity)} / ${formatPlan.value.file_system}`,
-            'このSDカードをフォーマットし、空のファイルシステムを作成します。既存データは保持されません。');
+        appendWriteMessage(`対象: ${driveDisplay(formatPlan.value.drive)} / ${formatCardCapacity(formatPlan.value.target.capacity)} / ${formatPlan.value.file_system}`);
     } catch (error) {
         writeStage.value = 'failed';
         appendWriteMessage({ text: `フォーマットを開始できません: ${String(error)}`, warning: true });
@@ -516,26 +528,42 @@ async function onSdFormat(drive: string) {
 
 function driveDisplay(drive: string) { return drive.replace(/^PhysicalDrive\d+$/, '?:'); }
 
+function updateFormatPreparation(finished = false) {
+    if (formatPreparationLogIndex === null) return;
+    const ms = Math.max(0, Math.floor(performance.now() - elapsedAnchor));
+    writeLog.value[formatPreparationLogIndex] = `1/${formatTotal.value} フォーマット準備中 ${ms}ms`;
+    if (finished) formatPreparationLogIndex = null;
+}
+
 async function startSdFormat() {
     if (writing.value || closing.value || !formatPlan.value || writeStage.value !== 'confirm' || !formatLabelValid.value) return;
     writing.value = true;
-    writeStage.value = 'waiting';
+    writeStage.value = 'format_prepare';
+    formatStep.value = 1;
     elapsedMs.value = 0;
     elapsedAnchor = performance.now();
-    elapsedTimer = setInterval(() => { elapsedMs.value = Math.max(0, performance.now() - elapsedAnchor); }, 100);
+    formatPreparationLogIndex = writeLog.value.length;
+    appendWriteMessage(`1/${formatTotal.value} フォーマット準備中 0ms`);
+    elapsedTimer = setInterval(() => {
+        elapsedMs.value = Math.max(0, performance.now() - elapsedAnchor);
+        updateFormatPreparation();
+    }, 100);
+    const simpleTest = formatSimpleTest.value;
     try {
-        const done = await invoke<FormatResult>('run_sd_format', { runId: currentRun.value, label: formatLabel.value });
+        const done = await invoke<FormatResult>('run_sd_format', { runId: currentRun.value, label: formatLabel.value, simpleTest });
         elapsedMs.value = Math.max(elapsedMs.value, performance.now() - elapsedAnchor);
         writeStage.value = 'done';
         progress.value = null;
         formattedDrive = done.drive;
-        appendWriteMessage(`フォーマット完了: ${done.drive} / ${done.file_system} / ${formatCardCapacity(done.capacity)} / ラベル: ${done.label || 'なし'}`,
-            'テストファイルの書込・読戻し・削除を確認しました。',
-            `全件完了 1/1 ${(elapsedMs.value / 1000).toFixed(2)}秒`);
+        formatResult.value = done;
+        const total = simpleTest ? 6 : 5;
+        formatStep.value = total;
+        appendWriteMessage(`フォーマット完了 ${total}/${total} ${(elapsedMs.value / 1000).toFixed(2)}秒`);
     } catch (error) {
         writeStage.value = 'failed';
         appendWriteMessage({ text: `フォーマットを停止しました: ${String(error)}。書換え済みの内容は元に戻しません。`, warning: true });
     } finally {
+        updateFormatPreparation(true);
         clearInterval(elapsedTimer);
         elapsedTimer = undefined;
         writing.value = false;
@@ -587,8 +615,17 @@ function acceptProgress(event: WriteProgress) {
     operationStatus.value = null;
 	if (operationKind.value === 'format') {
         progress.value = event;
-        writeStage.value = event.stage;
-        appendWriteMessage(event.filename);
+        const stage = event.stage.replace(/_done$/, '');
+        writeStage.value = stage;
+        const step = ({ format_partition: 2, format_volume: 3, format_verify: 4, format_finalize: 5, format_test: 6 } as Record<string, number>)[stage];
+        if (step && step <= formatTotal.value) {
+            updateFormatPreparation(true);
+            formatStep.value = Math.max(formatStep.value, Math.min(step, formatTotal.value - 1));
+            if (event.stage.endsWith('_done') && !formatLoggedSteps.has(step)) {
+                formatLoggedSteps.add(step);
+                appendWriteMessage(`${step}/${formatTotal.value} ${event.filename} ${event.file_ms}ms`);
+            }
+        }
         return;
     }
 	progress.value = event;
@@ -711,26 +748,32 @@ function resize(event: PointerEvent, divider: 1 | 2) {
             <div class="write-header">
                 <h2 id="write-title" :class="{ 'write-failed': writeStage === 'failed' }">{{ popupTitle }}</h2>
                 <p v-if="operationKind !== 'format'" class="write-count" role="status">{{ progress?.completed ?? 0 }}/{{ progress?.total ?? writeTotal }} ({{ percent }}%)</p>
-                <p v-else-if="writeStage === 'done'" class="write-count" role="status">1/1 (100%)</p>
+                <p v-else-if="formatStep > 0" class="write-count" role="status">{{ formatStep }}/{{ formatTotal }}{{ writeStage === 'done' ? ' (100%)' : '' }}</p>
             </div>
-            <progress :value="operationKind === 'format' ? (writeStage === 'done' ? 100 : writing ? undefined : 0) : percent" max="100" :aria-label="`${operationName}の全体進捗`"></progress>
+            <progress :value="operationKind === 'format' ? formatStep / formatTotal * 100 : percent" max="100" :aria-label="`${operationName}の全体進捗`"></progress>
+            <p v-if="operationKind === 'format' && writeStage === 'done' && formatResult" class="format-result">
+                {{ formatResult.drive }} / <strong>{{ formatResult.file_system }}</strong> / {{ formatCardCapacity(formatResult.capacity) }} / ラベル: {{ formatResult.label || 'なし' }}
+            </p>
             <div v-if="operationKind === 'format' && writeStage === 'confirm'" class="format-settings">
                 <p class="format-warning">このSDカードのデータはすべて失われます。</p>
                 <p :title="formatPlan ? `実容量: ${formatByteCount(formatPlan.target.capacity)}バイト` : ''">対象: {{ driveDisplay(formatPlan?.drive || '') }} / {{ formatCardCapacity(formatPlan?.target.capacity || 0) }} / {{ formatPlan?.file_system }}（容量から自動選択）</p>
-                <label>ボリュームラベル <input v-model="formatLabel" maxlength="11" autocomplete="off" aria-describedby="format-label-help"></label>
-                <p id="format-label-help">任意・半角英数字、空白、_、-で11文字以内</p>
+                <label class="format-volume-label">
+                    <span>ボリュームラベル<small id="format-label-help">（11文字以内）</small></span>
+                    <input v-model="formatLabel" maxlength="11" autocomplete="off" aria-describedby="format-label-help">
+                </label>
+                <label class="format-simple-test"><input v-model="formatSimpleTest" type="checkbox">FAT簡易テスト(書込・読出・削除)</label>
                 <p v-if="!formatLabelValid" role="alert">ラベルに使用できない文字があります。</p>
             </div>
-            <p class="write-detail">
+            <p class="write-detail" :class="{ 'format-guidance': operationKind === 'format' && writeStage === 'confirm' }">
                 <span class="write-current" :title="progress?.filename ? `${statusLabel} ${progress.filename}` : statusLabel">{{ statusLabel }}<template v-if="progress?.filename"> {{ progress.filename }}</template></span>
             </p>
             <p class="write-operation" :title="operationDetail" role="status">{{ writing ? operationDetail : '' }}</p>
             <div ref="writeLogPanel" class="write-log" :class="{ 'format-log': operationKind === 'format' }" role="log" :aria-label="`${operationName}ログ`" tabindex="0" @scroll="writeLogScroller.onScroll">
-                <p v-for="(message, index) in writeLog" :key="index" :class="{ 'log-warning': typeof message !== 'string' && message.warning, 'log-done': typeof message === 'string' && message.startsWith('全件完了') }">{{ typeof message === 'string' ? message : message.text }}</p>
+                <p v-for="(message, index) in writeLog" :key="index" :class="{ 'log-warning': typeof message !== 'string' && message.warning, 'log-done': typeof message === 'string' && (message.startsWith('全件完了') || message.startsWith('フォーマット完了 ')) }">{{ typeof message === 'string' ? message : message.text }}</p>
             </div>
             <p v-if="transientNotice" class="write-notice" role="status">{{ transientNotice }}</p>
             <div class="write-actions">
-                <button v-if="operationKind === 'format' && writeStage === 'confirm'" type="button" class="close-write" :disabled="writing || !formatLabelValid" @click="startSdFormat">フォーマット開始</button>
+                <button v-if="operationKind === 'format' && writeStage === 'confirm'" type="button" class="close-write" :disabled="writing || !formatLabelValid" @click="startSdFormat">開始</button>
                 <button v-if="operationKind === 'read'" type="button" class="copy-log open-output" :disabled="writing" @click="openOutput">outputを開く</button>
                 <button type="button" class="copy-log" aria-live="polite" @click="copyWriteLog">{{ copyStatus || 'ログをコピー' }}</button>
                 <button type="button" class="close-write" :disabled="writing" @click="closeWriteDialog">{{ operationKind === 'format' && writeStage === 'confirm' ? 'キャンセル' : '閉じる' }}</button>
@@ -744,7 +787,14 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 .format-settings p { margin: 3px 0; }
 .format-settings .format-warning { color: #a3271d; font-weight: bold; }
 .format-log .log-warning { width: auto; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-.format-settings input { max-width: 100%; width: 140px; font: inherit; }
+.format-volume-label { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+.format-volume-label > span { flex-shrink: 0; }
+.format-volume-label small { color: #536176; font-size: 10px; }
+.format-volume-label input { flex: 1 1 80px; min-width: 80px; max-width: 140px; width: 100%; font: inherit; }
+.format-simple-test { display: flex; align-items: flex-start; gap: 5px; margin-top: 6px; }
+.format-simple-test input { flex-shrink: 0; width: 13px; height: 13px; margin-top: 2px; accent-color: #1a73df; }
+.format-result { flex-shrink: 0; margin: 0; color: #536176; }
+.format-result strong { color: #155bb5; }
 .write-operation { margin: 0; flex-shrink: 0; min-height: 1.2em; line-height: 1.2; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; color: #526171; }
 .write-dialog { position: fixed; inset: 0; margin: auto; width: min(650px, calc(100vw - 8px)); height: min(480px, calc(100dvh - 8px)); max-width: none; max-height: calc(100dvh - 8px); padding: 0; border: 0; border-radius: 18px; background: #f8f9fe; color: #121212; box-shadow: 0 12px 32px #0003; font: 12px 'Yu Gothic UI', Meiryo, sans-serif; overflow: hidden; }
 .write-dialog::backdrop { background: #0005; }
@@ -759,6 +809,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 .write-count { flex-shrink: 0; margin: 0; color: #155bb5; font-size: 11px; white-space: nowrap; }
 .write-detail { display: flex; flex-shrink: 0; margin: 0; color: #536176; font-size: 11px; line-height: 1.2; white-space: nowrap; }
 .write-current { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.format-guidance, .format-guidance .write-current { white-space: normal; overflow: visible; }
 .write-log { flex: 1; min-height: 0; overflow: auto; overflow-anchor: none; scrollbar-gutter: stable; padding: 4px; border-radius: 3px; background: #1e1e1e; color: #36dbc3; font: 11px/1.25 Consolas, 'Yu Gothic UI', monospace; scrollbar-color: #888 #eee; scrollbar-width: thin; }
 .write-log::-webkit-scrollbar { width: 8px; height: 8px; }
 .write-log::-webkit-scrollbar-thumb { border-radius: 4px; background: #888; }

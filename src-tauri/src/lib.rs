@@ -58,6 +58,7 @@ fn discard_sd_format(run_id: String) -> Result<(), String> {
 async fn run_sd_format(
     run_id: String,
     label: String,
+    simple_test: bool,
     app: tauri::AppHandle,
 ) -> Result<sd_format::ResultInfo, String> {
     sd_format::validate_label(&label)?;
@@ -87,7 +88,7 @@ async fn run_sd_format(
     } else {
         label.trim().to_ascii_uppercase()
     };
-    sd_worker::format(plan, label, app).await
+    sd_worker::format(plan, label, simple_test, app).await
 }
 
 #[tauri::command]

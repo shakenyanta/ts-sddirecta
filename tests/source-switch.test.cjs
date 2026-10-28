@@ -14,13 +14,14 @@ function utility(path) {
 }
 
 // Exercise the actual view setup with IPC/lifecycle boundaries replaced; no WebView or SD access.
-function view(invoke) {
+function view(invoke, clock = performance) {
   const source = readFileSync('src/pages/HomeView.vue', 'utf8').match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
     .replace(/^import .*;\r?$/gm, '');
   let mount, unmount, listener, timer, unlistened = false;
   const eventListeners = new Map();
   const keyListeners = new Set();
   const bindings = {
+    performance: clock,
     ref: value => ({ value }),
     computed: get => ({ get value() { return get(); } }),
     nextTick: async () => {},
@@ -45,7 +46,7 @@ function view(invoke) {
   const api = new Function(...Object.keys(bindings), transpile(source) + `
     return { initializeSource, refreshMatchedFiles, sourceDirectory, displayedDirectory,
       sdDirectDictionary, sdloadingDictionary, sdAddressRange, matchedFiles, canSdWrite, allFileCount, initializing, messages, folders, pathError,
-      onSdWrite, onSdRead, onSdFfInitialize, onSdFormat, startSdFormat, formatPlan, formatLabel, formatLabelValid, writeStage, canSdRead, popupTitle, statusLabel, closeWriteDialog, copyWriteLog, writeDialogOpen, writeLog, writing, pendingPlan, progress, percent, currentRun, transientNotice, operationStatus, operationDetail };
+      onSdWrite, onSdRead, onSdFfInitialize, onSdFormat, startSdFormat, formatPlan, formatLabel, formatSimpleTest, formatStep, formatLabelValid, writeStage, canSdRead, popupTitle, statusLabel, closeWriteDialog, copyWriteLog, writeDialogOpen, writeLog, writing, pendingPlan, progress, percent, currentRun, transientNotice, operationStatus, operationDetail };
   `)(...Object.values(bindings));
   return { ...api, mount: () => mount(), unmount: () => unmount(),
     drop: paths => listener({ payload: { type: 'drop', paths } }),
@@ -63,6 +64,7 @@ const csv = 'A,FILE-AA.001,00000000,000001FF';
 
 test('format uses the selected drive without CSV and never runs before confirmation', async () => {
   const calls = [];
+  let now = 0;
   let release;
   const waiting = new Promise(resolve => { release = resolve; });
   const ui = view(backend({
@@ -70,10 +72,10 @@ test('format uses the selected drive without CSV and never runs before confirmat
     prepare_sd_format: args => { calls.push(['prepare', args]); return { run_id: args.runId, drive: args.drive, file_system: 'FAT', target: { capacity: 512 * 1024 ** 2 } }; },
     run_sd_format: args => { calls.push(['run', args]); return waiting; },
     discard_sd_format: () => {},
-  }));
+  }), { now: () => now });
   await ui.mount();
   await ui.onSdFormat('H:');
-  assert.equal(ui.popupTitle.value, 'フォーマット確認');
+  assert.equal(ui.popupTitle.value, 'フォーマット');
   assert.equal(ui.writing.value, false);
   assert.equal(calls.length, 1);
   assert.equal(calls[0][1].drive, 'H:');
@@ -85,17 +87,88 @@ test('format uses the selected drive without CSV and never runs before confirmat
   assert.equal(ui.writing.value, true);
   ui.closeWriteDialog();
   assert.equal(ui.writeDialogOpen.value, true);
-  ui.event('sd-progress', { run_id: ui.currentRun.value, stage: 'format_volume', filename: 'formatting' });
-  assert.equal(ui.statusLabel.value, 'フォーマット中');
+  assert.equal(ui.formatStep.value, 1);
+  assert.equal(ui.statusLabel.value, 'フォーマット準備中');
+  assert.equal(ui.writeLog.value.at(-1), '1/5 フォーマット準備中 0ms');
+  now = 230;
+  ui.tick();
+  assert.equal(ui.writeLog.value.at(-1), '1/5 フォーマット準備中 230ms');
+  for (const [stage, filename, step] of [
+    ['format_partition', 'パーティション作成', 2],
+    ['format_volume', 'フォーマット実行', 3],
+    ['format_verify', 'フォーマット確認', 4],
+    ['format_finalize', 'フォーマット完了', 5],
+  ]) {
+    ui.event('sd-progress', { run_id: 'old', stage, filename });
+    assert.equal(ui.formatStep.value, step - 1);
+    ui.event('sd-progress', { run_id: ui.currentRun.value, stage, filename });
+    now = 500;
+    ui.tick();
+    assert.equal(ui.writeLog.value[2], '1/5 フォーマット準備中 230ms');
+    assert.ok(!ui.writeLog.value.includes(`${step}/5 ${filename} ${step * 17}ms`));
+    const done = { run_id: ui.currentRun.value, stage: stage + '_done', filename, file_ms: step * 17 };
+    ui.event('sd-progress', { ...done, run_id: 'old' });
+    assert.ok(!ui.writeLog.value.includes(`${step}/5 ${filename} ${step * 17}ms`));
+    ui.event('sd-progress', done);
+    ui.event('sd-progress', done);
+    assert.equal(ui.formatStep.value, Math.min(step, 4));
+    assert.equal(ui.writeLog.value.filter(m => m === `${step}/5 ${filename} ${step * 17}ms`).length, 1);
+  }
+  assert.equal(ui.statusLabel.value, 'フォーマット完了処理中');
   assert.equal(calls[1][1].label, 'TEST');
-  release({ drive: 'J:', file_system: 'FAT', capacity: 500 * 1024 ** 2, label: 'TEST' });
+  assert.equal(calls[1][1].simpleTest, false);
+  release({ drive: 'J:', file_system: 'FAT16', capacity: 500 * 1024 ** 2, label: 'TEST' });
   await task;
   assert.equal(ui.popupTitle.value, 'フォーマット完了');
   assert.equal(ui.writing.value, false);
   assert.equal(ui.hasTimer, false);
-  assert.ok(ui.writeLog.value.some(m => typeof m === 'string' && m.startsWith('フォーマット完了: J:')));
-  assert.match(ui.writeLog.value.at(-1), /^全件完了 1\/1 \d+\.\d{2}秒$/);
+  assert.equal(ui.formatStep.value, 5);
+  assert.ok(ui.writeLog.value.includes('5/5 フォーマット完了 85ms'));
+  assert.match(ui.writeLog.value.at(-1), /^フォーマット完了 5\/5 \d+\.\d{2}秒$/);
   assert.equal(ui.progress.value, null);
+  assert.ok(ui.writeLog.value.every(m => typeof m !== 'string' || !m.includes('テストファイル')));
+  ui.unmount();
+});
+
+test('format simple test is opt-in and resets for the next format', async () => {
+  const calls = [];
+  let ui;
+  ui = view(backend({
+    prepare_sd_format: args => ({ run_id: args.runId, drive: args.drive, file_system: 'FAT', target: { capacity: 512 * 1024 ** 2 } }),
+    run_sd_format: args => {
+      calls.push(args);
+      for (const [stage, filename, file_ms] of [
+        ['format_partition', 'パーティション作成', 14],
+        ['format_volume', 'フォーマット実行', 35],
+        ['format_verify', 'フォーマット確認', 21],
+        ['format_finalize', 'フォーマット完了', 502],
+        ['format_test', 'FAT簡易テスト', 550],
+      ]) {
+        ui.event('sd-progress', { run_id: args.runId, stage, filename });
+        ui.event('sd-progress', { run_id: args.runId, stage: stage + '_done', filename, file_ms });
+        assert.ok(ui.formatStep.value < 6);
+      }
+      return { drive: 'H:', file_system: 'FAT16', capacity: 500 * 1024 ** 2, label: '' };
+    },
+    discard_sd_format: () => {},
+  }));
+  await ui.mount();
+  await ui.onSdFormat('H:');
+  assert.equal(ui.formatSimpleTest.value, false);
+  assert.equal(ui.formatStep.value, 0);
+  ui.formatSimpleTest.value = true;
+  await ui.startSdFormat();
+  assert.equal(calls[0].simpleTest, true);
+  assert.match(ui.writeLog.value[2], /^1\/6 フォーマット準備中 \d+ms$/);
+  assert.deepEqual(ui.writeLog.value.slice(3, 8), [
+    '2/6 パーティション作成 14ms', '3/6 フォーマット実行 35ms',
+    '4/6 フォーマット確認 21ms', '5/6 フォーマット完了 502ms', '6/6 FAT簡易テスト 550ms',
+  ]);
+  assert.equal(ui.formatStep.value, 6);
+  assert.match(ui.writeLog.value.at(-1), /^フォーマット完了 6\/6 \d+\.\d{2}秒$/);
+  ui.closeWriteDialog();
+  await ui.onSdFormat('H:');
+  assert.equal(ui.formatSimpleTest.value, false);
   ui.unmount();
 });
 
@@ -128,6 +201,7 @@ test('format errors retain a failed popup, and stale progress is ignored', async
   assert.equal(ui.writeDialogOpen.value, true);
   assert.ok(ui.writeLog.value.some(m => typeof m !== 'string' && m.text.includes('readback failed')));
   assert.ok(!ui.writeLog.value.some(m => typeof m === 'string' && m.startsWith('全件完了')));
+  assert.ok(!ui.writeLog.value.some(m => typeof m === 'string' && m.includes('5/5')));
   ui.unmount();
 });
 

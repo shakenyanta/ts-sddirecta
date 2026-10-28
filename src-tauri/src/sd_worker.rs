@@ -38,6 +38,8 @@ pub enum Operation {
     Format {
         plan: crate::sd_format::Plan,
         label: String,
+        #[serde(default)]
+        simple_test: bool,
         log_path: std::path::PathBuf,
     },
     Batch {
@@ -543,6 +545,7 @@ fn serve_requests(stream: &mut TcpStream) -> Result<(), String> {
             Operation::Format {
                 plan,
                 label,
+                simple_test,
                 log_path,
             } => {
                 if !LOG_ATTACHED.swap(true, Ordering::SeqCst) {
@@ -556,7 +559,7 @@ fn serve_requests(stream: &mut TcpStream) -> Result<(), String> {
                         let _ = send(&mut *writer, &Response::Status(status));
                     }
                 });
-                crate::sd_format::execute(plan, &label, |event| {
+                crate::sd_format::execute(plan, &label, simple_test, |event| {
                     send(
                         &mut *writer.lock().map_err(|e| e.to_string())?,
                         &Response::Progress(event),
@@ -634,6 +637,7 @@ pub async fn ff_batch(
 pub async fn format(
     plan: crate::sd_format::Plan,
     label: String,
+    simple_test: bool,
     app: tauri::AppHandle,
 ) -> Result<crate::sd_format::ResultInfo, String> {
     use tauri::Emitter;
@@ -644,6 +648,7 @@ pub async fn format(
             Operation::Format {
                 plan,
                 label,
+                simple_test,
                 log_path,
             },
             |event| {

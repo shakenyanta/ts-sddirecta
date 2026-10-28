@@ -9,12 +9,12 @@ test('Windows formatter sequences only the confirmed disk and stops on errors', 
   mkdirSync(cache, { recursive: true });
   const root = mkdtempSync(join(cache, 'case-'));
   const request = {
-    mode: 'format', drive: 'H:', file_system: 'FAT', label: 'TEST',
+    mode: 'format', drive: 'H:', file_system: 'FAT', label: 'TEST', simple_test: true,
     target: { disk: 77, capacity: 536870912, path: 'test-device', unique_id: 'test-id', serial: 'test-card', sector_size: 512 },
   };
-  function run(mode, change = {}) {
+  function run(mode, change = {}, testRoot = root) {
     const result = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
-      'tests/sd-format-storage.mock.ps1', '-Mode', mode, '-Root', root], {
+      'tests/sd-format-storage.mock.ps1', '-Mode', mode, '-Root', testRoot], {
       input: JSON.stringify({ ...request, ...change }), encoding: 'utf8', timeout: 30000,
     });
     assert.ifError(result.error);
@@ -23,9 +23,24 @@ test('Windows formatter sequences only the confirmed disk and stops on errors', 
   try {
     const good = run('success');
     assert.equal(good.status, 0, good.stdout + good.stderr);
-    assert.deepEqual(good.events.filter(e => e.stage).map(e => e.stage), ['format_partition', 'format_volume', 'format_verify']);
+    assert.deepEqual(good.events.filter(e => e.stage).map(e => e.stage), [
+      'format_partition', 'format_partition_done', 'format_volume', 'format_volume_done',
+      'format_verify', 'format_verify_done', 'format_finalize', 'format_finalize_done', 'format_test', 'format_test_done',
+    ]);
+    const completed = good.events.filter(e => e.stage?.endsWith('_done'));
+    assert.deepEqual(completed.map(e => e.message), ['パーティション作成', 'フォーマット実行', 'フォーマット確認', 'フォーマット完了', 'FAT簡易テスト']);
+    assert.ok(completed.every(e => Number.isInteger(e.file_ms) && e.file_ms >= 0));
     assert.equal(good.events.at(-1).result.file_system, 'FAT');
     assert.deepEqual(readdirSync(root), []); // Readback succeeded and the temporary file was removed.
+    // An absent folder would fail if the optional test tried to create a file.
+    const skipped = run('success', { simple_test: false }, join(root, 'absent'));
+    assert.equal(skipped.status, 0, skipped.stdout + skipped.stderr);
+    assert.equal(skipped.events.at(-1).result.file_system, 'FAT');
+    assert.ok(!skipped.events.some(e => e.stage?.startsWith('format_test')));
+    const enabled = run('success', { simple_test: true }, join(root, 'absent'));
+    assert.notEqual(enabled.status, 0);
+    assert.ok(enabled.events.at(-1).error);
+    assert.ok(!enabled.events.some(e => e.stage === 'format_test_done'));
     const calls = good.stderr.match(/CALL:(Clear-Disk|Initialize-Disk|New-Partition|Format-Volume)/g);
     assert.deepEqual(calls, ['CALL:Clear-Disk', 'CALL:Initialize-Disk', 'CALL:New-Partition', 'CALL:Format-Volume']);
     const raw = run('raw');

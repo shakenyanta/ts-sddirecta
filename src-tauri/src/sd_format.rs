@@ -3,7 +3,7 @@ use crate::sd_batch::Progress;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 use std::{
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     os::windows::process::CommandExt,
     process::{Command, Stdio},
     time::Instant,
@@ -33,6 +33,73 @@ pub struct ResultInfo {
     pub label: String,
 }
 
+// Microsoft FAT Specification, section 3.5: use data-cluster count, not the
+// descriptive FAT string in the boot sector or the card's advertised capacity.
+fn fat_type(boot: &[u8; 512]) -> Result<&'static str, String> {
+    let u16_at = |offset| u16::from_le_bytes([boot[offset], boot[offset + 1]]) as u64;
+    let u32_at = |offset| u32::from_le_bytes(boot[offset..offset + 4].try_into().unwrap()) as u64;
+    let bytes_per_sector = u16_at(11);
+    let sectors_per_cluster = boot[13] as u64;
+    let reserved = u16_at(14);
+    let fats = boot[16] as u64;
+    let root_entries = u16_at(17);
+    let total = if u16_at(19) != 0 {
+        u16_at(19)
+    } else {
+        u32_at(32)
+    };
+    let fat_size = if u16_at(22) != 0 {
+        u16_at(22)
+    } else {
+        u32_at(36)
+    };
+    if boot[510..512] != [0x55, 0xaa]
+        || bytes_per_sector != 512
+        || !sectors_per_cluster.is_power_of_two()
+        || sectors_per_cluster > 128
+        || reserved == 0
+        || fats == 0
+        || fat_size == 0
+    {
+        return Err("FATのブートセクターを確認できません".into());
+    }
+    let root_sectors = (root_entries * 32).div_ceil(bytes_per_sector);
+    let overhead = reserved + fats * fat_size + root_sectors;
+    let clusters = total.saturating_sub(overhead) / sectors_per_cluster;
+    if clusters == 0 {
+        return Err("FATのクラスタ数を確認できません".into());
+    }
+    Ok(if clusters < 4085 {
+        "FAT12"
+    } else if clusters < 65525 {
+        "FAT16"
+    } else {
+        "FAT32"
+    })
+}
+
+fn formatted_file_system(info: &ResultInfo) -> Result<String, String> {
+    if info.file_system == "exFAT" {
+        return Ok(info.file_system.clone());
+    }
+    let drive = info.drive.as_bytes();
+    if drive.len() != 2 || !drive[0].is_ascii_uppercase() || drive[1] != b':' {
+        return Err("フォーマット後のドライブ文字が不正です".into());
+    }
+    let mut boot = [0; 512];
+    std::fs::File::open(format!(r"\\.\{}", info.drive))
+        .and_then(|mut volume| volume.read_exact(&mut boot))
+        .map_err(|e| format!("フォーマット後の形式を読み取れません: {e}"))?;
+    let actual = fat_type(&boot)?;
+    if !matches!(
+        (info.file_system.as_str(), actual),
+        ("FAT", "FAT12" | "FAT16") | ("FAT32", "FAT32")
+    ) {
+        return Err("フォーマット後のFAT形式が指定と一致しません".into());
+    }
+    Ok(actual.into())
+}
+
 pub fn file_system(capacity: u64, sector: u32) -> Result<&'static str, String> {
     if sector != 512 || !(16 * 1024 * 1024..=2 * 1024_u64.pow(4)).contains(&capacity) {
         return Err("対応容量は16MiB〜2TiB、論理セクターサイズは512バイトです".into());
@@ -58,7 +125,7 @@ pub fn validate_label(label: &str) -> Result<(), String> {
 
 fn script(
     request: serde_json::Value,
-    mut stage: impl FnMut(&str, &str) -> Result<(), String>,
+    mut stage: impl FnMut(&str, &str, u64) -> Result<(), String>,
 ) -> Result<serde_json::Value, String> {
     let encoded = STANDARD.encode(
         include_str!("sd_format.ps1")
@@ -100,7 +167,11 @@ fn script(
                     result = Some(value.clone());
                 }
                 if let Some(name) = event["stage"].as_str() {
-                    if let Err(error) = stage(name, event["message"].as_str().unwrap_or(name)) {
+                    if let Err(error) = stage(
+                        name,
+                        event["message"].as_str().unwrap_or(name),
+                        event["file_ms"].as_u64().unwrap_or(0),
+                    ) {
                         failure = Some(error);
                     }
                 }
@@ -148,7 +219,7 @@ pub fn prepare(drive: &str, run_id: &str) -> Result<Plan, String> {
     }
     let target: Target = serde_json::from_value(script(
         serde_json::json!({ "mode": "inspect", "disk": disk }),
-        |_, _| Ok(()),
+        |_, _, _| Ok(()),
     )?)
     .map_err(|e| e.to_string())?;
     if target.disk != disk || target.capacity != capacity {
@@ -166,6 +237,7 @@ pub fn prepare(drive: &str, run_id: &str) -> Result<Plan, String> {
 pub fn execute(
     plan: Plan,
     label: &str,
+    simple_test: bool,
     mut notify: impl FnMut(Progress) -> Result<(), String>,
 ) -> Result<ResultInfo, String> {
     validate_label(label)?;
@@ -174,9 +246,12 @@ pub fn execute(
     }
     let started = Instant::now();
     let value = script(
-        serde_json::json!({ "mode": "format", "target": plan.target, "drive": plan.drive, "file_system": plan.file_system, "label": label }),
-        |stage, message| {
-            crate::diagnostics::record("INFO", &format!("format stage={stage} {message}"));
+        serde_json::json!({ "mode": "format", "target": plan.target, "drive": plan.drive, "file_system": plan.file_system, "label": label, "simple_test": simple_test }),
+        |stage, message, file_ms| {
+            crate::diagnostics::record(
+                "INFO",
+                &format!("format stage={stage} {message} file_ms={file_ms}"),
+            );
             notify(Progress {
                 run_id: plan.run_id.clone(),
                 filename: message.into(),
@@ -187,12 +262,12 @@ pub fn execute(
                 processed_bytes: 0,
                 total_bytes: 0,
                 elapsed_ms: started.elapsed().as_millis() as u64,
-                file_ms: 0,
+                file_ms,
                 error: None,
             })
         },
     )?;
-    let info: ResultInfo = serde_json::from_value(value).map_err(|e| e.to_string())?;
+    let mut info: ResultInfo = serde_json::from_value(value).map_err(|e| e.to_string())?;
     if info.file_system != plan.file_system
         || info.label != label
         || info.capacity == 0
@@ -200,12 +275,63 @@ pub fn execute(
     {
         return Err("フォーマット結果が確認内容と一致しません".into());
     }
+    info.file_system = formatted_file_system(&info)?;
     Ok(info)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn boot_sector(clusters: u32) -> [u8; 512] {
+        let mut boot = [0; 512];
+        boot[11..13].copy_from_slice(&512_u16.to_le_bytes());
+        boot[13] = 1;
+        boot[14..16].copy_from_slice(&1_u16.to_le_bytes());
+        boot[16] = 2;
+        boot[17..19].copy_from_slice(&512_u16.to_le_bytes());
+        boot[22..24].copy_from_slice(&256_u16.to_le_bytes());
+        boot[32..36].copy_from_slice(&(clusters + 1 + 2 * 256 + 32).to_le_bytes());
+        // A label is not authoritative: the actual type comes from cluster count.
+        boot[54..62].copy_from_slice(b"FAT12   ");
+        boot[510..512].copy_from_slice(&[0x55, 0xaa]);
+        boot
+    }
+
+    #[test]
+    fn fat_type_uses_data_cluster_boundaries() {
+        for (clusters, expected) in [
+            (4084, "FAT12"),
+            (4085, "FAT16"),
+            (65524, "FAT16"),
+            (65525, "FAT32"),
+        ] {
+            assert_eq!(fat_type(&boot_sector(clusters)).unwrap(), expected);
+        }
+        let mut boot = boot_sector(4085);
+        let total = u32::from_le_bytes(boot[32..36].try_into().unwrap()) as u16;
+        boot[19..21].copy_from_slice(&total.to_le_bytes());
+        boot[32..36].fill(0);
+        assert_eq!(fat_type(&boot).unwrap(), "FAT16");
+        // FAT32 has a 32-bit FAT size and no fixed root directory.
+        let mut boot = boot_sector(65525);
+        boot[17..19].fill(0);
+        boot[22..24].fill(0);
+        boot[36..40].copy_from_slice(&512_u32.to_le_bytes());
+        boot[32..36].copy_from_slice(&(65525_u32 + 1 + 2 * 512).to_le_bytes());
+        assert_eq!(fat_type(&boot).unwrap(), "FAT32");
+    }
+
+    #[test]
+    fn fat_type_rejects_invalid_boot_sectors() {
+        assert!(fat_type(&[0; 512]).is_err());
+        for (offset, value) in [(510, 0), (13, 0), (13, 3), (14, 0), (16, 0)] {
+            let mut boot = boot_sector(4085);
+            boot[offset] = value;
+            assert!(fat_type(&boot).is_err(), "offset={offset} value={value}");
+        }
+        assert!(fat_type(&boot_sector(0)).is_err());
+    }
+
     #[test]
     fn capacity_boundaries_and_labels() {
         for (size, fs) in [

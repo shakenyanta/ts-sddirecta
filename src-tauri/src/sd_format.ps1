@@ -6,7 +6,14 @@ $WarningPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
 function Send-Event($value) { [Console]::WriteLine(($value | ConvertTo-Json -Compress -Depth 8)) }
-function Stage($name, $message) { Send-Event @{ stage = $name; message = $message } }
+function Stage($name, $message) {
+    $script:stageTimer = [Diagnostics.Stopwatch]::StartNew()
+    Send-Event @{ stage = $name; message = $message }
+}
+function Stage-Done($name, $message) {
+    $script:stageTimer.Stop()
+    Send-Event @{ stage = ($name + '_done'); message = $message; file_ms = $script:stageTimer.ElapsedMilliseconds }
+}
 function Describe($disk) {
     if ($disk.IsBoot -or $disk.IsSystem -or $disk.IsReadOnly -or $disk.IsOffline) {
         throw 'システム・書込禁止・オフラインのディスクはフォーマットできません。'
@@ -89,6 +96,7 @@ try {
     $partition = New-Partition @partitionArguments
     }
     $null = Current-Disk $expected
+    Stage-Done 'format_partition' 'パーティション作成'
     Stage 'format_volume' 'クイックフォーマットしています'
     $volume = Format-Volume -Partition $partition -FileSystem $fs -NewFileSystemLabel $label -Force -Confirm:$false -ErrorAction Stop
     $null = Current-Disk $expected
@@ -97,6 +105,7 @@ try {
         Add-PartitionAccessPath -InputObject $partition -AssignDriveLetter -ErrorAction Stop
         $partition = Get-Partition -DiskNumber $expected.disk -PartitionNumber $partition.PartitionNumber -ErrorAction Stop
     }
+    Stage-Done 'format_volume' 'フォーマット実行'
     Stage 'format_verify' 'フォーマット結果を確認しています'
     $partitions = @(Get-Partition -DiskNumber $expected.disk -ErrorAction Stop)
     $volume = Get-Volume -Partition $partition -ErrorAction Stop
@@ -105,17 +114,26 @@ try {
         throw '作成したパーティション・ファイルシステムを確認できませんでした。'
     }
     if ([string](Get-Disk -Path $expected.path).PartitionStyle -ne 'MBR') { throw 'MBRを確認できませんでした。' }
-    $root = '{0}:\' -f $volume.DriveLetter
-    $testPath = Join-Path $root ('.ts-sddirecta-format-' + [guid]::NewGuid().ToString('N') + '.tmp')
-    $bytes = [Text.Encoding]::UTF8.GetBytes('ts-sddirecta format verification ' + [guid]::NewGuid())
-    $file = New-Object System.IO.FileStream($testPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
-    try { $file.Write($bytes, 0, $bytes.Length); $file.Flush($true) } finally { $file.Dispose() }
-    $actual = [IO.File]::ReadAllBytes($testPath)
-    if ([Convert]::ToBase64String($actual) -cne [Convert]::ToBase64String($bytes)) { throw 'テストファイルの読戻しが一致しません。' }
-    [IO.File]::Delete($testPath)
-    if ([IO.File]::Exists($testPath)) { throw 'テストファイルを削除できません。' }
+    Stage-Done 'format_verify' 'フォーマット確認'
+    Stage 'format_finalize' 'フォーマットを完了しています'
     $null = Current-Disk $expected
-    Send-Event @{ result = @{ drive = ('{0}:' -f $volume.DriveLetter); file_system = [string]$volume.FileSystem; capacity = [uint64]$volume.Size; label = [string]$volume.FileSystemLabel } }
+    $result = @{ drive = ('{0}:' -f $volume.DriveLetter); file_system = [string]$volume.FileSystem; capacity = [uint64]$volume.Size; label = [string]$volume.FileSystemLabel }
+    Stage-Done 'format_finalize' 'フォーマット完了'
+    if ($request.simple_test -eq $true) {
+        Stage 'format_test' 'FAT簡易テストを実行しています'
+        $root = '{0}:\' -f $volume.DriveLetter
+        $testPath = Join-Path $root ('.ts-sddirecta-format-' + [guid]::NewGuid().ToString('N') + '.tmp')
+        $bytes = [Text.Encoding]::UTF8.GetBytes('ts-sddirecta format verification ' + [guid]::NewGuid())
+        $file = New-Object System.IO.FileStream($testPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try { $file.Write($bytes, 0, $bytes.Length); $file.Flush($true) } finally { $file.Dispose() }
+        $actual = [IO.File]::ReadAllBytes($testPath)
+        if ([Convert]::ToBase64String($actual) -cne [Convert]::ToBase64String($bytes)) { throw 'テストファイルの読戻しが一致しません。' }
+        [IO.File]::Delete($testPath)
+        if ([IO.File]::Exists($testPath)) { throw 'テストファイルを削除できません。' }
+        $null = Current-Disk $expected
+        Stage-Done 'format_test' 'FAT簡易テスト'
+    }
+    Send-Event @{ result = $result }
 } catch {
     Send-Event @{ error = $_.Exception.Message }
     exit 1
