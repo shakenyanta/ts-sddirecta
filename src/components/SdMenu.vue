@@ -276,6 +276,8 @@ onUnmounted(() => {
 				</div>
 				<div class="menu-log-section">
 					<button type="button" @click="openDiagnosticLog">ログ表示</button>
+				</div>
+				<div class="menu-info-section">
 					<button type="button" :disabled="busy || installingUpdate" @click="showAppInfo('アップデート確認')">アップデート確認</button>
 					<button type="button" @click="showAppInfo('バージョン情報')">バージョン情報</button>
 				</div>
@@ -348,16 +350,14 @@ onUnmounted(() => {
 .menu-toggle { display: flex; align-items: center; justify-content: center; width: 32px; height: 34px; padding: 0; border: 1px solid transparent; border-radius: 6px; background: transparent; color: #526171; cursor: pointer; }
 .menu-toggle:hover, .menu-toggle[aria-expanded="true"] { background: #e8f0fe; border-color: #c6d8f4; color: #245da6; }
 .menu-toggle:focus-visible, .menu-dropdown button:focus-visible { outline: 2px solid #174a75; outline-offset: 1px; }
-.menu-dropdown { position: absolute; top: calc(100% + 5px); right: 0; z-index: 10; width: max-content; max-width: calc(100vw - 20px); padding: 4px; border: 1px solid #d9dfe5; border-radius: 8px; background: #fff; box-shadow: 0 5px 18px #22334426; }
-.menu-dropdown button { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 4px 8px; border: 0; border-radius: 4px; background: transparent; color: #333; font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
-.menu-dropdown button:hover:not(:disabled) { background: #e8f0fe; }
-.menu-dropdown button:disabled { color: #9ca3af; cursor: default; }
-.menu-operation-buttons { display: grid; gap: 4px; }
-.menu-operation-buttons button { box-sizing: border-box; justify-content: center; border: 1px solid #2a67c8; border-radius: 6px; background: linear-gradient(135deg, #4285f4 0%, #357ae8 100%); color: #fff; font-weight: 600; text-align: center; box-shadow: 0 1px 3px rgba(66, 133, 244, 0.2); transition: background 0.15s, box-shadow 0.15s; }
-.menu-operation-buttons button:hover:not(:disabled) { background: linear-gradient(135deg, #357ae8 0%, #2a67c8 100%); box-shadow: 0 2px 5px rgba(66, 133, 244, 0.3); }
-.menu-operation-buttons button:active:not(:disabled) { background: #2a67c8; box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.2); }
-.menu-operation-buttons button:disabled { border-color: #d5d9df; background: #e0e0e0; color: #9e9e9e; box-shadow: none; cursor: not-allowed; }
-.menu-log-section { margin-top: 6px; padding-top: 4px; border-top: 1px solid #d9dfe5; }
+.menu-dropdown { position: absolute; top: calc(100% + 5px); right: 0; z-index: 10; width: 180px; max-width: calc(100vw - 20px); max-height: calc(100dvh - 80px); overflow-y: auto; padding: 6px; border: 1px solid #dce2eb; border-radius: 10px; background: #f8f9fe; color: #293445; box-shadow: 0 6px 20px #2233441f, 0 1px 3px #2233440d; font: 12px/16px 'Yu Gothic UI', Meiryo, sans-serif; scrollbar-width: thin; }
+.menu-dropdown button { display: flex; align-items: center; width: 100%; min-height: 28px; padding: 6px 12px; border: 0; border-radius: 5px; background: transparent; color: inherit; font: inherit; font-weight: 400; text-align: left; cursor: pointer; transition: background-color .12s, color .12s; }
+.menu-dropdown button:hover:not(:disabled), .menu-dropdown button:focus-visible { background: #e8f0fe; color: #155bb5; }
+.menu-dropdown button:focus-visible { outline: 2px solid #1a73df; outline-offset: -2px; }
+.menu-dropdown button:active:not(:disabled) { background: #dae7fc; color: #174a75; }
+.menu-dropdown button:disabled { color: #9aa5b4; cursor: default; }
+.menu-operation-buttons { display: grid; }
+.menu-log-section, .menu-info-section { margin-top: 5px; padding-top: 5px; border-top: 1px solid #e0e5ed; }
 .drive-select-inline { display: flex; flex: 1; min-width: 0; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
 .no-drive-warning-inline { display: flex; align-items: center; gap: 0.4rem; padding: 0.45rem 1rem; background: linear-gradient(135deg, #fff9e6 0%, #fff3cd 100%); border: 1.5px solid #ffc107; border-radius: 8px; color: #856404; font-size: 0.95rem; font-weight: 500; white-space: nowrap; }
 .no-drive-warning-inline svg { flex-shrink: 0; }
