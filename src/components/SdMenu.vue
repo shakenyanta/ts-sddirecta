@@ -259,7 +259,7 @@ onUnmounted(() => {
 					<span class="sd-card-icon-inline" :class="busy ? 'status-busy' : drive.size > 0 ? 'status-inserted' : 'status-empty'" :title="busy ? '処理中' : drive.size > 0 ? formatCapacity(drive.size) : 'メディア未挿入'">
 						<svg viewBox="0 0 24 24" width="32" height="32" aria-hidden="true"><path fill="currentColor" d="M18 2h-8L4 8v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-6 6h-2V4h2v4zm3 0h-2V4h2v4zm3 0h-2V4h2v4z" /></svg>
 					</span>
-					<span v-if="drive.size > 0" class="sd-capacity-display-inline">{{ formatCapacity(drive.size) }}</span>
+					<span v-if="drive.size > 0" class="sd-capacity-display-inline"><span>{{ formatCapacity(drive.size) }}</span></span>
 				</span>
 			</label>
 		</div>
@@ -272,7 +272,7 @@ onUnmounted(() => {
 				<div class="menu-operation-buttons" role="group" aria-label="SD操作">
 					<button type="button" :disabled="!canRequestRead" :title="readTitle" @click="requestRead">全エリアSD読込</button>
 					<button type="button" :disabled="!canRequestInitialize" :title="initializeTitle" @click="requestInitialize">全エリアSD FF初期化</button>
-					<button type="button" :disabled="!selectedDriveHasMedia || busy || installingUpdate" title="選択したSDカードをフォーマットします" @click="requestFormat">SDフォーマット</button>
+					<button type="button" class="menu-format-button" :disabled="!selectedDriveHasMedia || busy || installingUpdate" title="選択したSDカードをフォーマットします" @click="requestFormat">SDフォーマット</button>
 				</div>
 				<div class="menu-log-section">
 					<button type="button" @click="openDiagnosticLog">ログ表示</button>
@@ -356,9 +356,14 @@ onUnmounted(() => {
 .menu-dropdown button:focus-visible { outline: 2px solid #1a73df; outline-offset: -2px; }
 .menu-dropdown button:active:not(:disabled) { background: #dae7fc; color: #174a75; }
 .menu-dropdown button:disabled { color: #9aa5b4; cursor: default; }
-.menu-operation-buttons { display: grid; border-radius: 6px; background: #edf3ff; color: #245da6; }
-.menu-operation-buttons button:hover:not(:disabled), .menu-operation-buttons button:focus-visible { background: #dce9fc; color: #155bb5; }
-.menu-operation-buttons button:active:not(:disabled) { background: #cfdef8; color: #174a75; }
+.menu-operation-buttons { display: grid; gap: 5px; }
+.menu-operation-buttons button { border: 2px solid transparent; border-radius: 8px; background: linear-gradient(135deg, #4285f4 0%, #357ae8 100%); color: #fff; font-weight: 600; box-shadow: 0 3px 8px rgba(66, 133, 244, 0.3), 0 1px 3px rgba(66, 133, 244, 0.2); }
+.menu-operation-buttons button:hover:not(:disabled), .menu-operation-buttons button:focus-visible { background: linear-gradient(135deg, #357ae8 0%, #2a67c8 100%); color: #fff; }
+.menu-operation-buttons button:active:not(:disabled) { background: #2a67c8; color: #fff; }
+.menu-operation-buttons .menu-format-button { background: linear-gradient(135deg, #c45c12 0%, #a94b0b 100%); box-shadow: 0 3px 8px rgba(196, 92, 18, 0.3), 0 1px 3px rgba(196, 92, 18, 0.2); }
+.menu-operation-buttons .menu-format-button:hover:not(:disabled), .menu-operation-buttons .menu-format-button:focus-visible { background: linear-gradient(135deg, #a94b0b 0%, #8e3e08 100%); }
+.menu-operation-buttons .menu-format-button:active:not(:disabled) { background: #8e3e08; }
+.menu-operation-buttons button:disabled { background: #e0e0e0; color: #9e9e9e; opacity: 0.6; box-shadow: none; }
 .menu-log-section, .menu-info-section { margin-top: 5px; padding-top: 5px; border-top: 1px solid #e0e5ed; }
 .drive-select-inline { display: flex; flex: 1; min-width: 0; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
 .no-drive-warning-inline { display: flex; align-items: center; gap: 0.4rem; padding: 0.45rem 1rem; background: linear-gradient(135deg, #fff9e6 0%, #fff3cd 100%); border: 1.5px solid #ffc107; border-radius: 8px; color: #856404; font-size: 0.95rem; font-weight: 500; white-space: nowrap; }
@@ -382,6 +387,8 @@ onUnmounted(() => {
 .status-empty { color: #d5d5d5; }
 .status-busy { background: #000; color: #fff; font-weight: bold; }
 .sd-capacity-display-inline { position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; justify-content: center; padding: 0.05rem 0.2rem; background: transparent; font-size: 0.6rem; font-weight: 800; color: #fff; min-width: 20px; text-align: center; letter-spacing: 0.02em; text-shadow: -1px -1px 0 #333, 1px -1px 0 #333, -1px 1px 0 #333, 1px 1px 0 #333, 0 0 3px rgba(0, 0, 0, 0.5); z-index: 1; white-space: nowrap; pointer-events: none; }
+/* Match ts-sddirect's inner capacity span, whose weight is reset by base.css. */
+.sd-capacity-display-inline > span { font-weight: normal; }
 .sd-write-wrapper { position: relative; display: inline-flex; flex-direction: column; flex-shrink: 0; }
 .drive-disabled { opacity: 0.5; cursor: default; }
 .sd-write-button { padding: 0.45rem 1.1rem; background: linear-gradient(135deg, #4285f4 0%, #357ae8 100%); color: white; border: 2px solid transparent; border-radius: 8px; font-family: inherit; font-size: 0.95rem; font-weight: 600; cursor: pointer; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); outline: none; white-space: nowrap; box-shadow: 0 3px 8px rgba(66, 133, 244, 0.3), 0 1px 3px rgba(66, 133, 244, 0.2); position: relative; overflow: hidden; }
