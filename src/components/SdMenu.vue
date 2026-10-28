@@ -93,18 +93,18 @@ const canRequestWrite = computed(() => props.canWrite && selectedDriveHasMedia.v
 const canRequestRead = computed(() => props.canRead && selectedDriveHasMedia.value && selectedDriveHasLetter.value && !props.busy);
 const canRequestInitialize = computed(() => props.canInitialize && selectedDriveHasMedia.value && selectedDriveHasLetter.value && !props.busy);
 const initializeTitle = computed(() => props.busy ? 'SDカードの処理中です'
-    : selectedDriveHasMedia.value && !selectedDriveHasLetter.value ? '未割り当てのSDカードは「フォーマット」から使用可能な状態にできます'
-    : !props.canInitialize ? 'CSVの初期化対象領域がありません'
+    : selectedDriveHasMedia.value && !selectedDriveHasLetter.value ? '未割り当てのSDカードは「SDフォーマット」から使用可能な状態にできます'
+    : !props.canInitialize ? 'SD MAPに初期化対象の領域がありません'
     : !selectedDriveHasMedia.value ? 'SDカードが挿入されたドライブを選択してください'
-    : 'CSVの全領域を0xFFで初期化し照合します。CSVに含まれる先頭32KiBも対象です');
+    : 'SD MAPの指定領域を0xFFで初期化します。フォーマット情報も失われます。');
 const readTitle = computed(() => props.busy ? 'SDカードの処理中です'
-    : selectedDriveHasMedia.value && !selectedDriveHasLetter.value ? '未割り当てのSDカードは「フォーマット」から使用可能な状態にできます'
-    : !props.canRead ? 'CSVの読込対象領域がありません'
+    : selectedDriveHasMedia.value && !selectedDriveHasLetter.value ? '未割り当てのSDカードは「SDフォーマット」から使用可能な状態にできます'
+    : !props.canRead ? 'SD MAPに読込対象の領域がありません'
     : !selectedDriveHasMedia.value ? 'SDカードが挿入されたドライブを選択してください'
-    : 'CSVの全領域をexeと同じ場所のoutputへ保存します（直下の既存ファイルはすべて削除）');
+    : 'SD MAPの指定領域を読み込み、outputフォルダーに保存します。');
 const writeTitle = computed(() => {
 	if (props.busy) return 'SDカードの処理中です';
-	if (selectedDriveHasMedia.value && !selectedDriveHasLetter.value) return '未割り当てのSDカードは「フォーマット」から使用可能な状態にできます';
+	if (selectedDriveHasMedia.value && !selectedDriveHasLetter.value) return '未割り当てのSDカードは「SDフォーマット」から使用可能な状態にできます';
 	if (!props.canWrite) return '全エリアと一致するファイルがありません';
 	if (!selectedDrive.value) return 'SDドライブを選択してください';
 	if (!selectedDriveHasMedia.value) return '選択したドライブにSDカードが挿入されていません';
@@ -193,7 +193,7 @@ function requestInitialize() {
 
 function requestFormat() {
     if (!selectedDriveHasMedia.value || props.busy || installingUpdate.value) return;
-    recordAction('フォーマット');
+    recordAction('SDフォーマット');
     actionsOpen.value = false;
     emit('format', selectedDrive.value);
 }
@@ -269,10 +269,10 @@ onUnmounted(() => {
 				<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
 			</button>
 			<div v-if="actionsOpen" id="sd-actions" class="menu-dropdown" role="group" aria-label="メニュー操作">
-				<div class="menu-operation-buttons">
+				<div class="menu-operation-buttons" role="group" aria-label="SD操作">
 					<button type="button" :disabled="!canRequestRead" :title="readTitle" @click="requestRead">全エリアSD読込</button>
 					<button type="button" :disabled="!canRequestInitialize" :title="initializeTitle" @click="requestInitialize">全エリアSD FF初期化</button>
-					<button type="button" :disabled="!selectedDriveHasMedia || busy || installingUpdate" title="選択したSDカードをフォーマットします" @click="requestFormat">フォーマット</button>
+					<button type="button" :disabled="!selectedDriveHasMedia || busy || installingUpdate" title="選択したSDカードをフォーマットします" @click="requestFormat">SDフォーマット</button>
 				</div>
 				<div class="menu-log-section">
 					<button type="button" @click="openDiagnosticLog">ログ表示</button>
@@ -356,7 +356,9 @@ onUnmounted(() => {
 .menu-dropdown button:focus-visible { outline: 2px solid #1a73df; outline-offset: -2px; }
 .menu-dropdown button:active:not(:disabled) { background: #dae7fc; color: #174a75; }
 .menu-dropdown button:disabled { color: #9aa5b4; cursor: default; }
-.menu-operation-buttons { display: grid; }
+.menu-operation-buttons { display: grid; border-radius: 6px; background: #edf3ff; color: #245da6; }
+.menu-operation-buttons button:hover:not(:disabled), .menu-operation-buttons button:focus-visible { background: #dce9fc; color: #155bb5; }
+.menu-operation-buttons button:active:not(:disabled) { background: #cfdef8; color: #174a75; }
 .menu-log-section, .menu-info-section { margin-top: 5px; padding-top: 5px; border-top: 1px solid #e0e5ed; }
 .drive-select-inline { display: flex; flex: 1; min-width: 0; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
 .no-drive-warning-inline { display: flex; align-items: center; gap: 0.4rem; padding: 0.45rem 1rem; background: linear-gradient(135deg, #fff9e6 0%, #fff3cd 100%); border: 1.5px solid #ffc107; border-radius: 8px; color: #856404; font-size: 0.95rem; font-weight: 500; white-space: nowrap; }

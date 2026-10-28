@@ -48,7 +48,7 @@ const copyStatus = ref('');
 const operationKind = ref<'read' | 'write' | 'ff' | 'format'>('write');
 const operationName = computed(() => operationKind.value === 'format' ? 'フォーマット' : operationKind.value === 'ff' ? 'SD FF初期化' : operationKind.value === 'read' ? 'SD読込' : 'SD書込');
 const popupTitle = computed(() => writing.value ? `${statusLabel.value}…`
-    : operationKind.value === 'format' ? (writeStage.value === 'confirm' ? 'フォーマット' : writeStage.value === 'done' ? 'フォーマット完了' : 'フォーマット失敗')
+    : operationKind.value === 'format' ? (writeStage.value === 'confirm' || writeStage.value === 'done' ? 'SDフォーマット' : 'フォーマット失敗')
     : operationKind.value === 'ff' ? (writeStage.value === 'done' ? 'FF初期化完了' : 'FF初期化失敗')
     : operationKind.value === 'read' ? (writeStage.value === 'done' ? '読込完了' : '読込失敗')
     : writeStage.value === 'done' ? '書込完了' : writeStage.value === 'failed' ? '書込失敗' : '書込対象なし');

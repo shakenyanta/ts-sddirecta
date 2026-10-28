@@ -75,7 +75,7 @@ test('format uses the selected drive without CSV and never runs before confirmat
   }), { now: () => now });
   await ui.mount();
   await ui.onSdFormat('H:');
-  assert.equal(ui.popupTitle.value, 'フォーマット');
+  assert.equal(ui.popupTitle.value, 'SDフォーマット');
   assert.equal(ui.writing.value, false);
   assert.equal(calls.length, 1);
   assert.equal(calls[0][1].drive, 'H:');
@@ -119,7 +119,7 @@ test('format uses the selected drive without CSV and never runs before confirmat
   assert.equal(calls[1][1].simpleTest, false);
   release({ drive: 'J:', file_system: 'FAT16', capacity: 500 * 1024 ** 2, label: 'TEST' });
   await task;
-  assert.equal(ui.popupTitle.value, 'フォーマット完了');
+  assert.equal(ui.popupTitle.value, 'SDフォーマット');
   assert.equal(ui.writing.value, false);
   assert.equal(ui.hasTimer, false);
   assert.equal(ui.formatStep.value, 5);
