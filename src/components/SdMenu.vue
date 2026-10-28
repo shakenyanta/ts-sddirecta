@@ -282,28 +282,67 @@ onUnmounted(() => {
 			</div>
 		</div>
 		<dialog ref="infoDialog" class="app-info-dialog" aria-labelledby="app-info-title" @cancel.prevent="closeAppInfo">
-			<h2 id="app-info-title">{{ infoTitle }}</h2>
-			<p v-if="appName">{{ appName }}</p>
-			<p v-if="appVersion">バージョン {{ appVersion }}</p>
-			<p v-if="infoMessage" role="status">{{ infoMessage }}</p>
-			<p v-if="availableUpdate?.notes" class="update-notes">{{ availableUpdate.notes }}</p>
-			<form method="dialog" @submit.prevent="closeAppInfo">
-				<button v-if="availableUpdate" type="button" :disabled="busy || installingUpdate" @click="installUpdate">YES</button>
-				<button type="submit" :disabled="installingUpdate" autofocus>{{ availableUpdate ? 'No' : '閉じる' }}</button>
-			</form>
+			<div class="app-info-content">
+				<header class="app-info-header">
+					<h2 id="app-info-title">{{ infoTitle }}</h2>
+					<span v-if="availableUpdate" class="update-badge">更新あり</span>
+				</header>
+				<div class="app-info-body">
+					<p v-if="appName" class="app-info-name">{{ appName }}</p>
+					<div v-if="appVersion" class="app-info-versions" aria-label="バージョン">
+						<span><small>現在</small><strong>{{ appVersion }}</strong></span>
+						<template v-if="availableUpdate?.version">
+							<span class="version-arrow" aria-hidden="true">→</span>
+							<span class="new-version"><small>更新後</small><strong>{{ availableUpdate.version }}</strong></span>
+						</template>
+					</div>
+					<p v-if="infoMessage" class="app-info-message" role="status">{{ infoMessage }}</p>
+					<section v-if="availableUpdate?.notes" class="update-notes" aria-labelledby="update-notes-title">
+						<h3 id="update-notes-title">更新内容</h3>
+						<p>{{ availableUpdate.notes }}</p>
+					</section>
+				</div>
+				<form method="dialog" @submit.prevent="closeAppInfo">
+					<button type="submit" :disabled="installingUpdate" :class="{ 'app-info-primary': !availableUpdate }" autofocus>{{ availableUpdate ? 'あとで' : '閉じる' }}</button>
+					<button v-if="availableUpdate" type="button" class="app-info-primary" :disabled="busy || installingUpdate" @click="installUpdate">{{ installingUpdate ? '更新中…' : '更新する' }}</button>
+				</form>
+			</div>
 		</dialog>
 	</div>
 </template>
 
 <style scoped>
-.app-info-dialog { width: min(360px, calc(100vw - 32px)); max-height: calc(100vh - 32px); box-sizing: border-box; padding: 16px; border: 1px solid #d9dfe5; border-radius: 10px; color: #333; overflow: auto; overflow-wrap: anywhere; }
-.app-info-dialog::backdrop { background: rgb(0 0 0 / 35%); }
-.app-info-dialog h2 { margin: 0 0 12px; font-size: 1.05rem; }
-.app-info-dialog p { margin: 8px 0; font-size: 0.85rem; line-height: 1.5; }
-.app-info-dialog form { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
-.app-info-dialog .update-notes { white-space: pre-wrap; }
-.app-info-dialog button:disabled { opacity: 0.5; cursor: default; }
-.app-info-dialog button { padding: 5px 16px; border: 1px solid #c5cdd5; border-radius: 5px; background: #f5f7fa; color: #333; cursor: pointer; font: inherit; }
+.app-info-dialog { position: fixed; inset: 0; margin: auto; width: min(380px, calc(100vw - 8px)); max-width: none; max-height: calc(100dvh - 8px); padding: 0; border: 0; border-radius: 18px; background: #f8f9fe; color: #121212; box-shadow: 0 12px 32px #0003; font: 12px/1.5 'Yu Gothic UI', Meiryo, sans-serif; overflow: hidden; overflow-wrap: anywhere; }
+.app-info-dialog::backdrop { background: #0005; }
+.app-info-content { display: flex; flex-direction: column; max-height: calc(100dvh - 8px); padding: 12px; gap: 10px; }
+.app-info-header { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 8px; padding-bottom: 8px; border-bottom: 3px solid #1a73df; }
+.app-info-dialog h2 { margin: 0; font-size: 16px; line-height: 1.3; font-weight: 700; }
+.update-badge { flex-shrink: 0; padding: 2px 7px; border-radius: 20px; background: #e5efff; color: #155bb5; font-size: 10px; font-weight: 700; }
+.app-info-body { min-height: 0; overflow: auto; scrollbar-width: thin; }
+.app-info-name { margin: 0 0 6px; color: #536176; font-size: 11px; }
+.app-info-versions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 10px; }
+.app-info-versions > span:not(.version-arrow) { display: flex; align-items: baseline; gap: 6px; }
+.app-info-versions small { color: #536176; font-size: 10px; }
+.app-info-versions strong { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.version-arrow { color: #8391a3; }
+.new-version strong { color: #155bb5; }
+.app-info-message { margin: 0; }
+.update-notes { margin-top: 10px; padding: 8px 10px; border: 1px solid #dce5f5; border-radius: 8px; background: #eef2f8; }
+.update-notes h3 { margin: 0 0 4px; color: #536176; font-size: 10px; font-weight: 600; }
+.update-notes p { margin: 0; white-space: pre-wrap; }
+.app-info-dialog form { display: flex; flex-shrink: 0; justify-content: flex-end; gap: 6px; }
+.app-info-dialog button { padding: 5px 12px; border: 1px solid #c5cad3; border-radius: 20px; background: #e9ecf2; color: #242424; cursor: pointer; font: inherit; line-height: 1.2; }
+.app-info-dialog button.app-info-primary { border-color: #1a73df; background: #1a73df; color: #fff; font-weight: 700; }
+.app-info-dialog button:hover:not(:disabled) { background: #dce3ef; }
+.app-info-dialog button.app-info-primary:hover:not(:disabled) { border-color: #155bb5; background: #155bb5; }
+.app-info-dialog button:focus-visible { outline: 2px solid #1a73df; outline-offset: 2px; }
+.app-info-dialog button:disabled { opacity: .45; cursor: default; }
+@media (max-width: 400px), (max-height: 400px) {
+    .app-info-dialog { border-radius: 14px; }
+    .app-info-content { padding: 8px; gap: 8px; }
+    .app-info-dialog h2 { font-size: 14px; }
+    .app-info-dialog button { padding: 4px 10px; font-size: 11px; }
+}
 .sd-menu { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 6px; width: 100%; min-height: 48px; padding: 5px 6px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', Meiryo, sans-serif; font-size: 14px; line-height: 1.5; color: #333; }
 .menu-actions { position: relative; }
 .menu-toggle { display: flex; align-items: center; justify-content: center; width: 32px; height: 34px; padding: 0; border: 1px solid transparent; border-radius: 6px; background: transparent; color: #526171; cursor: pointer; }

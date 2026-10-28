@@ -1,31 +1,31 @@
 # ポータブル版のリリース手順
 
-**v0.1.1を作って更新を試す場合は、次の1〜5だけを順番に実行してください。**
-以降のリリースでは、`0.1.1` を前回より大きい番号に読み替えます。
+**v0.1.2を作って更新を試す場合は、次の1〜5だけを順番に実行してください。**
+以降のリリースでは、`0.1.2` を前回より大きい番号に読み替えます。
 
-## 1. 更新元の0.1.0を残す
+## 1. 更新元の0.1.1を残す
 
 プロジェクトのフォルダーでPowerShellを開き、次の1行を実行します。
 
 ```powershell
-npm.cmd run update:test:prepare
+npm.cmd run update:test:prepare -- -Version 0.1.1
 ```
 
-これで **`dist-update\update-test\v0.1.0\ts-sddirecta.exe`** に旧版のコピーができます。
-コピー元は `dist-update\v0.1.0\ts-sddirecta.exe`、なければ `src-tauri\target\release\ts-sddirecta.exe` です。
-コマンドがexeのバージョンを確認し、`0.1.0` でなければ停止します。既存のテスト用フォルダーも上書きしません。
+これで **`dist-update\update-test\v0.1.1\ts-sddirecta.exe`** に旧版のコピーができます。
+コピー元は `dist-update\v0.1.1\ts-sddirecta.exe`、なければ `src-tauri\target\release\ts-sddirecta.exe` です。
+コマンドがexeのバージョンを確認し、`0.1.1` でなければ停止します。既存のテスト用フォルダーも上書きしません。
 
 CSV・config・input・outputの保持も試す場合は、それらのテスト用コピーをこのフォルダーに置きます。
 
 **このexeは手順5で使います。新しいexeで上書きしないでください。**
 ビルドできるWindows環境と、前回と同じ署名鍵（暗号化している場合はパスワード）が必要です。
 
-## 2. 0.1.1の配布ファイルを作る
+## 2. 0.1.2の配布ファイルを作る
 
 `package.json` の `version` だけを変更して保存します。
 
 ```json
-"version": "0.1.1"
+"version": "0.1.2"
 ```
 
 PowerShellで、次の2行を実行します。`-Notes` は今回の変更内容に書き換えます。
@@ -39,7 +39,7 @@ npm.cmd run release:prepare -- -Notes "アップデート動作確認用のリ�
 バージョンの同期・ビルド・署名は、このコマンドでまとめて行います。
 `build:exe` や `version:sync` を別に実行する必要はありません。
 
-生成先は `dist-update\v0.1.1\` です。公開するのは次の3ファイルです。
+生成先は `dist-update\v0.1.2\` です。公開するのは次の3ファイルです。
 
 ```text
 ts-sddirecta.exe
@@ -52,7 +52,7 @@ latest.json.sig
 
 ## 3. 新しいexeの起動を確認する
 
-`dist-update\v0.1.1\ts-sddirecta.exe` を起動し、「バージョン情報」が `0.1.1` であることと、変更した機能が動くことを確認して終了します。
+`dist-update\v0.1.2\ts-sddirecta.exe` を起動し、「バージョン情報」が `0.1.2` であることと、変更した機能が動くことを確認して終了します。
 
 ## 4. GitHubに3ファイルを公開する
 
@@ -68,12 +68,12 @@ npm.cmd run release:publish
 
 GitHub CLIのインストールとログインは初回のみ必要です（下の補足を参照）。
 
-## 5. 0.1.0からアップデートする
+## 5. 0.1.1からアップデートする
 
-SD処理をしていない状態で、**`dist-update\update-test\v0.1.0\ts-sddirecta.exe`** を起動します。
+SD処理をしていない状態で、**`dist-update\update-test\v0.1.1\ts-sddirecta.exe`** を起動します。
 
-1. 「アップデート確認」を押し、`0.1.1` への更新案内で **YES** を選びます。
-2. 自動で再起動したら、「バージョン情報」が **`0.1.1`** になっていることを確認します。
+1. 「アップデート確認」を押し、`0.1.2` への更新案内で **YES** を選びます。
+2. 自動で再起動したら、「バージョン情報」が **`0.1.2`** になっていることを確認します。
 3. 同じフォルダーのCSV・config・input・outputなどが保持され、アプリが正常に動くことを確認します。
 4. もう一度「アップデート確認」を押し、**「最新バージョンです。」** と表示されれば確認完了です。
 
@@ -122,13 +122,13 @@ npm.cmd run release:publish -- -DryRun
 コピー元を指定する場合：
 
 ```powershell
-npm.cmd run update:test:prepare -- -SourceExe 'D:\アプリ\ts-sddirecta.exe'
+npm.cmd run update:test:prepare -- -Version 0.1.1 -SourceExe 'D:\アプリ\ts-sddirecta.exe'
 ```
 
-次回、`0.1.1` からの更新を試す場合は、更新元の番号を指定します。
+次回、`0.1.2` からの更新を試す場合は、更新元の番号を指定します。
 
 ```powershell
-npm.cmd run update:test:prepare -- -Version 0.1.1
+npm.cmd run update:test:prepare -- -Version 0.1.2
 ```
 
 既にテスト用フォルダーがある場合は、その中のexeを使ってください。
@@ -162,13 +162,13 @@ npm.cmd run release:prepare -- -PrivateKeyPath 'D:\署名鍵\ts-sddirecta.key' -
 
 | 状況 | 確認・対処 |
 | --- | --- |
-| バージョンの同期でエラー | `package.json` の構文と `version` を確認。`0.1.1` のように先頭の `v` は付けない。 |
+| バージョンの同期でエラー | `package.json` の構文と `version` を確認。`0.1.2` のように先頭の `v` は付けない。 |
 | 秘密鍵がない／公開鍵が一致しない | 前回の鍵の保存先を確認し、必要なら `-PrivateKeyPath` で指定する。新しい鍵へ作り替えない。 |
 | ビルド・署名が失敗した | エラーを解消し、手順2のコマンドを再実行する。以前の生成物を公開しない。 |
 | GitHubの認証でエラー | `gh auth login --hostname github.com` で、配布リポジトリに書き込めるアカウントへログインする。 |
 | 同じタグのリリースが既にある | GitHubの公開状態を確認。公開済みなら手順5へ進む。失敗時の下書きなら上の補足を参照。 |
 | 「更新情報はまだ公開されていません。」と出る | 公開済みの最新版のAssetsに `latest.json` があるか確認する。 |
-| 更新前から「最新バージョンです。」と出る | 起動中のexeが `0.1.0`、GitHubのLatestが `0.1.1` か確認する。同じか古い番号には更新されない。 |
+| 更新前から「最新バージョンです。」と出る | 起動中のexeが `0.1.1`、GitHubのLatestが `0.1.2` か確認する。同じか古い番号には更新されない。 |
 | 署名・ハッシュの検証に失敗する | 同じ実行で生成した3ファイルか、生成後に内容を変更していないか確認する。 |
 | exeを差し替えられない | 保存先への書込権限、同じexeの別起動、ファイルの使用中状態を確認する。 |
 
@@ -188,7 +188,7 @@ npm.cmd run release:prepare -- -PrivateKeyPath 'D:\署名鍵\ts-sddirecta.key' -
 利用者への案内例：
 
 ```text
-ts-sddirecta v0.1.1 を公開しました。
+ts-sddirecta v0.1.2 を公開しました。
 
 既にお使いの方：アプリの「アップデート確認」→ YESで更新できます。
 初めてお使いの方：下記ページのAssetsから ts-sddirecta.exe をダウンロードして起動してください。
