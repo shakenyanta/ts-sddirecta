@@ -392,6 +392,7 @@ onUnmounted(() => {
 .sd-write-wrapper { position: relative; display: inline-flex; flex-direction: column; flex-shrink: 0; }
 .drive-disabled { opacity: 0.5; cursor: default; }
 .sd-write-button { padding: 0.45rem 1.1rem; background: linear-gradient(135deg, #4285f4 0%, #357ae8 100%); color: white; border: 2px solid transparent; border-radius: 8px; font-family: inherit; font-size: 0.95rem; font-weight: 600; cursor: pointer; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); outline: none; white-space: nowrap; box-shadow: 0 3px 8px rgba(66, 133, 244, 0.3), 0 1px 3px rgba(66, 133, 244, 0.2); position: relative; overflow: hidden; }
+.sd-write-button { height: 42px; padding-block: 0; line-height: 1.5; }
 .sd-write-button::before { content: ''; position: absolute; top: 0; left: -100%; width: 100%; height: 100%; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent); transition: left 0.5s; }
 .sd-write-button:hover::before { left: 100%; }
 .sd-write-button:hover { background: linear-gradient(135deg, #357ae8 0%, #2a67c8 100%); transform: translateY(-3px); box-shadow: 0 6px 16px rgba(66, 133, 244, 0.4), 0 2px 6px rgba(66, 133, 244, 0.3); }
@@ -416,7 +417,7 @@ onUnmounted(() => {
 	.radio-label-inline { gap: 3px; }
 	.drive-letter { font-size: 0.85rem; }
 	.sd-card-icon-inline svg { width: 28px; height: 28px; }
-	.sd-write-button { padding-inline: 0.65rem; }
+	.sd-write-button { height: 38px; padding-inline: 0.65rem; }
 	.no-drive-warning-inline { padding: 5px; gap: 3px; font-size: 12px; white-space: normal; }
 }
 @container sd-menu-panel (max-width: 200px) {
