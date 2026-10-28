@@ -173,6 +173,88 @@ pub fn removable_target(drive: &str) -> Result<(u32, u64), String> {
     })
 }
 
+pub fn physical_drive_number(name: &str) -> Option<u32> {
+    let number = name.strip_prefix("PhysicalDrive")?.parse::<u32>().ok()?;
+    (name == format!("PhysicalDrive{number}")).then_some(number)
+}
+
+/// Inspect device metadata only. No volume, drive letter or filesystem is needed.
+pub fn removable_physical_size(disk: u32) -> Result<u64, io::Error> {
+    use windows_sys::Win32::System::Ioctl::{
+        PropertyStandardQuery, StorageDeviceProperty, IOCTL_STORAGE_QUERY_PROPERTY,
+        STORAGE_DEVICE_DESCRIPTOR, STORAGE_PROPERTY_QUERY,
+    };
+    let path = format!("\\\\.\\PhysicalDrive{disk}");
+    let handle = DiskHandle::open(&path, 0, FILE_ATTRIBUTE_NORMAL)?;
+    let query = STORAGE_PROPERTY_QUERY {
+        PropertyId: StorageDeviceProperty,
+        QueryType: PropertyStandardQuery,
+        AdditionalParameters: [0],
+    };
+    let mut buffer = [0u64; 512];
+    let mut count = 0;
+    let ok = unsafe {
+        DeviceIoControl(
+            handle.0,
+            IOCTL_STORAGE_QUERY_PROPERTY,
+            &query as *const _ as *const _,
+            std::mem::size_of_val(&query) as u32,
+            buffer.as_mut_ptr() as *mut _,
+            std::mem::size_of_val(&buffer) as u32,
+            &mut count,
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if (count as usize) < std::mem::size_of::<STORAGE_DEVICE_DESCRIPTOR>() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "デバイス情報が不足しています",
+        ));
+    }
+    let descriptor =
+        unsafe { std::ptr::read_unaligned(buffer.as_ptr() as *const STORAGE_DEVICE_DESCRIPTOR) };
+    if descriptor.DeviceType != 0 || descriptor.RemovableMedia == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "リムーバブルメディアではありません",
+        ));
+    }
+    get_physical_size(&path)
+}
+
+pub fn list_removable_disks() -> Result<Vec<(u32, u64)>, io::Error> {
+    use windows_sys::Win32::Storage::FileSystem::QueryDosDeviceW;
+    let mut names = vec![0u16; 65536];
+    let count = loop {
+        let count =
+            unsafe { QueryDosDeviceW(std::ptr::null(), names.as_mut_ptr(), names.len() as u32) };
+        if count != 0 {
+            break count as usize;
+        }
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(122) || names.len() >= 1024 * 1024 {
+            return Err(error);
+        }
+        names.resize(names.len() * 2, 0);
+    };
+    let mut disks = Vec::new();
+    for name in names[..count].split(|c| *c == 0).filter(|s| !s.is_empty()) {
+        if let Some(disk) = physical_drive_number(&String::from_utf16_lossy(name)) {
+            if let Ok(capacity) = removable_physical_size(disk) {
+                if capacity > 0 {
+                    disks.push((disk, capacity));
+                }
+            }
+        }
+    }
+    disks.sort_unstable();
+    disks.dedup_by_key(|(disk, _)| *disk);
+    Ok(disks)
+}
+
 // One physical handle per batch; writes also require a volume lock. Read-only
 // exports request no write access. Aligned, unbuffered I/O avoids stale cache data.
 struct DiskHandle(HANDLE);

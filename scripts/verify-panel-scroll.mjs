@@ -1,5 +1,5 @@
 // Render the built app in Chromium with mocked IPC. Never access an SD card.
-// Usage: node scripts/verify-panel-scroll.mjs [path-to-chrome-or-edge] [--ff] [--write] [--update]
+// Usage: node scripts/verify-panel-scroll.mjs [path-to-chrome-or-edge] [--ff] [--write] [--update] [--format]
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { readFile, mkdtemp } from 'node:fs/promises';
@@ -11,6 +11,8 @@ const browser = process.argv.slice(2).find(arg => !arg.startsWith('--')) || 'C:/
 const verifyFf = process.argv.includes('--ff');
 const verifyWrite = process.argv.includes('--write');
 const verifyUpdate = process.argv.includes('--update');
+const verifyFormat = process.argv.includes('--format');
+const verifyUnassigned = process.argv.includes('--unassigned');
 const root = resolve('dist');
 const csv = await readFile('config/sdDirectaxs.csv', 'utf8');
 const bootstrap = `
@@ -37,6 +39,12 @@ window.__TAURI_INTERNALS__ = {
       capacity: 512 * 1024 * 1024, total_bytes: 512,
       entries: [{ filename: 'FILE-00.001', address: 0, size: 512, file_size: 512 }] };
     if (command === 'discard_sd_write') return;
+    if (command === 'prepare_sd_format') return { run_id: args.runId, drive: args.drive, file_system: 'FAT', target: { capacity: 512 * 1024 * 1024 } };
+    if (command === 'discard_sd_format') return;
+    if (command === 'run_sd_format') {
+      setTimeout(() => listeners.get('sd-progress')?.({ payload: { run_id: args.runId, stage: 'format_volume', filename: 'クイックフォーマットしています' } }), 20);
+      return new Promise(resolve => setTimeout(() => resolve({ drive: 'H:', file_system: 'FAT', capacity: 500 * 1024 * 1024, label: args.label }), 600));
+    }
     if (command === 'run_sd_write') return new Promise(resolve => setTimeout(() => resolve({
       run_id: args.runId, filename: '', index: 1, total: 1, completed: 1, stage: 'done',
       processed_bytes: 1536, total_bytes: 1536, elapsed_ms: 600, file_ms: 0, error: null,
@@ -50,7 +58,9 @@ window.__TAURI_INTERNALS__ = {
     }
     if (command === 'get_executable_directory') return ${JSON.stringify('C:\\source\\repos\\electron3\\ts-sddirecta\\src-tauri\\target\\debug')};
     if (command === 'sd_admin_status') return 'ready';
-    if (command === 'get_drives') return [{ drive: 'E:', type: 'Removable', size: 0 }, { drive: 'H:', type: 'Removable', size: 512 * 1024 * 1024 }];
+    if (command === 'get_drives') return [{ drive: 'E:', type: 'Removable', size: 0 }, ${verifyUnassigned
+      ? "{ drive: 'PhysicalDrive1', label: '?:', type: 'Removable', size: 497549312 }"
+      : "{ drive: 'H:', type: 'Removable', size: 512 * 1024 * 1024 }"}];
     if (command === 'check_startup_csv') return true;
     if (command === 'read_startup_csv') return { contents: ${JSON.stringify(csv)}, source_folder: 'test CSV' };
     if (command === 'find_dictionary_files') return { files: ${JSON.stringify(verifyWrite ? ['FILE-00.001'] : [])}, from_input: false, input_exists: true,
@@ -92,6 +102,33 @@ window.addEventListener('load', async () => {
     await delay(750);
     await render();
     results.at(-1).manualStable = Math.abs(manual - panel.scrollTop) <= 1;
+  }
+  if (${verifyFormat}) {
+    document.querySelector('[aria-controls="sd-actions"]').click(); await render();
+    const buttons = [...document.querySelectorAll('.menu-operation-buttons button')];
+    const button = buttons.find(b => b.textContent === 'フォーマット');
+    const belowFf = button?.previousElementSibling?.textContent === '全エリアSD FF初期化';
+    const enabledWithoutFiles = button && !button.disabled;
+    button?.click(); await delay(150); await render();
+    const dialog = document.querySelector('.write-dialog');
+    const confirmed = dialog.open && dialog.querySelector('h2').textContent === 'フォーマット確認';
+    if (${verifyUnassigned} && !dialog.textContent.includes('?:')) throw Error('Unassigned SD was not selected');
+    const warning = dialog.textContent.includes('既存データは保持されません');
+    const input = dialog.querySelector('input'); input.value = 'TEST'; input.dispatchEvent(new Event('input', { bubbles: true }));
+    await render();
+    const start = [...dialog.querySelectorAll('button')].find(b => b.textContent === 'フォーマット開始');
+    start.click(); await delay(100); await render();
+    const busy = [...dialog.querySelectorAll('.close-write')].every(b => b.disabled);
+    const indeterminate = !dialog.querySelector('progress').hasAttribute('value');
+    await delay(800); await render();
+    const rect = dialog.getBoundingClientRect();
+    const last = dialog.querySelector('.write-actions').getBoundingClientRect();
+    results.push({ format: { belowFf, enabledWithoutFiles, confirmed, warning, busy, indeterminate,
+      title: dialog.querySelector('h2').textContent, percent: dialog.querySelector('progress').value,
+      count: dialog.querySelector('.write-count')?.textContent, highlighted: !!dialog.querySelector('.log-done'),
+      detail: dialog.querySelector('.write-detail').textContent.trim(),
+      log: dialog.querySelector('.write-log').textContent, fits: last.bottom <= rect.bottom,
+      actionCount: [...document.querySelectorAll('.text-messages p')].filter(p => p.textContent === '「フォーマット」ボタン押下').length } });
   }
   if (${verifyFf}) {
     document.querySelector('[aria-controls="sd-actions"]').click();
@@ -225,6 +262,18 @@ try {
   const results = JSON.parse(encoded);
   console.log(JSON.stringify(results, null, 2));
   for (const result of results) {
+    if (result.format) {
+      const f = result.format;
+      assert.ok(f.belowFf && f.enabledWithoutFiles && f.confirmed && f.warning && f.busy && f.indeterminate && f.fits, JSON.stringify(f));
+      assert.equal(f.title, 'フォーマット完了');
+      assert.equal(f.percent, 100);
+      assert.equal(f.count, '1/1 (100%)');
+      assert.equal(f.highlighted, true);
+      assert.equal(f.detail, '完了');
+      assert.equal(f.actionCount, 1);
+      assert.match(f.log, /テストファイルの書込/);
+      continue;
+    }
     if (result.update) {
       const update = result.update;
       assert.equal(update.startupCheckCount, 0);

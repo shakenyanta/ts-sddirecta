@@ -14,12 +14,13 @@ function menu(invoke) {
   const calls = [];
   const bindings = {
     defineProps: () => props, defineEmits: () => (...args) => actions.push(args),
+    defineExpose: () => {},
     ref: value => ({ value }), computed: fn => ({ get value() { return fn(); } }),
     nextTick: async () => {}, onMounted: fn => { mount = fn; }, onUnmounted: () => {},
     getName: async () => 'ts-sddirecta', getVersion: async () => '0.1.0',
     invoke: async (command, args) => {
       calls.push([command, args]);
-      if (command === 'get_drives') return [];
+      if (command === 'get_drives') return (await invoke(command, args)) ?? [];
       if (command === 'sd_admin_status') return 'idle';
       return invoke(command, args);
     },
@@ -27,13 +28,30 @@ function menu(invoke) {
     window: { addEventListener() {}, removeEventListener() {} },
   };
   const api = new Function(...Object.keys(bindings), compiled + `
-    return { showAppInfo, installUpdate, closeAppInfo, infoDialog, infoMessage, appVersion, availableUpdate, installingUpdate };
+    return { showAppInfo, installUpdate, closeAppInfo, infoDialog, infoMessage, appVersion, availableUpdate, installingUpdate,
+      refreshDrives, drives, selectedDrive, requestFormat, canRequestWrite };
   `)(...Object.values(bindings));
   api.infoDialog.value = { showModal() {}, close() { closes++; } };
   return { ...api, mount: () => mount(), props, calls, actions, closes: () => closes };
 }
 
 const update = { status: 'available', current_version: '0.1.0', version: '0.2.0', notes: 'Changes' };
+
+test('unassigned media are selectable for format without a filesystem or drive letter', async () => {
+  const ui = menu(command => command === 'get_drives' ? [
+    { drive: 'E:', type: 'Removable', size: 0 },
+    { drive: 'PhysicalDrive1', label: '?:', type: 'Removable', size: 497549312 },
+  ] : undefined);
+  await ui.refreshDrives();
+  assert.equal(ui.selectedDrive.value, 'PhysicalDrive1');
+  ui.requestFormat();
+  assert.deepEqual(ui.actions.at(-1), ['format', 'PhysicalDrive1']);
+  assert.equal(ui.canRequestWrite.value, false);
+  ui.props.busy = true;
+  const count = ui.actions.length;
+  ui.requestFormat();
+  assert.equal(ui.actions.length, count);
+});
 
 test('startup and version info never check for updates; No never installs', async () => {
   const ui = menu(async () => update);

@@ -31,6 +31,15 @@ const MAX_READ: usize = 64 * 1024 * 1024;
 
 #[derive(Serialize, Deserialize)]
 pub enum Operation {
+    FormatPrepare {
+        drive: String,
+        run_id: String,
+    },
+    Format {
+        plan: crate::sd_format::Plan,
+        label: String,
+        log_path: std::path::PathBuf,
+    },
     Batch {
         plan: crate::sd_batch::Plan,
         log_path: std::path::PathBuf,
@@ -81,6 +90,11 @@ fn disk_number(drive: &str) -> Result<u32, String> {
 fn execute(operation: Operation) -> Result<serde_json::Value, String> {
     use crate::windows_api;
     match operation {
+        Operation::FormatPrepare { drive, run_id } => {
+            serde_json::to_value(crate::sd_format::prepare(&drive, &run_id)?)
+                .map_err(|e| e.to_string())
+        }
+        Operation::Format { .. } => Err("フォーマットは専用の実行経路を使用してください".into()),
         Operation::Batch { .. } | Operation::ReadBatch { .. } | Operation::FfBatch { .. } => {
             Err("一括SD操作は専用の実行経路を使用してください".into())
         }
@@ -375,6 +389,8 @@ fn invoke_blocking(
     status: impl Fn(crate::diagnostics::OperationStatus) + Send + Sync + 'static,
 ) -> Result<serde_json::Value, String> {
     let run_id = match &operation {
+        Operation::Format { plan, .. } => plan.run_id.as_str(),
+        Operation::FormatPrepare { run_id, .. } => run_id.as_str(),
         Operation::Batch { plan, .. }
         | Operation::ReadBatch { plan, .. }
         | Operation::FfBatch { plan, .. } => plan.run_id.as_str(),
@@ -524,6 +540,30 @@ fn serve_requests(stream: &mut TcpStream) -> Result<(), String> {
         let reading = matches!(&operation, Operation::ReadBatch { .. });
         let initializing = matches!(&operation, Operation::FfBatch { .. });
         let result = match operation {
+            Operation::Format {
+                plan,
+                label,
+                log_path,
+            } => {
+                if !LOG_ATTACHED.swap(true, Ordering::SeqCst) {
+                    crate::diagnostics::attach(log_path)?;
+                }
+                let run = crate::diagnostics::Run::start_segment(&plan.run_id, "worker_format");
+                let writer = Arc::new(Mutex::new(stream.try_clone().map_err(|e| e.to_string())?));
+                let monitor_writer = writer.clone();
+                let _monitor = run.monitor(move |status| {
+                    if let Ok(mut writer) = monitor_writer.lock() {
+                        let _ = send(&mut *writer, &Response::Status(status));
+                    }
+                });
+                crate::sd_format::execute(plan, &label, |event| {
+                    send(
+                        &mut *writer.lock().map_err(|e| e.to_string())?,
+                        &Response::Progress(event),
+                    )
+                })
+                .and_then(|info| serde_json::to_value(info).map_err(|e| e.to_string()))
+            }
             Operation::Batch { plan, log_path }
             | Operation::ReadBatch { plan, log_path }
             | Operation::FfBatch { plan, log_path } => {
@@ -578,6 +618,34 @@ pub async fn ff_batch(
         let status_app = app.clone();
         invoke_blocking(
             Operation::FfBatch { plan, log_path },
+            |event| {
+                let _ = app.emit("sd-progress", event);
+            },
+            move |status| {
+                let _ = status_app.emit("sd-operation", status);
+            },
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    serde_json::from_value(result).map_err(|e| e.to_string())
+}
+
+pub async fn format(
+    plan: crate::sd_format::Plan,
+    label: String,
+    app: tauri::AppHandle,
+) -> Result<crate::sd_format::ResultInfo, String> {
+    use tauri::Emitter;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let log_path = crate::diagnostics::path()?;
+        let status_app = app.clone();
+        invoke_blocking(
+            Operation::Format {
+                plan,
+                label,
+                log_path,
+            },
             |event| {
                 let _ = app.emit("sd-progress", event);
             },

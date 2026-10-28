@@ -56,8 +56,7 @@ try {
     & npm.cmd run tauri -- signer sign -f $PrivateKeyPath $manifestPath
     if ($LASTEXITCODE -ne 0) { throw '更新情報の署名に失敗しました。リリースを公開しないでください。' }
     Write-Host "配布ファイルの作成が完了しました: $outputDirectory"
-    Write-Host "GitHub Releasesでタグ v$version を作成し、以下の3ファイルを添付してください。"
-    Write-Host '  ts-sddirecta.exe / latest.json / latest.json.sig'
+    Write-Host 'exeの起動確認後、npm.cmd run release:publish で3ファイルをGitHubへ公開してください。'
     Write-Host '初回配布はexeを手動で配置します。次のバージョンからアプリ内の更新を利用できます。'
 } finally {
     Pop-Location

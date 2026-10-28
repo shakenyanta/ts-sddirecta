@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { getName, getVersion } from '@tauri-apps/api/app';
 
 const props = defineProps<{ canWrite: boolean; canRead?: boolean; canInitialize?: boolean; busy?: boolean; writeLabel?: string }>();
-const emit = defineEmits<{ write: [drive: string]; read: [drive: string]; initialize: [drive: string]; action: [label: string]; error: [message: string] }>();
+const emit = defineEmits<{ write: [drive: string]; read: [drive: string]; initialize: [drive: string]; format: [drive: string]; action: [label: string]; error: [message: string] }>();
 const actionsOpen = ref(false);
 const actionsContainer = ref<HTMLElement | null>(null);
 const actionsButton = ref<HTMLButtonElement | null>(null);
@@ -84,23 +84,27 @@ function onActionsFocusout(event: FocusEvent) {
 	if (!actionsContainer.value?.contains(event.relatedTarget as Node | null)) actionsOpen.value = false;
 }
 
-interface DriveInfo { drive: string; type: string; size: number }
+interface DriveInfo { drive: string; type: string; size: number; label?: string }
 const drives = ref<DriveInfo[]>([]);
 const selectedDrive = ref('');
 const selectedDriveHasMedia = computed(() => drives.value.some(drive => drive.drive === selectedDrive.value && drive.size > 0));
-const canRequestWrite = computed(() => props.canWrite && selectedDriveHasMedia.value && !props.busy);
-const canRequestRead = computed(() => props.canRead && selectedDriveHasMedia.value && !props.busy);
-const canRequestInitialize = computed(() => props.canInitialize && selectedDriveHasMedia.value && !props.busy);
+const selectedDriveHasLetter = computed(() => /^[A-Z]:$/.test(selectedDrive.value));
+const canRequestWrite = computed(() => props.canWrite && selectedDriveHasMedia.value && selectedDriveHasLetter.value && !props.busy);
+const canRequestRead = computed(() => props.canRead && selectedDriveHasMedia.value && selectedDriveHasLetter.value && !props.busy);
+const canRequestInitialize = computed(() => props.canInitialize && selectedDriveHasMedia.value && selectedDriveHasLetter.value && !props.busy);
 const initializeTitle = computed(() => props.busy ? 'SDカードの処理中です'
+    : selectedDriveHasMedia.value && !selectedDriveHasLetter.value ? '未割り当てのSDカードは「フォーマット」から使用可能な状態にできます'
     : !props.canInitialize ? 'CSVの初期化対象領域がありません'
     : !selectedDriveHasMedia.value ? 'SDカードが挿入されたドライブを選択してください'
     : 'CSVの全領域を0xFFで初期化し照合します。CSVに含まれる先頭32KiBも対象です');
 const readTitle = computed(() => props.busy ? 'SDカードの処理中です'
+    : selectedDriveHasMedia.value && !selectedDriveHasLetter.value ? '未割り当てのSDカードは「フォーマット」から使用可能な状態にできます'
     : !props.canRead ? 'CSVの読込対象領域がありません'
     : !selectedDriveHasMedia.value ? 'SDカードが挿入されたドライブを選択してください'
     : 'CSVの全領域をexeと同じ場所のoutputへ保存します（直下の既存ファイルはすべて削除）');
 const writeTitle = computed(() => {
 	if (props.busy) return 'SDカードの処理中です';
+	if (selectedDriveHasMedia.value && !selectedDriveHasLetter.value) return '未割り当てのSDカードは「フォーマット」から使用可能な状態にできます';
 	if (!props.canWrite) return '全エリアと一致するファイルがありません';
 	if (!selectedDrive.value) return 'SDドライブを選択してください';
 	if (!selectedDriveHasMedia.value) return '選択したドライブにSDカードが挿入されていません';
@@ -128,18 +132,19 @@ function selectDrive() {
 	try { localStorage.setItem('sddirecta-selected-drive', selectedDrive.value); } catch { /* Selection still works without storage. */ }
 }
 
-async function refreshDrives() {
+async function refreshDrives(preferredDrive?: string) {
 	if (checking || props.busy) return;
 	checking = true;
 	try {
 		const result = await invoke<DriveInfo[]>('get_drives');
 		if (disposed || props.busy) return;
 		drives.value = result.filter(drive => drive.type === 'Removable');
+		if (preferredDrive && drives.value.some(drive => drive.drive === preferredDrive)) selectedDrive.value = preferredDrive;
 		backendStatus.value = 'running';
 		if (!drives.value.some(drive => drive.drive === selectedDrive.value)) {
 			let savedDrive = '';
 			try { savedDrive = localStorage.getItem('sddirecta-selected-drive') ?? ''; } catch { /* Optional preference. */ }
-			selectedDrive.value = drives.value.find(drive => drive.drive === savedDrive)?.drive ?? drives.value[0]?.drive ?? '';
+			selectedDrive.value = drives.value.find(drive => drive.drive === savedDrive)?.drive ?? drives.value.find(drive => drive.size > 0)?.drive ?? drives.value[0]?.drive ?? '';
 		}
 	} catch (error) {
 		if (disposed || props.busy) return;
@@ -185,6 +190,15 @@ function requestInitialize() {
     actionsOpen.value = false;
     emit('initialize', selectedDrive.value);
 }
+
+function requestFormat() {
+    if (!selectedDriveHasMedia.value || props.busy || installingUpdate.value) return;
+    recordAction('フォーマット');
+    actionsOpen.value = false;
+    emit('format', selectedDrive.value);
+}
+
+defineExpose({ refreshDrives });
 
 async function openDiagnosticLog() {
     recordAction('ログ表示');
@@ -238,8 +252,8 @@ onUnmounted(() => {
 			</div>
 			<label v-for="drive in drives" :key="drive.drive" class="drive-item-inline" :class="{ 'drive-disabled': busy }">
 				<span class="radio-label-inline">
-					<input v-model="selectedDrive" type="radio" :value="drive.drive" name="drive-select" :disabled="busy" @change="selectDrive" :aria-label="`ドライブ ${drive.drive}`" />
-					<span class="drive-letter">{{ drive.drive }}</span>
+					<input v-model="selectedDrive" type="radio" :value="drive.drive" name="drive-select" :disabled="busy" @change="selectDrive" :aria-label="`ドライブ ${drive.label || drive.drive}`" />
+					<span class="drive-letter">{{ drive.drive.startsWith('PhysicalDrive') ? '?:' : drive.label || drive.drive }}</span>
 				</span>
 				<span class="sd-icon-wrapper-inline" role="img" :aria-label="`${drive.drive} ${busy ? '処理中' : drive.size > 0 ? formatCapacity(drive.size) : 'メディア未挿入'}`">
 					<span class="sd-card-icon-inline" :class="busy ? 'status-busy' : drive.size > 0 ? 'status-inserted' : 'status-empty'" :title="busy ? '処理中' : drive.size > 0 ? formatCapacity(drive.size) : 'メディア未挿入'">
@@ -258,6 +272,7 @@ onUnmounted(() => {
 				<div class="menu-operation-buttons">
 					<button type="button" :disabled="!canRequestRead" :title="readTitle" @click="requestRead">全エリアSD読込</button>
 					<button type="button" :disabled="!canRequestInitialize" :title="initializeTitle" @click="requestInitialize">全エリアSD FF初期化</button>
+					<button type="button" :disabled="!selectedDriveHasMedia || busy || installingUpdate" title="選択したSDカードをフォーマットします" @click="requestFormat">フォーマット</button>
 				</div>
 				<div class="menu-log-section">
 					<button type="button" @click="openDiagnosticLog">ログ表示</button>

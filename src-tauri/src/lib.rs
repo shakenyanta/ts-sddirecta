@@ -8,7 +8,9 @@ mod diagnostics;
 mod matching_files;
 mod portable_update;
 mod sd_batch;
+mod sd_detection;
 mod sd_ff_batch;
+mod sd_format;
 mod sd_read_batch;
 mod sd_worker;
 mod source_directory;
@@ -27,6 +29,66 @@ static WRITE_RUNNING: AtomicBool = AtomicBool::new(false);
 static EXIT_WAITING: AtomicBool = AtomicBool::new(false);
 static EXIT_READY: AtomicBool = AtomicBool::new(false);
 static WRITE_PLAN: Mutex<Option<sd_batch::Plan>> = Mutex::new(None);
+static FORMAT_PLAN: Mutex<Option<sd_format::Plan>> = Mutex::new(None);
+
+#[tauri::command]
+async fn prepare_sd_format(drive: String, run_id: String) -> Result<sd_format::Plan, String> {
+    if EXIT_WAITING.load(Ordering::SeqCst)
+        || WRITE_RUNNING.load(Ordering::SeqCst)
+        || sd_worker::is_busy()
+    {
+        return Err("SD処理中または終了処理中です".into());
+    }
+    let plan: sd_format::Plan =
+        sd_worker::invoke(sd_worker::Operation::FormatPrepare { drive, run_id }).await?;
+    *FORMAT_PLAN.lock().map_err(|e| e.to_string())? = Some(plan.clone());
+    Ok(plan)
+}
+
+#[tauri::command]
+fn discard_sd_format(run_id: String) -> Result<(), String> {
+    let mut pending = FORMAT_PLAN.lock().map_err(|e| e.to_string())?;
+    if pending.as_ref().is_some_and(|plan| plan.run_id == run_id) {
+        *pending = None;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn run_sd_format(
+    run_id: String,
+    label: String,
+    app: tauri::AppHandle,
+) -> Result<sd_format::ResultInfo, String> {
+    sd_format::validate_label(&label)?;
+    if EXIT_WAITING.load(Ordering::SeqCst)
+        || WRITE_RUNNING
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+    {
+        return Err("SD処理中または終了処理中です".into());
+    }
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            WRITE_RUNNING.store(false, Ordering::SeqCst);
+        }
+    }
+    let _guard = Guard;
+    let plan = {
+        let mut pending = FORMAT_PLAN.lock().map_err(|e| e.to_string())?;
+        if pending.as_ref().is_none_or(|plan| plan.run_id != run_id) {
+            return Err("フォーマット内容を再確認してください".into());
+        }
+        pending.take().unwrap()
+    };
+    let label = if plan.file_system == "exFAT" {
+        label.trim().to_owned()
+    } else {
+        label.trim().to_ascii_uppercase()
+    };
+    sd_worker::format(plan, label, app).await
+}
 
 #[tauri::command]
 async fn check_portable_update(
@@ -287,13 +349,7 @@ async fn run_sd_ff_initialize(
     sd_worker::ff_batch(plan, app).await
 }
 
-#[derive(Serialize)]
-struct DriveInfo {
-    drive: String,
-    #[serde(rename = "type")]
-    kind: String,
-    size: i64,
-}
+use sd_detection::DriveInfo;
 
 #[tauri::command]
 fn resolve_drop_directory(paths: Vec<String>) -> Result<String, String> {
@@ -376,49 +432,7 @@ async fn get_drives() -> Result<Vec<DriveInfo>, String> {
 }
 
 fn list_drives() -> Result<Vec<DriveInfo>, String> {
-    use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
-    const DRIVE_REMOVABLE: u32 = 2;
-    const DRIVE_FIXED: u32 = 3;
-
-    let mut out = Vec::new();
-    let drives = unsafe { GetLogicalDrives() };
-
-    for i in 0..26 {
-        if (drives >> i) & 1 == 1 {
-            let drive_letter = (b'A' + i) as char;
-            let drive_path = format!("{}:\\", drive_letter);
-            let mut wide: Vec<u16> = drive_path.encode_utf16().collect();
-            wide.push(0);
-
-            let drive_type = unsafe { GetDriveTypeW(wide.as_ptr()) };
-
-            if drive_type == DRIVE_REMOVABLE || drive_type == DRIVE_FIXED {
-                let drive_str = format!("{}:", drive_letter);
-                let kind = if drive_type == DRIVE_REMOVABLE {
-                    "Removable"
-                } else {
-                    "Fixed"
-                };
-
-                let volume_path = format!("\\\\.\\{}", drive_str);
-                let size = match windows_api::get_disk_extents(&volume_path) {
-                    Ok(disk_num) if disk_num != 0xFF => {
-                        let physical_path = format!("\\\\.\\physicaldrive{}", disk_num);
-                        windows_api::get_physical_size(&physical_path).unwrap_or(0) as i64
-                    }
-                    _ => -1,
-                };
-
-                out.push(DriveInfo {
-                    drive: drive_str,
-                    kind: kind.to_string(),
-                    size,
-                });
-            }
-        }
-    }
-
-    Ok(out)
+    sd_detection::list_drives()
 }
 
 #[tauri::command]
@@ -490,6 +504,9 @@ pub fn run() {
             run_sd_write,
             run_sd_read,
             run_sd_ff_initialize,
+            prepare_sd_format,
+            discard_sd_format,
+            run_sd_format,
             sd_read,
             sd_write,
             sd_fill,

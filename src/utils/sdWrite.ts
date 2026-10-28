@@ -25,12 +25,23 @@ export function writePercent(progress: WriteProgress | null): number {
 
 export function writeStageLabel(stage: string): string {
   return ({ prepare: '準備中', confirm: '確認中', waiting: '権限確認待ち',
-    clean: '出力先を初期化中', read: '読込中', write: '書込中', verify: '照合中', file_done: '処理中', final_verify: '最終照合中',
+    clean: '出力先を初期化中', format_partition: 'パーティション作成中', format_volume: 'フォーマット中', format_verify: '動作確認中', read: '読込中', write: '書込中', verify: '照合中', file_done: '処理中', final_verify: '最終照合中',
     final_file_done: '最終照合中', final_failed: '最終照合失敗', done: '完了', failed: '失敗' } as Record<string, string>)[stage] ?? '準備中';
 }
 
 export function formatByteCount(bytes: number): string {
   return `${bytes.toLocaleString('ja-JP')}(0x${bytes.toString(16)})`;
+}
+
+// Match the card selector's capacity class, e.g. 497,549,312 bytes -> 512M.
+export function formatCardCapacity(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '不明';
+  let exponent = 20;
+  for (let i = 21; i <= 42; i++) {
+    if (Math.abs(bytes - 2 ** i) < Math.abs(bytes - 2 ** exponent)) exponent = i;
+  }
+  const unitExponent = exponent >= 40 ? 40 : exponent >= 30 ? 30 : 20;
+  return `${2 ** (exponent - unitExponent)}${unitExponent === 40 ? 'T' : unitExponent === 30 ? 'G' : 'M'}`;
 }
 
 export function sizeComment(entry: WriteEntry): string | null {

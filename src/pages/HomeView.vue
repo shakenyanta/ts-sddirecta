@@ -7,7 +7,7 @@ import SdMenu from '../components/SdMenu.vue';
 import { splitFolderPath } from '../utils/executablePath';
 import { createLogScroller } from '../utils/logScroll';
 import { parseSdDirectCsv, type AddressRange, type SdArea } from '../utils/sdDirectCsv';
-import { writePercent, writeStageLabel, sizeComment, formatByteCount, type WritePlan, type WriteProgress, type OperationStatus } from '../utils/sdWrite';
+import { writePercent, writeStageLabel, sizeComment, formatByteCount, formatCardCapacity, type WritePlan, type WriteProgress, type OperationStatus } from '../utils/sdWrite';
 
 const menuHeight = ref(48);
 const minimumMenuHeight = ref(48);
@@ -20,6 +20,13 @@ const sourceDirectory = ref('');
 const dragging = ref(false);
 const initializing = ref(false);
 const writing = ref(false);
+const sdMenu = ref<InstanceType<typeof SdMenu> | null>(null);
+interface FormatPlan { run_id: string; drive: string; file_system: string; target: { capacity: number } }
+interface FormatResult { drive: string; file_system: string; capacity: number; label: string }
+const formatPlan = ref<FormatPlan | null>(null);
+const formatLabel = ref('');
+const formatLabelValid = computed(() => /^[A-Za-z0-9 _-]{0,11}$/.test(formatLabel.value));
+let formattedDrive = '';
 const closing = ref(false);
 const writeStage = ref('');
 const currentRun = ref('');
@@ -32,9 +39,10 @@ const writeLogPanel = ref<HTMLElement | null>(null);
 const writeLogScroller = createLogScroller(() => writeLogPanel.value);
 const writeTotal = ref(0);
 const copyStatus = ref('');
-const operationKind = ref<'read' | 'write' | 'ff'>('write');
-const operationName = computed(() => operationKind.value === 'ff' ? 'SD FF初期化' : operationKind.value === 'read' ? 'SD読込' : 'SD書込');
+const operationKind = ref<'read' | 'write' | 'ff' | 'format'>('write');
+const operationName = computed(() => operationKind.value === 'format' ? 'フォーマット' : operationKind.value === 'ff' ? 'SD FF初期化' : operationKind.value === 'read' ? 'SD読込' : 'SD書込');
 const popupTitle = computed(() => writing.value ? `${statusLabel.value}…`
+    : operationKind.value === 'format' ? (writeStage.value === 'confirm' ? 'フォーマット確認' : writeStage.value === 'done' ? 'フォーマット完了' : 'フォーマット失敗')
     : operationKind.value === 'ff' ? (writeStage.value === 'done' ? 'FF初期化完了' : 'FF初期化失敗')
     : operationKind.value === 'read' ? (writeStage.value === 'done' ? '読込完了' : '読込失敗')
     : writeStage.value === 'done' ? '書込完了' : writeStage.value === 'failed' ? '書込失敗' : '書込対象なし');
@@ -59,7 +67,6 @@ let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 const percent = computed(() => writePercent(progress.value));
 const statusLabel = computed(() => operationKind.value === 'ff' && writeStage.value === 'write'
     ? 'FF初期化中' : writeStageLabel(writeStage.value));
-const writeFileCount = computed(() => [...sdloadingDictionary.value.values()].filter(area => area.accessFlag === 'A' || area.accessFlag === 'W').length);
 const allFileCount = computed(() => [...sdloadingDictionary.value.values()].filter(area => area.accessFlag !== 'E').length);
 let unlistenDrop: UnlistenFn | undefined;
 let generation = 0;
@@ -476,8 +483,74 @@ async function onSdFfInitialize(drive: string) {
 
 function latestProgress(): WriteProgress | null { return progress.value; }
 
+async function onSdFormat(drive: string) {
+    if (writeDialogOpen.value || writing.value || closing.value || initializing.value || !drive) return;
+    if (!progressUnlisten) { await appendMessage('進捗通知を受信できません。アプリを再起動してください'); return; }
+    operationKind.value = 'format';
+    writing.value = true;
+    dragging.value = false;
+    currentRun.value = crypto.randomUUID();
+    writeStage.value = 'prepare';
+    progress.value = null;
+    operationStatus.value = null;
+    formatPlan.value = null;
+    formatLabel.value = '';
+    formattedDrive = '';
+    copyStatus.value = '';
+    writeLog.value = [];
+    writeLogScroller.reset();
+    writeDialogOpen.value = true;
+    try {
+        await nextTick();
+        writeDialog.value?.showModal();
+        appendWriteMessage(`フォーマット先: ${driveDisplay(drive)} / SDカードの情報を確認しています。`);
+        formatPlan.value = await invoke<FormatPlan>('prepare_sd_format', { drive, runId: currentRun.value });
+        writeStage.value = 'confirm';
+        appendWriteMessage(`対象: ${driveDisplay(formatPlan.value.drive)} / ${formatCardCapacity(formatPlan.value.target.capacity)} / ${formatPlan.value.file_system}`,
+            'このSDカードをフォーマットし、空のファイルシステムを作成します。既存データは保持されません。');
+    } catch (error) {
+        writeStage.value = 'failed';
+        appendWriteMessage({ text: `フォーマットを開始できません: ${String(error)}`, warning: true });
+    } finally { writing.value = false; operationStatus.value = null; }
+}
+
+function driveDisplay(drive: string) { return drive.replace(/^PhysicalDrive\d+$/, '?:'); }
+
+async function startSdFormat() {
+    if (writing.value || closing.value || !formatPlan.value || writeStage.value !== 'confirm' || !formatLabelValid.value) return;
+    writing.value = true;
+    writeStage.value = 'waiting';
+    elapsedMs.value = 0;
+    elapsedAnchor = performance.now();
+    elapsedTimer = setInterval(() => { elapsedMs.value = Math.max(0, performance.now() - elapsedAnchor); }, 100);
+    try {
+        const done = await invoke<FormatResult>('run_sd_format', { runId: currentRun.value, label: formatLabel.value });
+        elapsedMs.value = Math.max(elapsedMs.value, performance.now() - elapsedAnchor);
+        writeStage.value = 'done';
+        progress.value = null;
+        formattedDrive = done.drive;
+        appendWriteMessage(`フォーマット完了: ${done.drive} / ${done.file_system} / ${formatCardCapacity(done.capacity)} / ラベル: ${done.label || 'なし'}`,
+            'テストファイルの書込・読戻し・削除を確認しました。',
+            `全件完了 1/1 ${(elapsedMs.value / 1000).toFixed(2)}秒`);
+    } catch (error) {
+        writeStage.value = 'failed';
+        appendWriteMessage({ text: `フォーマットを停止しました: ${String(error)}。書換え済みの内容は元に戻しません。`, warning: true });
+    } finally {
+        clearInterval(elapsedTimer);
+        elapsedTimer = undefined;
+        writing.value = false;
+        operationStatus.value = null;
+        formatPlan.value = null;
+    }
+}
+
 function closeWriteDialog() {
     if (writing.value) return;
+    if (operationKind.value === 'format') {
+        void invoke('discard_sd_format', { runId: currentRun.value }).catch(() => {});
+        formatPlan.value = null;
+        void nextTick().then(() => sdMenu.value?.refreshDrives(formattedDrive || undefined));
+    }
     writeLogScroller.dispose();
     writeDialog.value?.close();
     writeDialogOpen.value = false;
@@ -512,6 +585,12 @@ function acceptProgress(event: WriteProgress) {
 	if (!writing.value || event.run_id !== currentRun.value) return;
 	if (progress.value?.stage === 'done' || progress.value?.stage === 'failed' || progress.value?.stage === 'final_failed') return;
     operationStatus.value = null;
+	if (operationKind.value === 'format') {
+        progress.value = event;
+        writeStage.value = event.stage;
+        appendWriteMessage(event.filename);
+        return;
+    }
 	progress.value = event;
     if (operationKind.value !== 'write') writeTotal.value = event.total;
     if (operationKind.value === 'ff' && event.stage === 'prepare') {
@@ -586,14 +665,14 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 			<div class="panel-base" :style="{ gridTemplateRows: `${Math.max(menuHeight, minimumMenuHeight)}px 1px ${sdHeight}px 1px minmax(0, 1fr) minmax(28px, auto)` }">
 				<div id="panel_menu" class="panel_menu">
 					<div ref="menuContent" class="menu-content">
-						<SdMenu :can-write="canSdWrite" :can-read="canSdRead" :can-initialize="canSdRead" :busy="initializing || writing || closing" :write-label="closing ? '終了待ち…' : writing ? `${statusLabel}…` : 'SD書込'"
-							@write="onSdWrite" @read="onSdRead" @initialize="onSdFfInitialize" @action="logButtonPress" @error="appendMessage" />
+						<SdMenu ref="sdMenu" :can-write="canSdWrite" :can-read="canSdRead" :can-initialize="canSdRead" :busy="initializing || writing || closing || writeDialogOpen" :write-label="closing ? '終了待ち…' : writing ? `${statusLabel}…` : 'SD書込'"
+							@write="onSdWrite" @read="onSdRead" @initialize="onSdFfInitialize" @format="onSdFormat" @action="logButtonPress" @error="appendMessage" />
 					</div>
 				</div>
 				<div id="resizer1" class="resizer" @pointerdown="resize($event, 1)"></div>
 				<section id="panel_sd" class="panel_sd" aria-label="表示中のフォルダー">
 					<div class="path-header">
-						<span role="status">SD書込ファイル数：<strong>全{{ allFileCount }}件</strong>（選択{{ writeFileCount }}件）</span>
+						<span role="status">SD書込ファイル数：<strong>全{{ allFileCount }}件</strong></span>
 						<button type="button" :disabled="!sourceDirectory" @click="copyDirectory">フルパスをコピー</button>
 					</div>
 					<p v-if="pathError" class="path-message path-error" role="alert">{{ pathError }}</p>
@@ -631,27 +710,41 @@ function resize(event: PointerEvent, divider: 1 | 2) {
         <div class="write-dialog-content">
             <div class="write-header">
                 <h2 id="write-title" :class="{ 'write-failed': writeStage === 'failed' }">{{ popupTitle }}</h2>
-                <p class="write-count" role="status">{{ progress?.completed ?? 0 }}/{{ progress?.total ?? writeTotal }} ({{ percent }}%)</p>
+                <p v-if="operationKind !== 'format'" class="write-count" role="status">{{ progress?.completed ?? 0 }}/{{ progress?.total ?? writeTotal }} ({{ percent }}%)</p>
+                <p v-else-if="writeStage === 'done'" class="write-count" role="status">1/1 (100%)</p>
             </div>
-            <progress :value="percent" max="100" :aria-label="`${operationName}の全体進捗`"></progress>
+            <progress :value="operationKind === 'format' ? (writeStage === 'done' ? 100 : writing ? undefined : 0) : percent" max="100" :aria-label="`${operationName}の全体進捗`"></progress>
+            <div v-if="operationKind === 'format' && writeStage === 'confirm'" class="format-settings">
+                <p class="format-warning">このSDカードのデータはすべて失われます。</p>
+                <p :title="formatPlan ? `実容量: ${formatByteCount(formatPlan.target.capacity)}バイト` : ''">対象: {{ driveDisplay(formatPlan?.drive || '') }} / {{ formatCardCapacity(formatPlan?.target.capacity || 0) }} / {{ formatPlan?.file_system }}（容量から自動選択）</p>
+                <label>ボリュームラベル <input v-model="formatLabel" maxlength="11" autocomplete="off" aria-describedby="format-label-help"></label>
+                <p id="format-label-help">任意・半角英数字、空白、_、-で11文字以内</p>
+                <p v-if="!formatLabelValid" role="alert">ラベルに使用できない文字があります。</p>
+            </div>
             <p class="write-detail">
                 <span class="write-current" :title="progress?.filename ? `${statusLabel} ${progress.filename}` : statusLabel">{{ statusLabel }}<template v-if="progress?.filename"> {{ progress.filename }}</template></span>
             </p>
             <p class="write-operation" :title="operationDetail" role="status">{{ writing ? operationDetail : '' }}</p>
-            <div ref="writeLogPanel" class="write-log" role="log" :aria-label="`${operationName}ログ`" tabindex="0" @scroll="writeLogScroller.onScroll">
+            <div ref="writeLogPanel" class="write-log" :class="{ 'format-log': operationKind === 'format' }" role="log" :aria-label="`${operationName}ログ`" tabindex="0" @scroll="writeLogScroller.onScroll">
                 <p v-for="(message, index) in writeLog" :key="index" :class="{ 'log-warning': typeof message !== 'string' && message.warning, 'log-done': typeof message === 'string' && message.startsWith('全件完了') }">{{ typeof message === 'string' ? message : message.text }}</p>
             </div>
             <p v-if="transientNotice" class="write-notice" role="status">{{ transientNotice }}</p>
             <div class="write-actions">
+                <button v-if="operationKind === 'format' && writeStage === 'confirm'" type="button" class="close-write" :disabled="writing || !formatLabelValid" @click="startSdFormat">フォーマット開始</button>
                 <button v-if="operationKind === 'read'" type="button" class="copy-log open-output" :disabled="writing" @click="openOutput">outputを開く</button>
                 <button type="button" class="copy-log" aria-live="polite" @click="copyWriteLog">{{ copyStatus || 'ログをコピー' }}</button>
-                <button type="button" class="close-write" :disabled="writing" @click="closeWriteDialog">閉じる</button>
+                <button type="button" class="close-write" :disabled="writing" @click="closeWriteDialog">{{ operationKind === 'format' && writeStage === 'confirm' ? 'キャンセル' : '閉じる' }}</button>
             </div>
         </div>
     </dialog>
 </template>
 
 <style scoped>
+.format-settings { flex-shrink: 0; padding: 8px; border: 1px solid #c5cad3; border-radius: 6px; }
+.format-settings p { margin: 3px 0; }
+.format-settings .format-warning { color: #a3271d; font-weight: bold; }
+.format-log .log-warning { width: auto; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.format-settings input { max-width: 100%; width: 140px; font: inherit; }
 .write-operation { margin: 0; flex-shrink: 0; min-height: 1.2em; line-height: 1.2; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; color: #526171; }
 .write-dialog { position: fixed; inset: 0; margin: auto; width: min(650px, calc(100vw - 8px)); height: min(480px, calc(100dvh - 8px)); max-width: none; max-height: calc(100dvh - 8px); padding: 0; border: 0; border-radius: 18px; background: #f8f9fe; color: #121212; box-shadow: 0 12px 32px #0003; font: 12px 'Yu Gothic UI', Meiryo, sans-serif; overflow: hidden; }
 .write-dialog::backdrop { background: #0005; }

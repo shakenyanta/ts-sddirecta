@@ -44,8 +44,8 @@ function view(invoke) {
   };
   const api = new Function(...Object.keys(bindings), transpile(source) + `
     return { initializeSource, refreshMatchedFiles, sourceDirectory, displayedDirectory,
-      sdDirectDictionary, sdloadingDictionary, sdAddressRange, matchedFiles, canSdWrite, writeFileCount, allFileCount, initializing, messages, folders, pathError,
-      onSdWrite, onSdRead, onSdFfInitialize, canSdRead, popupTitle, statusLabel, closeWriteDialog, copyWriteLog, writeDialogOpen, writeLog, writing, pendingPlan, progress, percent, currentRun, transientNotice, operationStatus, operationDetail };
+      sdDirectDictionary, sdloadingDictionary, sdAddressRange, matchedFiles, canSdWrite, allFileCount, initializing, messages, folders, pathError,
+      onSdWrite, onSdRead, onSdFfInitialize, onSdFormat, startSdFormat, formatPlan, formatLabel, formatLabelValid, writeStage, canSdRead, popupTitle, statusLabel, closeWriteDialog, copyWriteLog, writeDialogOpen, writeLog, writing, pendingPlan, progress, percent, currentRun, transientNotice, operationStatus, operationDetail };
   `)(...Object.values(bindings));
   return { ...api, mount: () => mount(), unmount: () => unmount(),
     drop: paths => listener({ payload: { type: 'drop', paths } }),
@@ -60,6 +60,76 @@ function view(invoke) {
 }
 
 const csv = 'A,FILE-AA.001,00000000,000001FF';
+
+test('format uses the selected drive without CSV and never runs before confirmation', async () => {
+  const calls = [];
+  let release;
+  const waiting = new Promise(resolve => { release = resolve; });
+  const ui = view(backend({
+    read_startup_csv: () => { throw new Error('CSV missing'); },
+    prepare_sd_format: args => { calls.push(['prepare', args]); return { run_id: args.runId, drive: args.drive, file_system: 'FAT', target: { capacity: 512 * 1024 ** 2 } }; },
+    run_sd_format: args => { calls.push(['run', args]); return waiting; },
+    discard_sd_format: () => {},
+  }));
+  await ui.mount();
+  await ui.onSdFormat('H:');
+  assert.equal(ui.popupTitle.value, 'フォーマット確認');
+  assert.equal(ui.writing.value, false);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][1].drive, 'H:');
+  ui.formatLabel.value = 'bad;label';
+  await ui.startSdFormat();
+  assert.equal(calls.length, 1);
+  ui.formatLabel.value = 'TEST';
+  const task = ui.startSdFormat();
+  assert.equal(ui.writing.value, true);
+  ui.closeWriteDialog();
+  assert.equal(ui.writeDialogOpen.value, true);
+  ui.event('sd-progress', { run_id: ui.currentRun.value, stage: 'format_volume', filename: 'formatting' });
+  assert.equal(ui.statusLabel.value, 'フォーマット中');
+  assert.equal(calls[1][1].label, 'TEST');
+  release({ drive: 'J:', file_system: 'FAT', capacity: 500 * 1024 ** 2, label: 'TEST' });
+  await task;
+  assert.equal(ui.popupTitle.value, 'フォーマット完了');
+  assert.equal(ui.writing.value, false);
+  assert.equal(ui.hasTimer, false);
+  assert.ok(ui.writeLog.value.some(m => typeof m === 'string' && m.startsWith('フォーマット完了: J:')));
+  assert.match(ui.writeLog.value.at(-1), /^全件完了 1\/1 \d+\.\d{2}秒$/);
+  assert.equal(ui.progress.value, null);
+  ui.unmount();
+});
+
+test('format cancellation discards the plan and does not invoke formatting', async () => {
+  const calls = [];
+  const ui = view(backend({
+    prepare_sd_format: args => ({ run_id: args.runId, drive: args.drive, file_system: 'FAT32', target: { capacity: 8 * 1024 ** 3 } }),
+    discard_sd_format: () => { calls.push('discard'); },
+    run_sd_format: () => { calls.push('run'); },
+  }));
+  await ui.mount();
+  await ui.onSdFormat('H:');
+  ui.closeWriteDialog();
+  assert.equal(ui.writeDialogOpen.value, false);
+  assert.deepEqual(calls, ['discard']);
+  ui.unmount();
+});
+
+test('format errors retain a failed popup, and stale progress is ignored', async () => {
+  const ui = view(backend({
+    prepare_sd_format: args => ({ run_id: args.runId, drive: args.drive, file_system: 'FAT', target: { capacity: 512 * 1024 ** 2 } }),
+    run_sd_format: () => { throw new Error('readback failed'); },
+  }));
+  await ui.mount();
+  await ui.onSdFormat('H:');
+  await ui.startSdFormat();
+  ui.event('sd-progress', { run_id: 'old', stage: 'done', filename: 'stale' });
+  assert.equal(ui.popupTitle.value, 'フォーマット失敗');
+  assert.equal(ui.writing.value, false);
+  assert.equal(ui.writeDialogOpen.value, true);
+  assert.ok(ui.writeLog.value.some(m => typeof m !== 'string' && m.text.includes('readback failed')));
+  assert.ok(!ui.writeLog.value.some(m => typeof m === 'string' && m.startsWith('全件完了')));
+  ui.unmount();
+});
 
 test('blocked operation details stay visible and final verification failure never reports success', async () => {
   let ui, release, runId;
@@ -171,7 +241,6 @@ test('all-area write remains available with only R/N/0 matches and keeps selecte
   }));
   await ui.initializeSource();
   assert.deepEqual([...ui.sdloadingDictionary.value.values()].map(area => area.accessFlag), ['R', 'N', '0']);
-  assert.equal(ui.writeFileCount.value, 0);
   assert.equal(ui.allFileCount.value, 3);
   assert.equal(ui.canSdWrite.value, true);
   assert.equal(ui.sdDirectDictionary.value.size, 5);
@@ -179,13 +248,11 @@ test('all-area write remains available with only R/N/0 matches and keeps selecte
   assert.ok(ui.messages.value.includes('dictionary作成：5件'));
   files = flags.map(flag => `FILE-${flag}.001`);
   await ui.refreshMatchedFiles();
-  assert.equal(ui.writeFileCount.value, 2);
   assert.equal(ui.allFileCount.value, 5);
   files = [];
   await ui.refreshMatchedFiles();
   assert.equal(ui.sdloadingDictionary.value.size, 0);
   assert.deepEqual([...ui.sdDirectDictionary.value.values()].map(area => area.accessFlag), flags);
-  assert.equal(ui.writeFileCount.value, 0);
   assert.equal(ui.allFileCount.value, 0);
   assert.equal(ui.canSdWrite.value, false);
 });
