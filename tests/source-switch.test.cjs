@@ -44,7 +44,7 @@ function view(invoke, clock = performance) {
     }),
   };
   const api = new Function(...Object.keys(bindings), transpile(source) + `
-    return { initializeSource, refreshMatchedFiles, sourceDirectory, displayedDirectory,
+    return { initializeSource, refreshMatchedFiles, sourceDirectory, displayedDirectory, openFolder,
       sdDirectDictionary, sdloadingDictionary, sdAddressRange, matchedFiles, canSdWrite, allFileCount, initializing, messages, folders, pathError,
       onSdWrite, onSdRead, onSdFfInitialize, onSdFormat, startSdFormat, formatPlan, formatLabel, formatSimpleTest, formatStep, formatLabelValid, writeStage, canSdRead, popupTitle, statusLabel, closeWriteDialog, copyWriteLog, writeDialogOpen, writeLog, writing, pendingPlan, progress, percent, currentRun, transientNotice, operationStatus, operationDetail };
   `)(...Object.values(bindings));
@@ -61,6 +61,36 @@ function view(invoke, clock = performance) {
 }
 
 const csv = 'A,FILE-AA.001,00000000,000001FF';
+
+test('folder hierarchy resolves drive, UNC and extended paths at each level', () => {
+  const { folderPathAt } = utility('src/utils/executablePath.ts');
+  for (const [path, expected] of [
+    ['C:\\日本語 folder\\input', ['C:\\', 'C:\\日本語 folder', 'C:\\日本語 folder\\input']],
+    ['\\\\server\\share\\folder', ['\\\\server\\share', '\\\\server\\share\\folder']],
+    ['\\\\?\\C:\\folder', ['C:\\', 'C:\\folder']],
+    ['\\\\?\\UNC\\server\\share\\folder', ['\\\\server\\share', '\\\\server\\share\\folder']],
+    ['/tmp/folder', ['/', '/tmp', '/tmp/folder']],
+  ]) {
+    expected.forEach((directory, index) => assert.equal(folderPathAt(path, index), directory));
+    assert.equal(folderPathAt(path, expected.length), '');
+    assert.equal(folderPathAt(path, -1), '');
+  }
+});
+
+test('opening a hierarchy folder uses its full path and reports failures', async () => {
+  const calls = [];
+  const ui = view(backend({ open_folder: args => {
+    calls.push(args.directory);
+    if (calls.length === 2) throw new Error('access denied');
+  } }));
+  ui.sourceDirectory.value = 'C:\\日本語 folder\\input';
+  await ui.openFolder(1);
+  await ui.openFolder(2);
+  await ui.openFolder(99);
+  assert.deepEqual(calls, ['C:\\日本語 folder', 'C:\\日本語 folder\\input']);
+  assert.match(ui.messages.value.at(-1), /フォルダーを開けませんでした:.*access denied/);
+  assert.equal(ui.sourceDirectory.value, 'C:\\日本語 folder\\input');
+});
 
 test('format uses the selected drive without CSV and never runs before confirmation', async () => {
   const calls = [];

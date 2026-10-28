@@ -163,6 +163,19 @@ fn sd_admin_status() -> &'static str {
 }
 
 #[tauri::command]
+async fn open_folder(directory: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = std::path::PathBuf::from(directory);
+        if !path.is_absolute() || !path.is_dir() {
+            return Err("指定したフォルダーが存在しないか、アクセスできません".into());
+        }
+        tauri_plugin_opener::open_path(path, None::<&str>).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 async fn open_sd_output() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(|| {
         let path = sd_read_batch::output_directory()?;
@@ -498,6 +511,7 @@ pub fn run() {
             find_dictionary_files,
             get_drives,
             sd_admin_status,
+            open_folder,
             open_diagnostic_log,
             open_sd_output,
             prepare_sd_write,

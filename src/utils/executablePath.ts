@@ -12,3 +12,12 @@ export function splitFolderPath(path: string): string[] {
 	}
 	return parts;
 }
+
+/** Resolve a displayed hierarchy level, preserving drive and UNC roots. */
+export function folderPathAt(path: string, index: number): string {
+	const folders = splitFolderPath(path);
+	if (!Number.isInteger(index) || index < 0 || index >= folders.length) return '';
+	const separator = folders[0] === '/' ? '/' : '\\';
+	return folders.slice(0, index + 1).reduce((parent, folder) =>
+		parent.replace(/[\\/]+$/, '') + separator + folder);
+}

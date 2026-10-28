@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import SdMenu from '../components/SdMenu.vue';
-import { splitFolderPath } from '../utils/executablePath';
+import { folderPathAt, splitFolderPath } from '../utils/executablePath';
 import { createLogScroller } from '../utils/logScroll';
 import { parseSdDirectCsv, type AddressRange, type SdArea } from '../utils/sdDirectCsv';
 import { writePercent, writeStageLabel, sizeComment, formatByteCount, formatCardCapacity, type WritePlan, type WriteProgress, type OperationStatus } from '../utils/sdWrite';
@@ -659,6 +659,21 @@ function acceptOperation(event: OperationStatus) {
     operationAnchor = performance.now() - event.operation_ms;
 }
 
+function onFolderDoubleClick(index: number, event: MouseEvent) {
+	window.getSelection()?.selectAllChildren(event.currentTarget as Node);
+	void openFolder(index);
+}
+
+async function openFolder(index: number) {
+	const directory = folderPathAt(displayedDirectory.value, index);
+	if (!directory || closing.value) return;
+	try {
+		await invoke('open_folder', { directory });
+	} catch (error) {
+		await appendMessage(`フォルダーを開けませんでした: ${directory}: ${String(error)}`);
+	}
+}
+
 async function copyDirectory() {
 	try {
 		await navigator.clipboard.writeText(displayedDirectory.value);
@@ -719,7 +734,8 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 							:style="{ paddingLeft: `${Math.min(index * 9, 108)}px` }"
 							:aria-current="index === folders.length - 1 ? 'location' : undefined">
 							<span v-if="index > 0" class="path-branch" aria-hidden="true"></span>
-							<span class="path-name" :title="folder">{{ folder }}</span>
+							<span class="path-name" :title="`${folderPathAt(displayedDirectory, index)}\nダブルクリックでエクスプローラーで開く`"
+								@dblclick.prevent="onFolderDoubleClick(index, $event)">{{ folder }}</span>
 						</li>
 					</ol>
 					<p v-else class="path-message" role="status">保存先を取得中…</p>
