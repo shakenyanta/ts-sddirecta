@@ -14,7 +14,7 @@ function utility(path) {
 }
 
 // Exercise the actual view setup with IPC/lifecycle boundaries replaced; no WebView or SD access.
-function view(invoke, clock = performance) {
+function view(invoke, clock = performance, DateClass = Date) {
   const source = readFileSync('src/pages/HomeView.vue', 'utf8').match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
     .replace(/^import .*;\r?$/gm, '');
   let mount, unmount, listener, timer, unlistened = false;
@@ -22,6 +22,7 @@ function view(invoke, clock = performance) {
   const keyListeners = new Set();
   const bindings = {
     performance: clock,
+    Date: DateClass,
     ref: value => ({ value }),
     computed: get => ({ get value() { return get(); } }),
     nextTick: async () => {},
@@ -44,7 +45,7 @@ function view(invoke, clock = performance) {
     }),
   };
   const api = new Function(...Object.keys(bindings), transpile(source) + `
-    return { initializeSource, refreshMatchedFiles, sourceDirectory, displayedDirectory, openFolder,
+    return { appendMessage, initializeSource, refreshMatchedFiles, sourceDirectory, displayedDirectory, openFolder,
       sdDirectDictionary, sdloadingDictionary, sdAddressRange, matchedFiles, canSdWrite, allFileCount, initializing, messages, folders, pathError,
       onSdWrite, onSdRead, onSdFfInitialize, onSdFormat, startSdFormat, formatPlan, formatLabel, formatSimpleTest, formatStep, formatLabelValid, writeStage, canSdRead, popupTitle, statusLabel, closeWriteDialog, copyWriteLog, writeDialogOpen, writeLog, writing, pendingPlan, progress, percent, currentRun, transientNotice, operationStatus, operationDetail };
   `)(...Object.values(bindings));
@@ -59,6 +60,30 @@ function view(invoke, clock = performance) {
     get hasTimer() { return !!timer; },
     tick: () => timer?.(), get unlistened() { return unlistened; } };
 }
+
+// Compare log content independently of its display timestamp.
+function panelContents(ui) {
+  return ui.messages.value.map(({ text, warning }) => warning ? { text, warning } : text);
+}
+
+test('panel logs retain their local HH:MM timestamp and warning status', async () => {
+  let now = new Date(2026, 9, 29, 1, 2);
+  class LogDate extends Date {
+    constructor() { super(now.getTime()); }
+  }
+  const ui = view(async () => {}, performance, LogDate);
+  await ui.appendMessage('通常ログ', { text: '警告ログ', warning: true });
+  now = new Date(2026, 9, 29, 11, 42);
+  await ui.appendMessage('次のログ');
+  assert.deepEqual(ui.messages.value, [
+    { text: '通常ログ', time: '01:02' },
+    { text: '警告ログ', warning: true, time: '01:02' },
+    { text: '次のログ', time: '11:42' },
+  ]);
+  ui.messages.value = [];
+  await ui.appendMessage('クリア後');
+  assert.deepEqual(ui.messages.value, [{ text: 'クリア後', time: '11:42' }]);
+});
 
 const csv = 'A,FILE-AA.001,00000000,000001FF';
 
@@ -88,7 +113,7 @@ test('opening a hierarchy folder uses its full path and reports failures', async
   await ui.openFolder(2);
   await ui.openFolder(99);
   assert.deepEqual(calls, ['C:\\日本語 folder', 'C:\\日本語 folder\\input']);
-  assert.match(ui.messages.value.at(-1), /フォルダーを開けませんでした:.*access denied/);
+  assert.match(panelContents(ui).at(-1), /フォルダーを開けませんでした:.*access denied/);
   assert.equal(ui.sourceDirectory.value, 'C:\\日本語 folder\\input');
 });
 
@@ -272,8 +297,11 @@ test('extension warnings retain actual filenames, stay separate from write match
   let warning_files = ['FILE-AA.bin', 'input\\FILE-AA.002'];
   const ui = view(backend({ find_dictionary_files: () => ({ files, warning_files, from_input: false, input_exists: true }) }));
   await ui.initializeSource();
-  const warnings = () => ui.messages.value.filter(message => typeof message !== 'string');
-  assert.deepEqual(warnings(), warning_files.map(filename => ({ text: `警告：拡張子が異なるファイルがあります：${filename}`, warning: true })));
+  const warnings = () => panelContents(ui).filter(message => typeof message !== 'string');
+  assert.deepEqual(warnings(), [
+    { text: '警告：拡張子エラー：FILE-AA.bin', warning: true },
+    { text: '警告：拡張子エラー：FILE-AA.002', warning: true },
+  ]);
   assert.deepEqual([...ui.sdloadingDictionary.value.keys()], ['FILE-AA.001']);
   await ui.refreshMatchedFiles();
   assert.equal(warnings().length, 2);
@@ -291,9 +319,9 @@ test('CSV completion log includes the source folder and preserves the dictionary
   for (const source_folder of ['EXEフォルダ', 'configフォルダ', '対象フォルダ', '内蔵CSV']) {
     const ui = view(backend({ read_startup_csv: () => ({ contents: csv, source_folder }) }));
     await ui.initializeSource();
-    const index = ui.messages.value.indexOf(`sdDirectaxs.csv読込完了 (${source_folder})`);
+    const index = panelContents(ui).indexOf(`sdDirectaxs.csv読込完了 (${source_folder})`);
     assert.ok(index >= 0);
-    assert.equal(ui.messages.value[index + 1], 'dictionary作成：1件');
+    assert.equal(panelContents(ui)[index + 1], 'dictionary作成：1件');
   }
 });
 
@@ -349,7 +377,7 @@ test('all-area write remains available with only R/N/0 matches and keeps selecte
   assert.equal(ui.canSdWrite.value, true);
   assert.equal(ui.sdDirectDictionary.value.size, 5);
   assert.deepEqual(ui.sdAddressRange.value, { startAddress: '0x00000000', endAddress: '0x000001FF' });
-  assert.ok(ui.messages.value.includes('dictionary作成：5件'));
+  assert.ok(panelContents(ui).includes('dictionary作成：5件'));
   files = flags.map(flag => `FILE-${flag}.001`);
   await ui.refreshMatchedFiles();
   assert.equal(ui.allFileCount.value, 5);
@@ -710,11 +738,11 @@ test('write workflow opens progress immediately, blocks target changes, rejects 
     discard_sd_write: () => { calls.push('discard'); },
   }));
   await ui.mount();
-  const initialMessages = [...ui.messages.value];
+  const initialMessages = [...panelContents(ui)];
   const task = ui.onSdWrite('E:');
   await until(() => !!runArgs);
-  assert.equal(ui.messages.value.filter(m => m === '「SD書込」ボタン押下').length, 1);
-  assert.deepEqual(ui.messages.value, [...initialMessages, '「SD書込」ボタン押下']);
+  assert.equal(panelContents(ui).filter(m => m === '「SD書込」ボタン押下').length, 1);
+  assert.deepEqual(panelContents(ui), [...initialMessages, '「SD書込」ボタン押下']);
   assert.equal(ui.writing.value, true);
   assert.equal(ui.canSdWrite.value, false);
   assert.equal(ui.writeDialogOpen.value, true);
@@ -727,7 +755,7 @@ test('write workflow opens progress immediately, blocks target changes, rejects 
   assert.match(ui.transientNotice.value, /再読込できません/);
   await ui.onSdWrite('E:');
   assert.deepEqual(calls, ['run']);
-  assert.equal(ui.messages.value.filter(m => m === '「SD書込」ボタン押下').length, 1);
+  assert.equal(panelContents(ui).filter(m => m === '「SD書込」ボタン押下').length, 1);
   const event = { run_id: runArgs.runId, filename: entry.filename, index: 1, total: 1, completed: 0, stage: 'verify', processed_bytes: 512, total_bytes: 1024, elapsed_ms: 100, file_ms: 100, error: null };
   ui.event('sd-progress', { ...event, run_id: 'stale', stage: 'done' });
   assert.equal(ui.progress.value, null);
@@ -752,9 +780,9 @@ test('write workflow opens progress immediately, blocks target changes, rejects 
   assert.ok(ui.writeLog.value.some(m => typeof m === 'string' && m === '1/1 FILE-AA.001 253ms ✓'));
   assert.ok(ui.writeLog.value.some(m => typeof m === 'string' && m === '全件完了 1/1 2.54秒'));
   const textOf = m => typeof m === 'string' ? m : m.text;
-  const panelLog = ui.messages.value.map(textOf);
+  const panelLog = panelContents(ui).map(textOf);
   const popupLog = ui.writeLog.value.map(textOf);
-  assert.deepEqual(ui.messages.value, [...initialMessages, '「SD書込」ボタン押下']);
+  assert.deepEqual(panelContents(ui), [...initialMessages, '「SD書込」ボタン押下']);
   assert.ok(popupLog.includes('SD書込の準備を開始します'));
   for (const pattern of [/sdDirectaxs.csv読込完了/, /dictionary作成/, /inputフォルダあり/, /inputフォルダへ移動/, /拡張子が異なる/]) {
     assert.ok(panelLog.some(text => pattern.test(text)), `missing panel message: ${pattern}`);
@@ -777,7 +805,7 @@ test('empty plans and preparation failures keep a result popup without writing',
     assert.equal(ran, false);
     assert.equal(ui.writing.value, false);
     assert.equal(ui.writeDialogOpen.value, true);
-    assert.ok(ui.messages.value.every(m => typeof m === 'string' ? !/SD未接続|書込対象なし/.test(m) : !/SD未接続|書込対象なし/.test(m.text)));
+    assert.ok(panelContents(ui).every(m => typeof m === 'string' ? !/SD未接続|書込対象なし/.test(m) : !/SD未接続|書込対象なし/.test(m.text)));
     assert.ok(ui.writeLog.value.some(m => fail ? typeof m === 'object' && /SD未接続/.test(m.text) : typeof m === 'string' && /書込対象なし/.test(m)));
     ui.closeWriteDialog();
     assert.equal(ui.writeDialogOpen.value, false);
@@ -799,12 +827,12 @@ test('successive write clicks append after the existing warning without replayin
     discard_sd_write: () => {},
   }));
   await ui.mount();
-  const history = [...ui.messages.value];
+  const history = [...panelContents(ui)];
   assert.match(history.at(-1).text, /^警告：/);
   for (let attempt = 1; attempt <= 2; attempt++) {
     await ui.onSdWrite('H:');
     assert.equal(ui.popupTitle.value, '書込完了');
-    assert.deepEqual(ui.messages.value, [...history, ...Array(attempt).fill('「SD書込」ボタン押下')]);
+    assert.deepEqual(panelContents(ui), [...history, ...Array(attempt).fill('「SD書込」ボタン押下')]);
     ui.closeWriteDialog();
   }
   assert.equal(csvReads, 1, 'frontend startup logs must not be replayed for write preparation');
@@ -832,7 +860,7 @@ test('failed verification preserves progress and identifies the failed and unexe
   assert.equal(ui.hasTimer, false);
   assert.ok(ui.writeLog.value.some(m => typeof m === 'object' && /b: 一部だけ/.test(m.text)));
   assert.ok(ui.writeLog.value.includes('未実行: c'));
-  assert.ok(ui.messages.value.every(m => typeof m === 'string' ? !/未実行|正常完了/.test(m) : !/照合不一致|一部だけ/.test(m.text)));
+  assert.ok(panelContents(ui).every(m => typeof m === 'string' ? !/未実行|正常完了/.test(m) : !/照合不一致|一部だけ/.test(m.text)));
   ui.unmount();
 });
 
@@ -871,7 +899,7 @@ test('shutdown waiting keeps target changes disabled and reports wait failures',
   assert.equal(calls.length, before);
   assert.match(ui.transientNotice.value, /終了処理中/);
   ui.event('sd-shutdown-error', '終了確認失敗');
-  assert.ok(ui.messages.value.some(m => typeof m === 'object' && /終了確認失敗/.test(m.text)));
+  assert.ok(panelContents(ui).some(m => typeof m === 'object' && /終了確認失敗/.test(m.text)));
   assert.equal(ui.canSdWrite.value, false);
   ui.unmount();
 });

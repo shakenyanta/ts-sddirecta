@@ -75,6 +75,21 @@ window.addEventListener('load', async () => {
   await delay(600);
   const panel = document.querySelector('.text-messages');
   const results = [];
+  const folderPanel = document.querySelector('.panel_sd');
+  const folderList = folderPanel.querySelector('.path-list');
+  const folderRows = () => folderList.querySelectorAll('.path-row');
+  const initialRows = folderRows().length;
+  const currentPath = folderPanel.querySelector('.copy-path').title;
+  const rootToggle = folderPanel.querySelector('.folder-toggle');
+  rootToggle.click(); await render();
+  const collapsed = folderRows().length === 1 && rootToggle.getAttribute('aria-expanded') === 'false';
+  rootToggle.click(); await render();
+  const expanded = folderRows().length === initialRows && rootToggle.getAttribute('aria-expanded') === 'true';
+  const folderAudit = { collapsed, expanded, initialRows,
+    heading: folderPanel.querySelector('h2').textContent,
+    count: folderPanel.querySelector('.file-count').textContent,
+    pathPreserved: folderPanel.querySelector('.copy-path').title === currentPath,
+    currentVisible: !!folderPanel.querySelector('.path-current[aria-current="location"]') };
   for (const [width, height] of [[300, 292], [280, 300], [360, 360], [301, 291.5]]) {
     const outer = document.querySelector('.panel-outer');
     outer.style.width = width + 'px'; outer.style.height = height + 'px';
@@ -90,7 +105,11 @@ window.addEventListener('load', async () => {
     const lastBottom = panel.lastElementChild.getBoundingClientRect().bottom;
     const header = document.querySelector('.text-header').getBoundingClientRect();
     const parent = panel.parentElement;
+    folderList.scrollTop = folderList.scrollHeight;
+    const folderHeader = folderPanel.querySelector('.sd-path-header').getBoundingClientRect();
+    const folderBounds = folderPanel.getBoundingClientRect();
     results.push({ width, height, top, after: panel.scrollTop, before, scroll: panel.scrollHeight, client: panel.clientHeight,
+      folderAudit, folderHeaderFixed: folderHeader.top >= folderBounds.top && folderHeader.bottom <= folderBounds.bottom,
       rows: document.querySelector('.panel-base').style.gridTemplateRows, lastBottom, bottom,
       atBottom: Math.abs(panel.scrollHeight - panel.clientHeight - panel.scrollTop) <= 1,
       lastVisible: lastBottom <= bottom && lastBottom > panel.getBoundingClientRect().top,
@@ -305,6 +324,11 @@ try {
     }
     assert.ok(result.atBottom && result.lastVisible && result.headerVisible && result.manualStable,
       JSON.stringify(result));
+    assert.ok(result.folderAudit.collapsed && result.folderAudit.expanded && result.folderAudit.pathPreserved
+      && result.folderAudit.currentVisible && result.folderHeaderFixed, JSON.stringify(result.folderAudit));
+    assert.ok(result.folderAudit.initialRows > 1);
+    assert.equal(result.folderAudit.heading, '書き込み対象');
+    assert.match(result.folderAudit.count, /^\d+ファイル$/);
     assert.equal(result.parentScroll, 0);
     assert.equal(result.parentOverflow, 'hidden');
     // The menu may wrap after the first frame. A changed viewport must still

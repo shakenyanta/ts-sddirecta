@@ -85,7 +85,8 @@ const displayedDirectory = computed(() => useInputDirectory.value
 	: sourceDirectory.value);
 const pathError = ref('');
 type PanelMessage = string | { text: string; warning: true };
-const messages = ref<PanelMessage[]>([]);
+type TimedPanelMessage = { text: string; warning?: true; time: string };
+const messages = ref<TimedPanelMessage[]>([]);
 const sdDirectDictionary = ref(new Map<string, SdArea>());
 const sdloadingDictionary = ref(new Map<string, SdArea>());
 const sdAddressRange = ref<AddressRange | null>(null);
@@ -99,6 +100,13 @@ let lastMatchError = '';
 const textPanel = ref<HTMLElement | null>(null);
 const pathList = ref<HTMLElement | null>(null);
 const folders = computed(() => splitFolderPath(displayedDirectory.value));
+const collapsedFolderIndex = ref<number | null>(null);
+const visibleFolders = computed(() => collapsedFolderIndex.value === null
+	? folders.value : folders.value.slice(0, collapsedFolderIndex.value + 1));
+
+function toggleFolder(index: number) {
+	collapsedFolderIndex.value = collapsedFolderIndex.value === index ? null : index;
+}
 
 onMounted(async () => {
 	window.addEventListener('keydown', onRefreshKey, true);
@@ -180,6 +188,7 @@ async function initializeSource(paths?: string[], refreshDirectory?: string) {
 	const current = ++generation;
 	const active = () => !disposed && current === generation;
 	initializing.value = true;
+	collapsedFolderIndex.value = null;
 	ready = false;
 	sdDirectDictionary.value = new Map();
 	sdloadingDictionary.value = new Map();
@@ -289,7 +298,7 @@ async function refreshMatchedFiles(report = false) {
 		}
 		if ((report || warningsChanged) && result.warning_files.length) {
 			await appendMessage(...result.warning_files.map(filename => ({
-				text: `警告：拡張子が異なるファイルがあります：${filename}`,
+				text: `警告：拡張子エラー：${filename.split(/[\\/]/).pop()}`,
 				warning: true as const,
 			})));
 			if (disposed || current !== generation) return;
@@ -311,7 +320,11 @@ async function refreshMatchedFiles(report = false) {
 }
 
 async function appendMessage(...newMessages: PanelMessage[]) {
-    messages.value.push(...newMessages);
+    const now = new Date();
+    const time = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    messages.value.push(...newMessages.map(message => ({
+        ...(typeof message === 'string' ? { text: message } : message), time,
+    })));
     await nextTick();
     if (textPanel.value) {
         textPanel.value.scrollTop = textPanel.value.scrollHeight;
@@ -723,17 +736,26 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 				</div>
 				<div id="resizer1" class="resizer" @pointerdown="resize($event, 1)"></div>
 				<section id="panel_sd" class="panel_sd" aria-label="表示中のフォルダー">
-					<div class="path-header">
-						<span role="status">SD書込ファイル数：<strong>全{{ allFileCount }}件</strong></span>
-						<button type="button" :disabled="!sourceDirectory" @click="copyDirectory">フルパスをコピー</button>
+					<div class="path-header sd-path-header">
+						<div class="path-heading"><h2>書き込み対象</h2><span class="file-count" role="status" aria-label="SD書込ファイル数">{{ allFileCount }}ファイル</span></div>
+						<button type="button" class="copy-path" :disabled="!sourceDirectory" @click="copyDirectory" :title="displayedDirectory">
+							<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="2" width="8" height="10" rx="1.5"/><path d="M10 14H4a1 1 0 0 1-1-1V5"/></svg>
+							パスをコピー
+						</button>
 					</div>
 					<p v-if="pathError" class="path-message path-error" role="alert">{{ pathError }}</p>
 					<ol v-else-if="folders.length" ref="pathList" class="path-list" aria-label="対象フォルダーの階層">
-						<li v-for="(folder, index) in folders" :key="index"
+						<li v-for="(folder, index) in visibleFolders" :key="index"
 							class="path-row" :class="{ 'path-current': index === folders.length - 1 }"
-							:style="{ paddingLeft: `${Math.min(index * 9, 108)}px` }"
 							:aria-current="index === folders.length - 1 ? 'location' : undefined">
-							<span v-if="index > 0" class="path-branch" aria-hidden="true"></span>
+							<span class="path-guides" :style="{ width: `${index * 14}px` }" aria-hidden="true"></span>
+							<button v-if="index < folders.length - 1" type="button" class="folder-toggle"
+								:aria-expanded="collapsedFolderIndex !== index" :aria-label="`${folder}の子階層を${collapsedFolderIndex === index ? '展開' : '折りたたむ'}`"
+								@click="toggleFolder(index)">
+								<svg viewBox="0 0 12 12" aria-hidden="true" :class="{ 'folder-expanded': collapsedFolderIndex !== index }"><path d="m4 2 4 4-4 4"/></svg>
+							</button>
+							<span v-else class="folder-toggle-spacer" aria-hidden="true"></span>
+							<svg class="folder-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4a1 1 0 0 1 1-1H6l1.5 2h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1Z"/></svg>
 							<span class="path-name" :title="`${folderPathAt(displayedDirectory, index)}\nダブルクリックでエクスプローラーで開く`"
 								@dblclick.prevent="onFolderDoubleClick(index, $event)">{{ folder }}</span>
 						</li>
@@ -744,11 +766,14 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 				<div id="panel_text" class="panel_text">
 					<div class="path-header text-header">
 						<span role="status">SD MAP：{{ sdAddressRange ? `${sdAddressRange.startAddress} - ${sdAddressRange.endAddress}（${sdDirectDictionary.size}件）` : '未取得' }}</span>
-						<button type="button" :disabled="messages.length === 0" @click="messages = []" aria-label="操作メッセージをクリア">クリア</button>
+						<button type="button" class="clear-messages" :disabled="messages.length === 0" @click="messages = []" aria-label="操作メッセージをクリア">
+							<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4.5h11M6 4.5V2.8a.8.8 0 0 1 .8-.8h2.4a.8.8 0 0 1 .8.8v1.7M4 4.5l.7 8.5a1 1 0 0 0 1 1h4.6a1 1 0 0 0 1-1l.7-8.5M6.5 7v4.5M9.5 7v4.5"/></svg>
+							クリア
+						</button>
 					</div>
 					<div ref="textPanel" class="text-messages" role="log" aria-label="操作メッセージ">
 						<p v-for="(message, index) in messages" :key="index" class="path-message"
-							:class="{ 'path-warning': typeof message !== 'string' && message.warning }">{{ typeof message === 'string' ? message : message.text }}</p>
+							:class="{ 'path-warning': message.warning }"><time class="message-time">{{ message.time }}</time><span>{{ message.text }}</span></p>
 					</div>
 				</div>
 				<div id="panel_footer" class="panel_footer" role="status">
@@ -911,7 +936,20 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 .panel_sd {
 	display: flex;
 	flex-direction: column;
+	overflow: hidden;
+	background: #fff;
+	border: 1px solid #e2e7ee;
+	border-radius: 7px;
 }
+.panel_sd .sd-path-header { padding: 5px 7px; background: #fff; border-bottom: 1px solid #edf0f5; }
+.path-heading { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.path-heading h2 { margin: 0; font-size: 12px; font-weight: 700; color: #273449; white-space: nowrap; }
+.file-count { padding: 1px 6px; border-radius: 9px; background: #eef1f5; color: #64748b; font-size: 10px; white-space: nowrap; }
+.sd-path-header .copy-path { display: inline-flex; align-items: center; gap: 3px; flex-shrink: 0; padding: 2px; border: 0; border-radius: 3px; background: transparent; color: #3267aa; white-space: nowrap; }
+.copy-path svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.2; }
+.copy-path:hover:enabled { background: #edf4fe; }
+.sd-path-header .copy-path:disabled { color: #94a3b8; }
+.copy-path:focus-visible, .folder-toggle:focus-visible { outline: 2px solid #4285d4; outline-offset: -1px; }
 .path-header {
 	display: flex;
 	align-items: center;
@@ -934,24 +972,24 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 	flex: 1;
 	min-height: 0;
 	margin: 0;
-	padding: 3px 4px;
+	padding: 4px;
 	list-style: none;
 	overflow: auto;
 }
 .path-row {
 	display: flex;
 	align-items: center;
-	min-height: 15px;
-	line-height: 15px;
+	min-height: 18px;
+	line-height: 18px;
+	border-radius: 3px;
 }
-.path-branch {
-	align-self: flex-start;
-	flex: 0 0 7px;
-	height: 8px;
-	margin-right: 2px;
-	border-left: 1px solid #a8b3bf;
-	border-bottom: 1px solid #a8b3bf;
-}
+.path-guides { align-self: stretch; flex-shrink: 0; background: repeating-linear-gradient(to right, transparent 0 6px, #edf0f5 6px 7px, transparent 7px 14px); }
+.folder-toggle, .folder-toggle-spacer { flex: 0 0 14px; width: 14px; height: 18px; }
+.folder-toggle { display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 2px; background: transparent; color: #7a899c; cursor: pointer; }
+.folder-toggle:hover { background: #dce9fa; }
+.folder-toggle svg { width: 9px; height: 9px; fill: none; stroke: currentColor; stroke-width: 1.5; }
+.folder-toggle .folder-expanded { transform: rotate(90deg); }
+.folder-icon { flex: 0 0 13px; width: 13px; height: 13px; margin-right: 4px; fill: #f4c45e; stroke: #e4ac3f; stroke-width: .6; }
 .path-name {
 	min-width: 0;
 	overflow: hidden;
@@ -961,7 +999,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 .path-current {
 	font-weight: 700;
 	color: #174a75;
-	background: #e7f1fb;
+	background: #dfedff;
 	border-radius: 2px;
 }
 .path-message {
@@ -977,6 +1015,31 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 .text-header {
 	justify-content: space-between;
 }
+.text-header .clear-messages {
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
+	flex-shrink: 0;
+	padding: 2px;
+	border: 0;
+	border-radius: 3px;
+	background: transparent;
+	color: #3267aa;
+	white-space: nowrap;
+}
+.clear-messages svg {
+	width: 14px;
+	height: 14px;
+	fill: none;
+	stroke: currentColor;
+	stroke-width: 1.2;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+.clear-messages:hover:enabled { background: #edf4fe; }
+.clear-messages:active:enabled { background: #dce9fa; }
+.clear-messages:focus-visible { outline: 2px solid #4285d4; outline-offset: -1px; }
+.text-header .clear-messages:disabled { color: #94a3b8; }
 .text-messages {
 	min-height: 0;
 	overflow: auto;
@@ -986,7 +1049,14 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 	padding-bottom: 2px;
 }
 .panel_text .path-message {
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
 	margin: 0 4px;
+}
+.message-time {
+	flex-shrink: 0;
+	font-variant-numeric: tabular-nums;
 }
 .path-error {
 	color: #a12323;
