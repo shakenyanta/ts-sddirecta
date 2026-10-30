@@ -8,6 +8,7 @@
     "version:sync": "node scripts/sync-version.mjs",
     "dev": "node scripts/sync-version.mjs && vite",
     "dev:lite": "node scripts/dev-lite.mjs",
+    "edition:test:prepare": "npm run build:exe && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-edition-test.ps1",
     "build": "node scripts/sync-version.mjs && vue-tsc && vite build",
     "build:exe": "node scripts/sync-version.mjs && tauri build --no-bundle",
     "release:prepare": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-portable-release.ps1",
