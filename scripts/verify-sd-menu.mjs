@@ -58,7 +58,7 @@ function loadComponent(path, SdMenu) {
 		(_, names) => `const {${names.replace(/\s+as\s+/g, ': ')}} = Vue;`);
 	code = code.replace(/^import .*?;\s*$/gm, '').replace('export default', 'return');
 	code = ts.transpileModule(code, { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext } }).outputText;
-	return new Function('Vue', 'invoke', 'SdMenu', 'splitFolderPath', 'parseSdDirectCsv', code)(Vue, invoke, SdMenu, splitFolderPath, parseSdDirectCsv);
+	return new Function('Vue', 'invoke', 'SdMenu', 'splitFolderPath', 'parseSdDirectCsv', 'editionLabel', code)(Vue, invoke, SdMenu, splitFolderPath, parseSdDirectCsv, Vue.ref('プロ版［開発］'));
 }
 
 function node(type, text = '') { return Object.assign(new EventTarget(), { type, text, props: {}, children: [], parent: null }); }

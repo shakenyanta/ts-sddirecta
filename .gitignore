@@ -43,6 +43,7 @@ target/
 # ===========================
 # Environment variables
 # ===========================
+/.config/edition.json
 .env
 .env.local
 .env.*.local

@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { getName, getVersion } from '@tauri-apps/api/app';
+import { editionLabel } from '../editions';
 
 const props = defineProps<{ canWrite: boolean; canRead?: boolean; canInitialize?: boolean; busy?: boolean; writeLabel?: string }>();
 const emit = defineEmits<{ write: [drive: string]; read: [drive: string]; initialize: [drive: string]; format: [drive: string]; action: [label: string]; error: [message: string] }>();
@@ -290,7 +291,7 @@ onUnmounted(() => {
 					<span v-if="availableUpdate" class="update-badge">更新あり</span>
 				</header>
 				<div class="app-info-body">
-					<p v-if="appName" class="app-info-name">{{ appName }}</p>
+					<p v-if="appName" class="app-info-name">{{ appName }} — {{ editionLabel }}</p>
 					<div v-if="appVersion" class="app-info-versions" aria-label="バージョン">
 						<span><small>現在</small><strong>{{ appVersion }}</strong></span>
 						<template v-if="availableUpdate?.version">

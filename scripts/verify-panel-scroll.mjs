@@ -23,6 +23,7 @@ window.__TAURI_INTERNALS__ = {
   metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main' } },
   transformCallback(fn) { const id = next++; callbacks.set(id, fn); return id; },
   async invoke(command, args = {}) {
+    if (command === 'get_edition') return { edition: 'pro', development: true, warning: null };
     if (command === 'plugin:app|name') return 'ts-sddirecta';
     if (command === 'plugin:app|version') return '0.1.0';
     if (command === 'check_portable_update') {

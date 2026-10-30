@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import SdMenu from '../components/SdMenu.vue';
+import { features } from '../editions';
 import { folderPathAt, splitFolderPath } from '../utils/executablePath';
 import { createLogScroller } from '../utils/logScroll';
 import { parseSdDirectCsv, type AddressRange, type SdArea } from '../utils/sdDirectCsv';
@@ -775,11 +776,11 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 					<div class="map-summary">
 						<div class="map-summary-row">
 							<span class="map-heading" role="status">SD MAP <span class="map-count">{{ sdAddressRange ? `${sdDirectDictionary.size}件` : '未取得' }}</span></span>
-							<button type="button" class="map-details-toggle" :aria-expanded="mapDetailsOpen" aria-controls="map-address-range" @click="mapDetailsOpen = !mapDetailsOpen">
+							<button v-if="features.mapDetails" type="button" class="map-details-toggle" :aria-expanded="mapDetailsOpen" aria-controls="map-address-range" @click="mapDetailsOpen = !mapDetailsOpen">
 								詳細<svg viewBox="0 0 12 12" aria-hidden="true" :class="{ 'details-open': mapDetailsOpen }"><path d="m3 4.5 3 3 3-3"/></svg>
 							</button>
 						</div>
-						<p v-show="mapDetailsOpen" id="map-address-range" class="map-address">{{ sdAddressRange ? `${sdAddressRange.startAddress} - ${sdAddressRange.endAddress}` : 'アドレス範囲は未取得です' }}</p>
+						<p v-if="features.mapDetails" v-show="mapDetailsOpen" id="map-address-range" class="map-address">{{ sdAddressRange ? `${sdAddressRange.startAddress} - ${sdAddressRange.endAddress}` : 'アドレス範囲は未取得です' }}</p>
 					</div>
 					<div ref="textPanel" class="text-messages" role="log" aria-label="操作メッセージ">
 						<p v-for="(message, index) in messages" :key="index" class="path-message"

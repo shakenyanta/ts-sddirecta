@@ -5,6 +5,7 @@ fn greet(name: &str) -> String {
 }
 
 mod diagnostics;
+mod edition;
 mod matching_files;
 mod portable_update;
 mod sd_batch;
@@ -18,6 +19,11 @@ mod startup_csv;
 mod windows_api;
 pub use portable_update::run_if_helper;
 pub use sd_worker::run_if_worker;
+
+#[tauri::command]
+fn get_edition() -> edition::EditionInfo {
+    edition::current().clone()
+}
 
 use serde::Serialize;
 use std::sync::{
@@ -498,10 +504,19 @@ async fn sd_verify_fill(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let edition = edition::current();
     tauri::Builder::default()
+        .setup(move |app| {
+            use tauri::Manager;
+            if let Some(window) = app.get_webview_window("main") {
+                window.set_title(&format!("{} {}", app.package_info().name, edition.label()))?;
+            }
+            Ok(())
+        })
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             greet,
+            get_edition,
             check_portable_update,
             install_portable_update,
             get_executable_directory,

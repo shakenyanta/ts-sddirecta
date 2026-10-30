@@ -23,6 +23,17 @@ npm.cmd run build:exe
 npm.cmd run tauri -- dev
 ```
 
+通常の開発起動はプロ版です。ライト版の動作確認には次を使用します。
+
+```powershell
+npm.cmd run dev:lite
+```
+
+SD MAPの「詳細」ボタンとアドレス範囲表示はプロ版専用です。その他の既存機能は両版で利用できます。
+配布用exeは、exeの隣の `.config/edition.json` が `{"edition":"pro"}` の場合だけプロ版、設定がなければライト版です。
+開発用環境変数は配布用exeでは無視されます。設定変更後は再起動してください。
+設定サンプルは `.config/edition.example.json`、詳しい運用は [ライト版・プロ版の開発方針](docs/editions.md) を参照してください。
+
 ## 対象フォルダーの切替
 
 通常権限でexeを起動してください。起動時はexeの保存先を対象にします。

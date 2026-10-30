@@ -479,10 +479,14 @@ mod tests {
         fs::write(&target, b"old").unwrap();
         fs::write(&next, b"new").unwrap();
         fs::write(&data, b"user data").unwrap();
+        let settings = dir.path().join(".config/edition.json");
+        fs::create_dir(dir.path().join(".config")).unwrap();
+        fs::write(&settings, br#"{"edition":"pro"}"#).unwrap();
         replace_and_restart(&target, &next, &backup, |_| Ok(())).unwrap();
         assert_eq!(fs::read(&target).unwrap(), b"new");
         assert_eq!(fs::read(&backup).unwrap(), b"old");
         assert_eq!(fs::read(&data).unwrap(), b"user data");
+        assert_eq!(fs::read(&settings).unwrap(), br#"{"edition":"pro"}"#);
     }
     #[test]
     fn failed_replacement_or_restart_restores_old_exe() {
