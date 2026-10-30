@@ -81,6 +81,7 @@ coverage/
 dist_test/
 
 # OS / misc
+/other/
 .cache
 .DS_Store
-.Trash-* 
+.Trash-*
