@@ -34,6 +34,9 @@ SD MAPの「詳細」ボタンとアドレス範囲表示はプロ版専用で�
 開発用環境変数は配布用exeでは無視されます。設定変更後は再起動してください。
 設定サンプルは `.config/edition.example.json`、詳しい運用は [ライト版・プロ版の開発方針](docs/editions.md) を参照してください。
 
+プロ版へ切り替えるには、アプリを終了して [tools/pro-kit](tools/pro-kit/README.md) 内の `.config` を配布用exeの隣へコピーし、再起動してください。
+配置先に `.config` がある場合は `edition.json` だけをコピーし、ほかの設定は残してください。
+
 配布用exeの版判定を確認するには `npm.cmd run edition:test:prepare` を実行します。
 ビルドと、設定なし・プロ設定・不正設定の検証用フォルダーの作成をまとめて行います。
 

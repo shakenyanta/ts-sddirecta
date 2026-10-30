@@ -1,6 +1,6 @@
 [package]
 name = "ts-sddirecta"
-version = "0.1.2"
+version = "0.1.3"
 description = "A Tauri + Vite + Vue 3 desktop application"
 authors = []
 edition = "2021"

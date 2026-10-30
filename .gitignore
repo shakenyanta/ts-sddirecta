@@ -43,6 +43,7 @@ target/
 # ===========================
 # Environment variables
 # ===========================
+# プロジェクト直下の実設定だけを除外。tools/pro-kit/のコピー用設定はGit管理する。
 /.config/edition.json
 .env
 .env.local
