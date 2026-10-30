@@ -90,6 +90,7 @@ const messages = ref<TimedPanelMessage[]>([]);
 const sdDirectDictionary = ref(new Map<string, SdArea>());
 const sdloadingDictionary = ref(new Map<string, SdArea>());
 const sdAddressRange = ref<AddressRange | null>(null);
+const mapDetailsOpen = ref(false);
 const matchedFiles = ref<string[]>([]);
 const warningFiles = ref<string[]>([]);
 const canSdWrite = computed(() => !initializing.value && !writing.value && !closing.value && allFileCount.value > 0);
@@ -285,7 +286,7 @@ async function refreshMatchedFiles(report = false) {
 		warningFiles.value = result.warning_files;
 		useInputDirectory.value = result.from_input;
 		lastMatchError = '';
-		if (report) await appendMessage(result.input_exists ? 'inputフォルダあり' : 'inputフォルダ無し');
+		if (report && result.input_exists) await appendMessage('inputフォルダあり');
 		if (disposed || current !== generation) return;
 		if (!report && !changed) return;
 		if (result.from_input && result.files.length) {
@@ -712,7 +713,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 			menuHeight.value = initialMenuHeight + change;
 			sdHeight.value = initialSdHeight - change;
 		} else {
-			sdHeight.value = initialSdHeight + Math.max(-initialSdHeight, Math.min(delta, textHeight));
+			sdHeight.value = initialSdHeight + Math.max(-initialSdHeight, Math.min(delta, Math.max(0, textHeight - 66)));
 		}
 	};
 	const stop = () => {
@@ -727,7 +728,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 <template>
 	<div class="panel-outer" :class="{ 'drop-active': dragging }">
 		<div class="panel-inner">
-			<div class="panel-base" :style="{ gridTemplateRows: `${Math.max(menuHeight, minimumMenuHeight)}px 1px ${sdHeight}px 1px minmax(0, 1fr) minmax(28px, auto)` }">
+			<div class="panel-base" :style="{ gridTemplateRows: `${Math.max(menuHeight, minimumMenuHeight)}px 1px ${sdHeight}px 1px minmax(0, 1fr) minmax(44px, auto)` }">
 				<div id="panel_menu" class="panel_menu">
 					<div ref="menuContent" class="menu-content">
 						<SdMenu ref="sdMenu" :can-write="canSdWrite" :can-read="canSdRead" :can-initialize="canSdRead" :busy="initializing || writing || closing || writeDialogOpen" :write-label="closing ? '終了待ち…' : writing ? `${statusLabel}…` : 'SD書込'"
@@ -765,20 +766,28 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 				<div id="resizer2" class="resizer" @pointerdown="resize($event, 2)"></div>
 				<div id="panel_text" class="panel_text">
 					<div class="path-header text-header">
-						<span role="status">SD MAP：{{ sdAddressRange ? `${sdAddressRange.startAddress} - ${sdAddressRange.endAddress}（${sdDirectDictionary.size}件）` : '未取得' }}</span>
+						<h2>処理ログ</h2>
 						<button type="button" class="clear-messages" :disabled="messages.length === 0" @click="messages = []" aria-label="操作メッセージをクリア">
 							<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4.5h11M6 4.5V2.8a.8.8 0 0 1 .8-.8h2.4a.8.8 0 0 1 .8.8v1.7M4 4.5l.7 8.5a1 1 0 0 0 1 1h4.6a1 1 0 0 0 1-1l.7-8.5M6.5 7v4.5M9.5 7v4.5"/></svg>
 							クリア
 						</button>
 					</div>
+					<div class="map-summary">
+						<div class="map-summary-row">
+							<span class="map-heading" role="status">SD MAP <span class="map-count">{{ sdAddressRange ? `${sdDirectDictionary.size}件` : '未取得' }}</span></span>
+							<button type="button" class="map-details-toggle" :aria-expanded="mapDetailsOpen" aria-controls="map-address-range" @click="mapDetailsOpen = !mapDetailsOpen">
+								詳細<svg viewBox="0 0 12 12" aria-hidden="true" :class="{ 'details-open': mapDetailsOpen }"><path d="m3 4.5 3 3 3-3"/></svg>
+							</button>
+						</div>
+						<p v-show="mapDetailsOpen" id="map-address-range" class="map-address">{{ sdAddressRange ? `${sdAddressRange.startAddress} - ${sdAddressRange.endAddress}` : 'アドレス範囲は未取得です' }}</p>
+					</div>
 					<div ref="textPanel" class="text-messages" role="log" aria-label="操作メッセージ">
 						<p v-for="(message, index) in messages" :key="index" class="path-message"
-							:class="{ 'path-warning': message.warning }"><time class="message-time">{{ message.time }}</time><span>{{ message.text }}</span></p>
+							:class="{ 'path-warning': message.warning }"><time class="message-time">{{ message.time }}</time><span class="message-body"><svg v-if="message.warning" class="message-warning-icon" viewBox="0 0 16 16" role="img" aria-label="警告"><path fill="currentColor" d="M8 1 0 15h16Z"/><path stroke="#fff" stroke-width="1.5" d="M8 5v5m0 1v1.5"/></svg>{{ message.text }}</span></p>
 					</div>
 				</div>
-				<div id="panel_footer" class="panel_footer" role="status">
-
-					<div>{{ closing ? '終了処理中：SD操作プロセスの終了を確認しています' : writing ? 'SD処理中：ドライブ・対象フォルダーの変更と再読込はできません' : dragging ? 'ドロップして対象フォルダーを変更' : initializing ? '対象フォルダーを読込中…' : 'ファイル・フォルダーをドロップできます' }}</div>
+				<div id="panel_footer" class="panel_footer" :class="{ 'drop-unavailable': initializing || writing || closing }" role="status">
+					<div class="drop-hint"><svg v-if="!initializing && !writing && !closing" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 21H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h9l5 5v5M14 3v6h5M18 15v8m-4-4h8"/></svg><span>{{ closing ? '終了処理中：SD操作プロセスの終了を確認しています' : writing ? 'SD処理中：ドライブ・対象フォルダーの変更と再読込はできません' : dragging ? 'ドロップして対象フォルダーを変更' : initializing ? '対象フォルダーを読込中…' : 'ファイル・フォルダーをドロップ' }}</span></div>
 					<div v-if="transientNotice" class="path-error">{{ transientNotice }}</div>
 				</div>
 			</div>
@@ -875,7 +884,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
     .write-actions button { padding: 4px 10px; font-size: 11px; }
 }
 .panel-outer {
-	border: 1px solid #000;
+	border: 1px solid #dce2eb;
 	padding: 1px;
 	display: flex;
 	justify-content: center;
@@ -885,8 +894,8 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 	box-sizing: border-box;
 }
 .panel-inner {
-	border: 1px solid #666;
-	width: 360px;
+	border: 0;
+	width: 100%;
 	/* 高さは外枠に合わせ、はみ出す場合はスクロールさせる */
 	height: 100%;
 	max-height: 100%;
@@ -895,7 +904,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 	overflow: auto;
 }
 .panel-base {
-	border: 1px dashed #999;
+	border: 0;
 	width: 100%;
 	height: 100%;
 	display: grid;
@@ -911,10 +920,19 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 	overflow: auto;
 }
 .panel_footer {
-	border-top: 1px solid #666;
-	padding: 3px 4px;
-	font: 11px 'Yu Gothic UI', Meiryo, sans-serif;
+	margin: 5px 6px;
+	padding: 6px;
+	border: 1px dashed #83afe9;
+	border-radius: 5px;
+	background: #f0f6ff;
+	color: #255b9f;
+	font: 11px/16px 'Yu Gothic UI', Meiryo, sans-serif;
+	overflow-wrap: anywhere;
 }
+.drop-hint { display: flex; align-items: center; justify-content: center; gap: 7px; min-height: 20px; }
+.drop-hint svg { flex: 0 0 20px; width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.panel_footer.drop-unavailable { border-style: solid; border-color: #dce2eb; background: #f3f5f7; color: #64748b; }
+.drop-active .panel_footer:not(.drop-unavailable) { border-color: #2875d9; background: #dcecff; box-shadow: inset 0 0 0 1px #2875d9; }
 .drop-active {
 	outline: 3px solid #4285f4;
 	outline-offset: -3px;
@@ -1008,13 +1026,31 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 }
 .panel_text {
 	display: grid;
-	grid-template-rows: auto minmax(0, 1fr);
+	grid-template-rows: auto auto minmax(0, 1fr);
 	overflow: hidden;
-	line-height: 13px;
+	line-height: 18px;
+	border: 1px solid #e2e7ee;
+	border-radius: 5px;
+	background: #fff;
+	color: #273449;
 }
 .text-header {
 	justify-content: space-between;
+	padding: 3px 7px;
+	background: #edf3fb;
+	border-bottom-color: #dce5f0;
 }
+.text-header h2 { font-size: 12px; font-weight: 700; }
+.map-summary { padding: 2px 7px; border-bottom: 1px solid #edf0f5; }
+.map-summary-row { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
+.map-heading { display: inline-flex; align-items: center; gap: 7px; }
+.map-count { padding: 0 6px; border-radius: 9px; background: #e5efff; color: #255b9f; font-size: 10px; }
+.map-details-toggle { display: inline-flex; align-items: center; gap: 3px; padding: 1px 2px; border: 0; border-radius: 3px; background: transparent; color: #3267aa; font: inherit; cursor: pointer; }
+.map-details-toggle svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.5; }
+.map-details-toggle .details-open { transform: rotate(180deg); }
+.map-details-toggle:hover { background: #edf4fe; }
+.map-details-toggle:focus-visible { outline: 2px solid #4285d4; outline-offset: -1px; }
+.map-address { color: #64748b; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .text-header .clear-messages {
 	display: inline-flex;
 	align-items: center;
@@ -1047,17 +1083,25 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 	overscroll-behavior: contain;
 	scrollbar-gutter: stable;
 	padding-bottom: 2px;
+	scrollbar-width: thin;
 }
 .panel_text .path-message {
 	display: flex;
 	align-items: baseline;
 	gap: 6px;
-	margin: 0 4px;
+	margin: 0;
+	padding: 1px 7px;
+	border-bottom: 1px solid #f0f3f7;
 }
 .message-time {
-	flex-shrink: 0;
+	flex: 0 0 32px;
+	color: #788496;
 	font-variant-numeric: tabular-nums;
 }
+.message-body { min-width: 0; }
+.message-warning-icon { width: 12px; height: 12px; margin-right: 4px; vertical-align: -1px; color: #c2840a; }
+.panel_text .path-warning { background: #fff5df; color: #965b0a; }
+.panel_text .path-warning .message-time { color: #965b0a; }
 .path-error {
 	color: #a12323;
 }
@@ -1065,7 +1109,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 	color: #c00;
 }
 .resizer {
-	background: #666;
+	background: #dce2eb;
 	cursor: row-resize;
 	touch-action: none;
 	user-select: none;

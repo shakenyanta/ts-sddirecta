@@ -784,7 +784,7 @@ test('write workflow opens progress immediately, blocks target changes, rejects 
   const popupLog = ui.writeLog.value.map(textOf);
   assert.deepEqual(panelContents(ui), [...initialMessages, '「SD書込」ボタン押下']);
   assert.ok(popupLog.includes('SD書込の準備を開始します'));
-  for (const pattern of [/sdDirectaxs.csv読込完了/, /dictionary作成/, /inputフォルダあり/, /inputフォルダへ移動/, /拡張子が異なる/]) {
+  for (const pattern of [/sdDirectaxs.csv読込完了/, /dictionary作成/, /inputフォルダあり/, /inputフォルダへ移動/, /警告：拡張子エラー/]) {
     assert.ok(panelLog.some(text => pattern.test(text)), `missing panel message: ${pattern}`);
     assert.ok(popupLog.every(text => !pattern.test(text)), `startup log duplicated in popup: ${pattern}`);
   }
