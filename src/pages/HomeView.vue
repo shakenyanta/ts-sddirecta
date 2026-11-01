@@ -287,8 +287,6 @@ async function refreshMatchedFiles(report = false) {
 		warningFiles.value = result.warning_files;
 		useInputDirectory.value = result.from_input;
 		lastMatchError = '';
-		if (report && result.input_exists) await appendMessage('inputフォルダあり');
-		if (disposed || current !== generation) return;
 		if (!report && !changed) return;
 		if (result.from_input && result.files.length) {
 			useInputDirectory.value = true;
@@ -994,6 +992,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 	padding: 4px;
 	list-style: none;
 	overflow: auto;
+	scrollbar-width: thin;
 }
 .path-row {
 	display: flex;
