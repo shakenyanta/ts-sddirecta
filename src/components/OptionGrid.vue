@@ -1,7 +1,25 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onMounted, ref, watchEffect } from 'vue';
 
 const props = defineProps<{ files: { filename: string; description: string; individualInfo: string }[] }>();
+const grid = ref<HTMLElement | null>(null);
+const filenameWidth = ref(68);
+
+onMounted(() => {
+    const context = document.createElement('canvas').getContext('2d');
+    if (!context || !grid.value) return;
+    context.font = getComputedStyle(grid.value).font;
+
+    watchEffect(() => {
+        let width = 68;
+        for (const file of props.files) {
+            // 左右の余白6pxと罫線1pxも含め、端数を切り上げる。
+            width = Math.max(width, Math.ceil(context.measureText(file.filename).width) + 7);
+        }
+        filenameWidth.value = width;
+    });
+});
+
 const rows = computed(() => Array.from(
     { length: Math.max(23, props.files.length) },
     (_, index) => ({
@@ -11,22 +29,26 @@ const rows = computed(() => Array.from(
     }),
 ));
 
-const columns = [
+const columns = computed(() => [
     { label: 'No', width: 24 },
-    { label: 'ファイル名', width: 68 },
+    { label: 'ファイル名', width: filenameWidth.value },
     { label: '説明' },
     { label: '個別情報', width: 168 },
     { label: '更新No', width: 48 },
     { label: '更新Ver', width: 52 },
     { label: '条件', width: 30 },
     { label: '車種', width: 40 },
-];
+]);
+// 説明列に最低80pxを残し、収まらない場合は横スクロールする。
+const tableMinWidth = computed(() => Math.max(520,
+    columns.value.reduce((width, column) => width + (column.width ?? 80), 0),
+));
 </script>
 
 <template>
-    <div class="option-grid">
+    <div ref="grid" class="option-grid">
         <div class="grid-scroll">
-        <table aria-label="ファイル情報">
+        <table aria-label="ファイル情報" :style="{ minWidth: `${tableMinWidth}px` }">
             <colgroup>
                 <col v-for="column in columns" :key="column.label" :style="{ width: column.width ? `${column.width}px` : undefined }">
             </colgroup>
@@ -41,7 +63,7 @@ const columns = [
                 <tr v-for="(file, index) in rows" :key="index">
                     <td v-for="column in columns" :key="column.label"
                         :title="column.label === '個別情報' ? file.individualInfo || undefined : column.label === '説明' ? file.description || undefined : column.label === 'ファイル名' ? file.filename || undefined : undefined">
-                        <template v-if="column.label === 'No'">{{ index + 1 }}</template>
+                        <template v-if="column.label === 'No'">{{ index < files.length ? index + 1 : '' }}</template>
                         <template v-else-if="column.label === 'ファイル名'">{{ file.filename }}</template>
                         <template v-else-if="column.label === '説明'">{{ file.description }}</template>
                         <template v-else-if="column.label === '個別情報'">{{ file.individualInfo }}</template>
@@ -72,7 +94,6 @@ const columns = [
 }
 table {
     width: 100%;
-    min-width: 520px;
     table-layout: fixed;
     border-collapse: separate;
     border-spacing: 0;
