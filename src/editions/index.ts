@@ -12,7 +12,7 @@ const error = ref('');
 export const editionInfo = readonly(state);
 export const editionError = readonly(error);
 export const isLite = computed(() => state.value?.edition !== 'pro');
-export const features = computed(() => ({ mapDetails: !isLite.value }));
+export const features = computed(() => ({ mapDetails: !isLite.value, optionPanel: !isLite.value }));
 export const editionLabel = computed(() => {
   if (!state.value) return error.value ? '版を取得できません' : '版を確認中';
   return `${isLite.value ? 'ライト版' : 'プロ版'}${state.value.development ? '［開発］' : ''}`;

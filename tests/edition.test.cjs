@@ -29,12 +29,14 @@ test('edition is fetched once and pro is unavailable until Rust responds', async
     return new Promise(resolve => { complete = resolve; });
   });
   assert.equal(module.isLite.value, true);
+  assert.equal(module.features.value.optionPanel, false);
   const pending = module.initializeEdition();
   assert.equal(module.initializeEdition(), pending);
   complete({ edition: 'pro', development: true, warning: null });
   await pending;
   assert.equal(calls, 1);
   assert.equal(module.isLite.value, false);
+  assert.equal(module.features.value.optionPanel, true);
   assert.equal(module.editionLabel.value, 'プロ版［開発］');
 });
 
@@ -42,17 +44,20 @@ test('lite, settings warnings, invalid responses and connection failures stay di
   const lite = editionModule(async () => ({ edition: 'lite', development: false, warning: '設定エラー' }));
   await lite.initializeEdition();
   assert.equal(lite.isLite.value, true);
+  assert.equal(lite.features.value.optionPanel, false);
   assert.equal(lite.editionLabel.value, 'ライト版');
   assert.equal(lite.editionInfo.value.warning, '設定エラー');
   for (const response of [null, { edition: 'unknown' }]) {
     const module = editionModule(async () => response);
     await module.initializeEdition();
     assert.equal(module.isLite.value, true);
+    assert.equal(module.features.value.optionPanel, false);
     assert.ok(module.editionError.value);
   }
   const failed = editionModule(async () => { throw new Error('接続失敗'); });
   await failed.initializeEdition();
   assert.equal(failed.isLite.value, true);
+  assert.equal(failed.features.value.optionPanel, false);
   assert.match(failed.editionError.value, /接続失敗/);
 });
 

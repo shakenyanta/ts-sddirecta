@@ -17,6 +17,7 @@ let menuObserver: ResizeObserver | undefined;
 let textObserver: ResizeObserver | undefined;
 let textScrollMaximum = 0;
 const sdHeight = ref(120);
+const baseWidthRatio = ref(1 / 3);
 const sourceDirectory = ref('');
 const dragging = ref(false);
 const initializing = ref(false);
@@ -697,6 +698,27 @@ async function copyDirectory() {
 	await appendMessage('コピーしました');
 }
 
+function resizeOptions(event: PointerEvent) {
+	const target = event.currentTarget as HTMLElement;
+	const width = target.parentElement!.clientWidth - target.offsetWidth;
+	if (width <= 0) return;
+	const startX = event.clientX;
+	const initialWidth = width * baseWidthRatio.value;
+	const minimumBaseWidth = Math.min(280, width / 3);
+	const minimumOptionWidth = Math.min(80, width / 3);
+	target.setPointerCapture(event.pointerId);
+	const move = (moveEvent: PointerEvent) => {
+		const baseWidth = Math.max(minimumBaseWidth, Math.min(width - minimumOptionWidth, initialWidth + moveEvent.clientX - startX));
+		baseWidthRatio.value = baseWidth / width;
+	};
+	const stop = () => {
+		target.removeEventListener('pointermove', move);
+		target.removeEventListener('lostpointercapture', stop);
+	};
+	target.addEventListener('pointermove', move);
+	target.addEventListener('lostpointercapture', stop);
+}
+
 function resize(event: PointerEvent, divider: 1 | 2) {
 	const target = event.currentTarget as HTMLElement;
 	const startY = event.clientY;
@@ -726,7 +748,8 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 
 <template>
 	<div class="panel-outer" :class="{ 'drop-active': dragging }">
-		<div class="panel-inner">
+		<div class="panel-inner" :class="{ 'has-options': features.optionPanel }"
+			:style="features.optionPanel ? { gridTemplateColumns: `minmax(0, ${baseWidthRatio}fr) 1px minmax(0, ${1 - baseWidthRatio}fr)` } : undefined">
 			<div class="panel-base" :style="{ gridTemplateRows: `${Math.max(menuHeight, minimumMenuHeight)}px 1px ${sdHeight}px 1px minmax(0, 1fr) minmax(44px, auto)` }">
 				<div id="panel_menu" class="panel_menu">
 					<div ref="menuContent" class="menu-content">
@@ -790,6 +813,8 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 					<div v-if="transientNotice" class="path-error">{{ transientNotice }}</div>
 				</div>
 			</div>
+			<div v-if="features.optionPanel" id="resizer3" class="resizer resizer-horizontal" @pointerdown="resizeOptions"></div>
+			<section v-if="features.optionPanel" id="panel_option" class="panel_option" aria-label="オプション"></section>
 		</div>
 	</div>
 	<dialog ref="writeDialog" class="write-dialog" aria-labelledby="write-title" @cancel.prevent="closeWriteDialog">
@@ -902,8 +927,21 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 	padding: 1px;
 	overflow: auto;
 }
+.panel-inner.has-options {
+	display: grid;
+	grid-template-rows: minmax(0, 1fr);
+}
+.panel_option {
+	min-width: 0;
+	min-height: 0;
+	overflow: auto;
+	scrollbar-width: thin;
+	background: #fff;
+}
 .panel-base {
 	border: 0;
+	min-width: 0;
+	min-height: 0;
 	width: 100%;
 	height: 100%;
 	display: grid;
@@ -1113,5 +1151,14 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 	cursor: row-resize;
 	touch-action: none;
 	user-select: none;
+}
+.resizer-horizontal {
+	cursor: col-resize;
+	position: relative;
+}
+.resizer-horizontal::after {
+	content: '';
+	position: absolute;
+	inset: 0 -3px;
 }
 </style>

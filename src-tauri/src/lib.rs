@@ -510,6 +510,9 @@ pub fn run() {
             use tauri::Manager;
             if let Some(window) = app.get_webview_window("main") {
                 window.set_title(&format!("{} {}", app.package_info().name, edition.label()))?;
+                if edition.edition == edition::Edition::Pro {
+                    window.set_size(tauri::LogicalSize::new(900.0, 350.0))?;
+                }
             }
             Ok(())
         })

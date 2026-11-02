@@ -45,7 +45,7 @@ function view(invoke, clock = performance, DateClass = Date) {
     }),
   };
   const api = new Function(...Object.keys(bindings), transpile(source) + `
-    return { appendMessage, initializeSource, refreshMatchedFiles, sourceDirectory, displayedDirectory, openFolder,
+    return { resizeOptions, baseWidthRatio, appendMessage, initializeSource, refreshMatchedFiles, sourceDirectory, displayedDirectory, openFolder,
       sdDirectDictionary, sdloadingDictionary, sdAddressRange, matchedFiles, canSdWrite, allFileCount, initializing, messages, folders, pathError,
       onSdWrite, onSdRead, onSdFfInitialize, onSdFormat, startSdFormat, formatPlan, formatLabel, formatSimpleTest, formatStep, formatLabelValid, writeStage, canSdRead, popupTitle, statusLabel, closeWriteDialog, copyWriteLog, writeDialogOpen, writeLog, writing, pendingPlan, progress, percent, currentRun, transientNotice, operationStatus, operationDetail };
   `)(...Object.values(bindings));
@@ -65,6 +65,35 @@ function view(invoke, clock = performance, DateClass = Date) {
 function panelContents(ui) {
   return ui.messages.value.map(({ text, warning }) => warning ? { text, warning } : text);
 }
+
+test('option divider adjusts the width ratio, keeps both panels visible and stops on capture loss', () => {
+  const ui = view(async () => {});
+  assert.equal(ui.baseWidthRatio.value, 1 / 3);
+  const listeners = new Map();
+  let captured;
+  const target = {
+    parentElement: { clientWidth: 901 }, offsetWidth: 1,
+    setPointerCapture: id => { captured = id; },
+    addEventListener: (name, handler) => listeners.set(name, handler),
+    removeEventListener: name => listeners.delete(name),
+  };
+  ui.resizeOptions({ currentTarget: target, clientX: 300, pointerId: 1 });
+  assert.equal(captured, 1);
+  listeners.get('pointermove')({ clientX: 450 });
+  assert.equal(ui.baseWidthRatio.value, 0.5);
+  listeners.get('pointermove')({ clientX: -1000 });
+  assert.equal(ui.baseWidthRatio.value, 280 / 900);
+  listeners.get('pointermove')({ clientX: 2000 });
+  assert.equal(ui.baseWidthRatio.value, 820 / 900);
+  listeners.get('lostpointercapture')();
+  assert.equal(listeners.size, 0);
+  ui.baseWidthRatio.value = 1 / 3;
+  target.parentElement.clientWidth = 301;
+  ui.resizeOptions({ currentTarget: target, clientX: 100, pointerId: 2 });
+  listeners.get('pointermove')({ clientX: -1000 });
+  assert.equal(ui.baseWidthRatio.value, 1 / 3);
+  listeners.get('lostpointercapture')();
+});
 
 test('panel logs retain their local HH:MM timestamp and warning status', async () => {
   let now = new Date(2026, 9, 29, 1, 2);
