@@ -78,7 +78,10 @@ const statusLabel = computed(() => operationKind.value === 'format' && writeStag
     ? 'よろしければ「開始」を押してください。'
     : operationKind.value === 'ff' && writeStage.value === 'write'
     ? 'FF初期化中' : writeStageLabel(writeStage.value));
-const allFileCount = computed(() => [...sdloadingDictionary.value.values()].filter(area => area.accessFlag !== 'E').length);
+const writeFiles = computed(() => [...sdloadingDictionary.value]
+    .filter(([, area]) => area.accessFlag !== 'E')
+    .map(([filename, area]) => ({ filename, description: area.description, individualInfo: fileIndividualInfos.value.get(filename) ?? '', modifiedAt: fileModifiedTimes.value.get(filename) ?? null })));
+const allFileCount = computed(() => writeFiles.value.length);
 let unlistenDrop: UnlistenFn | undefined;
 let generation = 0;
 let ready = false;
@@ -95,6 +98,8 @@ const sdloadingDictionary = ref(new Map<string, SdArea>());
 const sdAddressRange = ref<AddressRange | null>(null);
 const mapDetailsOpen = ref(false);
 const matchedFiles = ref<string[]>([]);
+const fileModifiedTimes = ref(new Map<string, number | null>());
+const fileIndividualInfos = ref(new Map<string, string>());
 const warningFiles = ref<string[]>([]);
 const canSdWrite = computed(() => !initializing.value && !writing.value && !closing.value && allFileCount.value > 0);
 const canSdRead = computed(() => !initializing.value && !writing.value && !closing.value && sdDirectDictionary.value.size > 0);
@@ -198,6 +203,8 @@ async function initializeSource(paths?: string[], refreshDirectory?: string) {
 	sdloadingDictionary.value = new Map();
 	sdAddressRange.value = null;
 	matchedFiles.value = [];
+	fileModifiedTimes.value = new Map();
+	fileIndividualInfos.value = new Map();
 	warningFiles.value = [];
 	useInputDirectory.value = false;
 	sourceDirectory.value = '';
@@ -272,7 +279,7 @@ async function refreshMatchedFiles(report = false) {
 	if (matchingGeneration === current || disposed || !ready) return;
 	matchingGeneration = current;
 	try {
-		const result = await invoke<{ files: string[]; warning_files: string[]; from_input: boolean; input_exists: boolean }>('find_dictionary_files', {
+		const result = await invoke<{ files: string[]; modified_times: Record<string, number | null>; individual_infos: Record<string, string>; warning_files: string[]; from_input: boolean; input_exists: boolean }>('find_dictionary_files', {
 			filenames: [...sdDirectDictionary.value.keys()],
 			directory: sourceDirectory.value,
 		});
@@ -286,6 +293,8 @@ async function refreshMatchedFiles(report = false) {
 		}
 		sdloadingDictionary.value = matchedDictionary;
 		matchedFiles.value = result.files;
+		fileModifiedTimes.value = new Map(Object.entries(result.modified_times ?? {}));
+		fileIndividualInfos.value = new Map(Object.entries(result.individual_infos ?? {}));
 		warningFiles.value = result.warning_files;
 		useInputDirectory.value = result.from_input;
 		lastMatchError = '';
@@ -311,6 +320,8 @@ async function refreshMatchedFiles(report = false) {
 	} catch (error) {
 		if (disposed || current !== generation) return;
 		matchedFiles.value = [];
+		fileModifiedTimes.value = new Map();
+		fileIndividualInfos.value = new Map();
 		warningFiles.value = [];
 		sdloadingDictionary.value = new Map();
 		const message = `ファイル照合失敗: ${String(error)}`;
@@ -816,7 +827,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 			</div>
 			<div v-if="features.optionPanel" id="resizer3" class="resizer resizer-horizontal" @pointerdown="resizeOptions"></div>
 			<section v-if="features.optionPanel" id="panel_option" class="panel_option" aria-label="オプション">
-				<OptionGrid />
+				<OptionGrid :files="writeFiles" />
 			</section>
 		</div>
 	</div>

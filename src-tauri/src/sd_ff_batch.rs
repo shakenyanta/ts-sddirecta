@@ -233,8 +233,8 @@ mod tests {
             256 * 1024 * 1024,
         )
         .unwrap();
-        assert_eq!(e.len(), 94);
-        assert_eq!(total, 40_611_328);
+        assert_eq!(e.len(), 108);
+        assert_eq!(total, 45_633_024);
         assert_eq!((e[0].address, e[0].size), (0, 32768));
     }
     #[test]

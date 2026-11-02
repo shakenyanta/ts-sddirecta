@@ -46,7 +46,7 @@ function view(invoke, clock = performance, DateClass = Date) {
   };
   const api = new Function(...Object.keys(bindings), transpile(source) + `
     return { resizeOptions, baseWidthRatio, appendMessage, initializeSource, refreshMatchedFiles, sourceDirectory, displayedDirectory, openFolder,
-      sdDirectDictionary, sdloadingDictionary, sdAddressRange, matchedFiles, canSdWrite, allFileCount, initializing, messages, folders, pathError,
+      sdDirectDictionary, sdloadingDictionary, sdAddressRange, matchedFiles, writeFiles, canSdWrite, allFileCount, initializing, messages, folders, pathError,
       onSdWrite, onSdRead, onSdFfInitialize, onSdFormat, startSdFormat, formatPlan, formatLabel, formatSimpleTest, formatStep, formatLabelValid, writeStage, canSdRead, popupTitle, statusLabel, closeWriteDialog, copyWriteLog, writeDialogOpen, writeLog, writing, pendingPlan, progress, percent, currentRun, transientNotice, operationStatus, operationDetail };
   `)(...Object.values(bindings));
   return { ...api, mount: () => mount(), unmount: () => unmount(),
@@ -115,6 +115,68 @@ test('panel logs retain their local HH:MM timestamp and warning status', async (
 });
 
 const csv = 'A,FILE-AA.001,00000000,000001FF';
+
+test('file timestamps use local time with seconds and leave unavailable dates blank', () => {
+  const { formatFileTimestamp } = utility('src/utils/fileTimestamp.ts');
+  assert.equal(formatFileTimestamp(new Date(2026, 10, 2, 9, 4, 5).getTime()), '2026/11/02 09:04:05');
+  for (const invalid of [null, undefined, NaN, Infinity, 9e20]) assert.equal(formatFileTimestamp(invalid), '');
+  assert.notEqual(formatFileTimestamp(0), '');
+});
+
+test('grid timestamps refresh without a filename change and clear on source or lookup failure', async () => {
+  let timestamp = 1700000000000;
+  let fail = false;
+  const ui = view(backend({
+    find_dictionary_files: () => {
+      if (fail) throw new Error('lookup failed');
+      return { files: ['FILE-AA.001'], modified_times: { 'FILE-AA.001': timestamp }, from_input: true, input_exists: true };
+    },
+    resolve_drop_directory: () => { throw new Error('source unavailable'); },
+  }));
+  await ui.initializeSource();
+  assert.deepEqual(ui.writeFiles.value, [{ filename: 'FILE-AA.001', description: '', individualInfo: '', modifiedAt: timestamp }]);
+  timestamp += 60000;
+  await ui.refreshMatchedFiles();
+  assert.equal(ui.writeFiles.value[0].modifiedAt, timestamp);
+  timestamp = null;
+  await ui.refreshMatchedFiles();
+  assert.equal(ui.writeFiles.value[0].modifiedAt, null);
+  assert.equal(ui.allFileCount.value, 1);
+  fail = true;
+  await ui.refreshMatchedFiles();
+  assert.deepEqual(ui.writeFiles.value, []);
+  fail = false;
+  await ui.initializeSource();
+  await ui.initializeSource(['C:\\missing']);
+  assert.deepEqual(ui.writeFiles.value, []);
+});
+
+test('individual info refreshes with file contents and clears on failure or source switch', async () => {
+  let individualInfo = '00 01 02 03 04 05 06 07';
+  let fail = false;
+  const ui = view(backend({
+    find_dictionary_files: () => {
+      if (fail) throw new Error('lookup failed');
+      return { files: ['FILE-AA.001'], individual_infos: { 'FILE-AA.001': individualInfo }, from_input: true, input_exists: true };
+    },
+    resolve_drop_directory: () => { throw new Error('source unavailable'); },
+  }));
+  await ui.initializeSource();
+  assert.equal(ui.writeFiles.value[0].individualInfo, individualInfo);
+  individualInfo = 'FF FF FF FF FF FF FF FF';
+  await ui.refreshMatchedFiles();
+  assert.equal(ui.writeFiles.value[0].individualInfo, individualInfo);
+  individualInfo = '';
+  await ui.refreshMatchedFiles();
+  assert.equal(ui.writeFiles.value[0].individualInfo, '');
+  fail = true;
+  await ui.refreshMatchedFiles();
+  assert.deepEqual(ui.writeFiles.value, []);
+  fail = false;
+  await ui.initializeSource();
+  await ui.initializeSource(['C:\\missing']);
+  assert.deepEqual(ui.writeFiles.value, []);
+});
 
 test('folder hierarchy resolves drive, UNC and extended paths at each level', () => {
   const { folderPathAt } = utility('src/utils/executablePath.ts');
@@ -367,13 +429,13 @@ test('matched dictionary retains only matching keys and their ranges and resets 
   await ui.initializeSource();
   assert.equal(ui.sdDirectDictionary.value.size, 2);
   assert.deepEqual([...ui.sdloadingDictionary.value], [
-    ['FILE-AA.001', { accessFlag: 'A', startAddress: '00000000', endAddress: '000001FF' }],
+    ['FILE-AA.001', { accessFlag: 'A', startAddress: '00000000', endAddress: '000001FF', description: '' }],
   ]);
   assert.notEqual(ui.sdloadingDictionary.value.get('FILE-AA.001'), ui.sdDirectDictionary.value.get('FILE-AA.001'));
   files = ['FILE-AB.001'];
   await ui.refreshMatchedFiles();
   assert.deepEqual([...ui.sdloadingDictionary.value], [
-    ['FILE-AB.001', { accessFlag: 'W', startAddress: '00000200', endAddress: '000003FF' }],
+    ['FILE-AB.001', { accessFlag: 'W', startAddress: '00000200', endAddress: '000003FF', description: '' }],
   ]);
   files = [];
   await ui.refreshMatchedFiles();
@@ -428,10 +490,56 @@ test('CSV builds the dictionary and numeric hexadecimal bounds in one pass', () 
     'A,IGNORED.001,0,FFFFFFFF',
   ].join('\n'));
   assert.equal(parsed.dictionary.size, 3);
-  assert.deepEqual(parsed.dictionary.get('HIGH.001'), { accessFlag: 'A', startAddress: '0x100', endAddress: '0x07baffff' });
+  assert.deepEqual(parsed.dictionary.get('HIGH.001'), { accessFlag: 'A', startAddress: '0x100', endAddress: '0x07baffff', description: '' });
   assert.deepEqual(parsed.addressRange, { startAddress: '0x00000000', endAddress: '0x07BAFFFF' });
   assert.equal(parseSdDirectCsv('').addressRange, null);
   assert.throws(() => parseSdDirectCsv('A,BAD.001,invalid,FF'), /16進数/);
+});
+
+test('embedded CSV is valid UTF-8 and preserves descriptions and added areas through the grid data', async () => {
+  const csv = new TextDecoder('utf-8', { fatal: true }).decode(readFileSync('config/sdDirectaxs.csv'));
+  const { parseSdDirectCsv } = utility('src/utils/sdDirectCsv.ts');
+  const parsed = parseSdDirectCsv(csv);
+  assert.equal(parsed.dictionary.size, 108);
+  assert.equal(parsed.dictionary.get('FILE-AA.001').description, 'IDコード/器物番号/車番');
+  assert.equal(parsed.dictionary.get('FILE-AB.014').description, 'デジタコ14日目');
+  assert.equal(parsed.dictionary.get('FILE-BW.002').endAddress, '02583DFF');
+  const ui = view(backend({
+    read_startup_csv: () => csv,
+    find_dictionary_files: () => ({ files: ['FILE-AA.001', 'FILE-AB.014'], from_input: false, input_exists: false }),
+  }));
+  await ui.initializeSource();
+  assert.deepEqual(ui.writeFiles.value, [
+    { filename: 'FILE-AA.001', description: 'IDコード/器物番号/車番', individualInfo: '', modifiedAt: null },
+    { filename: 'FILE-AB.014', description: 'デジタコ14日目', individualInfo: '', modifiedAt: null },
+  ]);
+});
+
+test('grid renders escaped descriptions, tooltips and more than 23 matching files', async () => {
+  const { parse, compileScript } = require('@vue/compiler-sfc');
+  const { createSSRApp } = require('vue');
+  const { renderToString } = require('@vue/server-renderer');
+  const { descriptor } = parse(readFileSync('src/components/OptionGrid.vue', 'utf8'));
+  const script = compileScript(descriptor, { id: 'grid-test', inlineTemplate: true });
+  const exports = {};
+  new Function('require', 'exports', transpile(script.content))(require, exports);
+  const files = Array.from({ length: 24 }, (_, i) => ({
+    filename: `FILE-${i}.001`, individualInfo: i === 23 ? '260122_00 ABCD' : '', modifiedAt: null, description: i === 23 ? '日本語 <説明>' : '',
+  }));
+  const html = await renderToString(createSSRApp(exports.default, { files }));
+  assert.deepEqual([...html.matchAll(/<th\b[^>]*>.*?<span>(.*?)<\/span>.*?<\/th>/g)].map(match => match[1]),
+    ['No', 'ファイル名', '説明', '個別情報', '更新No', '更新Ver', '条件', '車種']);
+  const lastRow = html.replace(/<!--[\s\S]*?-->/g, '').match(/<tr>[^]*?<\/tr>/g).at(-1);
+  const cells = [...lastRow.matchAll(/<td\b[^>]*>(.*?)<\/td>/g)].map(match => match[1]);
+  assert.equal(cells.length, 8);
+  assert.equal(cells[2], '日本語 &lt;説明&gt;');
+  assert.equal(cells[4], '');
+  assert.match(html, /title="日本語 &lt;説明&gt;"/);
+  assert.match(html, /title="260122_00 ABCD"/);
+  assert.match(html.replace(/<!--[\s\S]*?-->/g, ''), />260122_00 ABCD<\/td>/);
+  assert.match(html.replace(/<!--[\s\S]*?-->/g, ''), />日本語 &lt;説明&gt;<\/td>/);
+  assert.match(html, /FILE-23\.001/);
+  assert.equal((html.match(/<tr>/g) || []).length, 25);
 });
 
 test('CSV preserves every access flag and includes non-A areas in the bounds', () => {

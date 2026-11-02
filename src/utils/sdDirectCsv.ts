@@ -5,6 +5,7 @@ export interface AddressRange {
 
 export interface SdArea extends AddressRange {
 	accessFlag: string;
+	description: string;
 }
 
 /** Addresses remain strings to preserve hexadecimal notation and leading zeros. */
@@ -18,7 +19,7 @@ export function parseSdDirectCsv(csv: string): {
 	for (const [index, line] of csv.split(/\r\n|\n|\r/).entries()) {
 		if (!line.trim()) continue;
 		const fields = line.split(',').map(field => field.trim());
-		const [accessFlag, filename, startAddress, endAddress] = fields;
+		const [accessFlag, filename, startAddress, endAddress, description = ''] = fields;
 		if (accessFlag === 'E') break;
 		if (!filename || !startAddress || !endAddress) {
 			throw new Error(`${index + 1}行目: ファイル名・開始アドレス・終了アドレスが必要です`);
@@ -31,7 +32,7 @@ export function parseSdDirectCsv(csv: string): {
 		if (minimumStart === undefined || start < minimumStart) minimumStart = start;
 		if (maximumEnd === undefined || end > maximumEnd) maximumEnd = end;
 		// Keep every area's flag; each SD operation selects its own targets later.
-		dictionary.set(filename, { accessFlag, startAddress, endAddress });
+		dictionary.set(filename, { accessFlag, startAddress, endAddress, description });
 	}
 	const formatAddress = (address: bigint) => `0x${address.toString(16).toUpperCase().padStart(8, '0')}`;
 	return {

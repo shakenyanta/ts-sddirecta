@@ -6,6 +6,7 @@ fn greet(name: &str) -> String {
 
 mod diagnostics;
 mod edition;
+mod individual_info;
 mod matching_files;
 mod portable_update;
 mod sd_batch;
@@ -411,12 +412,14 @@ struct StartupCsv {
 #[derive(Serialize)]
 struct MatchedFiles {
     files: Vec<String>,
+    modified_times: std::collections::HashMap<String, Option<u64>>,
+    individual_infos: std::collections::HashMap<String, String>,
     warning_files: Vec<String>,
     from_input: bool,
     input_exists: bool,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn find_dictionary_files(
     filenames: Vec<String>,
     directory: Option<String>,
@@ -425,8 +428,27 @@ fn find_dictionary_files(
     let input_exists = source_directory::input_exists(&directory)?;
     let (files, from_input, warning_files) =
         matching_files::find_matches(&directory, filenames).map_err(|e| e.to_string())?;
+    let matched_directory = if from_input {
+        directory.join("input")
+    } else {
+        directory
+    };
+    let modified_times = files
+        .iter()
+        .map(|filename| {
+            (
+                filename.clone(),
+                matching_files::modified_time_ms(&matched_directory.join(filename)),
+            )
+        })
+        .collect();
+    let individual_infos = individual_info::for_files(
+        &matched_directory, &files, edition::current().edition,
+    );
     Ok(MatchedFiles {
         files,
+        modified_times,
+        individual_infos,
         warning_files,
         from_input,
         input_exists,

@@ -1,13 +1,25 @@
 <script setup lang="ts">
+import { computed } from 'vue';
+
+const props = defineProps<{ files: { filename: string; description: string; individualInfo: string }[] }>();
+const rows = computed(() => Array.from(
+    { length: Math.max(23, props.files.length) },
+    (_, index) => ({
+        filename: props.files[index]?.filename ?? '',
+        description: props.files[index]?.description ?? '',
+        individualInfo: props.files[index]?.individualInfo ?? '',
+    }),
+));
+
 const columns = [
     { label: 'No', width: 24 },
     { label: 'ファイル名', width: 68 },
-    { label: 'ファイル更新日時', width: 104 },
-    { label: '個別情報', width: 76 },
+    { label: '説明' },
+    { label: '個別情報', width: 168 },
+    { label: '更新No', width: 48 },
     { label: '更新Ver', width: 52 },
     { label: '条件', width: 30 },
     { label: '車種', width: 40 },
-    { label: '説明' },
 ];
 </script>
 
@@ -26,8 +38,14 @@ const columns = [
                 </tr>
             </thead>
             <tbody>
-                <tr v-for="row in 23" :key="row">
-                    <td v-for="column in columns" :key="column.label"></td>
+                <tr v-for="(file, index) in rows" :key="index">
+                    <td v-for="column in columns" :key="column.label"
+                        :title="column.label === '個別情報' ? file.individualInfo || undefined : column.label === '説明' ? file.description || undefined : column.label === 'ファイル名' ? file.filename || undefined : undefined">
+                        <template v-if="column.label === 'No'">{{ index + 1 }}</template>
+                        <template v-else-if="column.label === 'ファイル名'">{{ file.filename }}</template>
+                        <template v-else-if="column.label === '説明'">{{ file.description }}</template>
+                        <template v-else-if="column.label === '個別情報'">{{ file.individualInfo }}</template>
+                    </td>
                 </tr>
             </tbody>
         </table>
@@ -84,5 +102,6 @@ th:last-child, td:last-child { border-right: 0; }
 tbody tr:nth-child(odd) { background: #fff; }
 tbody tr:nth-child(even) { background: #f5f9fe; }
 tbody tr:hover { background: #eaf3ff; }
-tbody td:last-child { text-align: left; }
+tbody td:nth-child(2), tbody td:nth-child(3) { text-align: left; }
+tbody td { text-overflow: ellipsis; }
 </style>

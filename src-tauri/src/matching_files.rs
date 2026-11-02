@@ -1,5 +1,30 @@
 use std::{collections::HashSet, fs, io, path::Path};
 
+/// A failed timestamp lookup must not hide an otherwise valid write target.
+pub fn modified_time_ms(path: &Path) -> Option<u64> {
+    let result = fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .and_then(|modified| {
+            modified
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(io::Error::other)
+        })
+        .and_then(|duration| u64::try_from(duration.as_millis()).map_err(io::Error::other));
+    match result {
+        Ok(timestamp) => Some(timestamp),
+        Err(error) => {
+            crate::diagnostics::record(
+                "WARN",
+                &format!(
+                    "file modified time unavailable path={} error={error}",
+                    path.display()
+                ),
+            );
+            None
+        }
+    }
+}
+
 fn matching_names(
     directory: &Path,
     keys: &HashSet<String>,
@@ -102,6 +127,46 @@ mod tests {
 
     fn keys() -> Vec<String> {
         vec!["FILE-AA.001".into(), "FILE-AB.001".into()]
+    }
+
+    #[test]
+    fn timestamps_follow_the_matched_directory_and_missing_files_remain_optional() {
+        let dir = TestDirectory::new();
+        fs::create_dir(dir.0.join("input")).unwrap();
+        let input_file = dir.0.join("input/FILE-AA.001");
+        let timestamp = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        fs::write(&input_file, b"input").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&input_file)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(timestamp))
+            .unwrap();
+        let source = Some(dir.0.to_str().unwrap().to_owned());
+        let matched = crate::find_dictionary_files(keys(), source.clone()).unwrap();
+        assert!(matched.from_input);
+        assert_eq!(
+            matched.modified_times["FILE-AA.001"],
+            Some(1_700_000_000_000)
+        );
+
+        let root_file = dir.0.join("FILE-AA.001");
+        fs::write(&root_file, b"root").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&root_file)
+            .unwrap()
+            .set_times(
+                fs::FileTimes::new().set_modified(timestamp + std::time::Duration::from_secs(60)),
+            )
+            .unwrap();
+        let matched = crate::find_dictionary_files(keys(), source).unwrap();
+        assert!(!matched.from_input);
+        assert_eq!(
+            matched.modified_times["FILE-AA.001"],
+            Some(1_700_000_060_000)
+        );
+        assert_eq!(modified_time_ms(&dir.0.join("missing.001")), None);
     }
 
     #[test]
