@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import SdMenu from '../components/SdMenu.vue';
+import OptionGrid from '../components/OptionGrid.vue';
 import { features } from '../editions';
 import { folderPathAt, splitFolderPath } from '../utils/executablePath';
 import { createLogScroller } from '../utils/logScroll';
@@ -814,7 +815,9 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 				</div>
 			</div>
 			<div v-if="features.optionPanel" id="resizer3" class="resizer resizer-horizontal" @pointerdown="resizeOptions"></div>
-			<section v-if="features.optionPanel" id="panel_option" class="panel_option" aria-label="オプション"></section>
+			<section v-if="features.optionPanel" id="panel_option" class="panel_option" aria-label="オプション">
+				<OptionGrid />
+			</section>
 		</div>
 	</div>
 	<dialog ref="writeDialog" class="write-dialog" aria-labelledby="write-title" @cancel.prevent="closeWriteDialog">
