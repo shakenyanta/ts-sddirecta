@@ -46,6 +46,7 @@ function view(invoke, clock = performance, DateClass = Date) {
   };
   const api = new Function(...Object.keys(bindings), transpile(source) + `
     return { resizeOptions, baseWidthRatio, appendMessage, initializeSource, refreshMatchedFiles, sourceDirectory, displayedDirectory, openFolder,
+      selectFolder, selectedFolderIndex, treeDirectory, visibleFolders, toggleFolder, collapsedFolderIndex, pathList,
       sdDirectDictionary, sdloadingDictionary, sdAddressRange, matchedFiles, writeFiles, canSdWrite, allFileCount, initializing, messages, folders, pathError,
       onSdWrite, onSdRead, onSdFfInitialize, onSdFormat, startSdFormat, formatPlan, formatLabel, formatSimpleTest, formatStep, formatLabelValid, writeStage, canSdRead, popupTitle, statusLabel, closeWriteDialog, copyWriteLog, writeDialogOpen, writeLog, writing, pendingPlan, progress, percent, currentRun, transientNotice, operationStatus, operationDetail };
   `)(...Object.values(bindings));
@@ -115,6 +116,65 @@ test('panel logs retain their local HH:MM timestamp and warning status', async (
 });
 
 const csv = 'A,FILE-AA.001,00000000,000001FF';
+
+test('single click selects a folder and reloads grid data without changing the tree or scroll position', async () => {
+  const calls = [];
+  const ui = view(backend({
+    find_dictionary_files: ({ directory }) => {
+      calls.push(directory);
+      return { files: ['FILE-AA.001'], from_input: true, input_exists: true,
+        individual_infos: { 'FILE-AA.001': directory }, modified_times: {} };
+    },
+    open_folder: ({ directory }) => { calls.push(directory); },
+  }));
+  await ui.initializeSource(['C:\\parent\\child']);
+  const folders = [...ui.folders.value];
+  ui.toggleFolder(1);
+  const visible = [...ui.visibleFolders.value];
+  ui.pathList.value = { scrollTop: 7, scrollHeight: 100 };
+  await ui.selectFolder(1);
+  assert.equal(ui.selectedFolderIndex.value, 1);
+  assert.equal(ui.sourceDirectory.value, 'C:\\parent');
+  assert.equal(ui.displayedDirectory.value, 'C:\\parent\\input');
+  assert.equal(ui.writeFiles.value[0].individualInfo, 'C:\\parent');
+  assert.equal(ui.allFileCount.value, 1);
+  assert.deepEqual(ui.folders.value, folders);
+  assert.deepEqual(ui.visibleFolders.value, visible);
+  assert.equal(ui.collapsedFolderIndex.value, 1);
+  assert.equal(ui.pathList.value.scrollTop, 7);
+  const count = calls.length;
+  await ui.selectFolder(1);
+  assert.equal(calls.length, count);
+  ui.toggleFolder(1);
+  await ui.selectFolder(2);
+  assert.equal(ui.sourceDirectory.value, 'C:\\parent\\child');
+  assert.deepEqual(ui.folders.value, folders);
+  await ui.openFolder(3);
+  assert.equal(calls.at(-1), 'C:\\parent\\child\\input');
+  await ui.initializeSource(['C:\\new']);
+  assert.deepEqual(ui.folders.value, ['C:\\', 'new', 'input']);
+  assert.equal(ui.selectedFolderIndex.value, null);
+});
+
+test('folder selection clears stale grid data on missing CSV and is blocked while busy', async () => {
+  const ui = view(backend({ check_startup_csv: ({ directory }) => directory !== 'C:\\parent' }));
+  await ui.initializeSource(['C:\\parent\\child']);
+  const folders = [...ui.folders.value];
+  for (const busy of [ui.initializing, ui.writing]) {
+    busy.value = true;
+    await ui.selectFolder(1);
+    assert.equal(ui.sourceDirectory.value, 'C:\\parent\\child');
+    assert.equal(ui.selectedFolderIndex.value, null);
+    busy.value = false;
+  }
+  await ui.selectFolder(99);
+  assert.equal(ui.selectedFolderIndex.value, null);
+  await ui.selectFolder(1);
+  assert.deepEqual(ui.writeFiles.value, []);
+  assert.equal(ui.canSdWrite.value, false);
+  assert.equal(ui.selectedFolderIndex.value, 1);
+  assert.deepEqual(ui.folders.value, folders);
+});
 
 test('file timestamps use local time with seconds and leave unavailable dates blank', () => {
   const { formatFileTimestamp } = utility('src/utils/fileTimestamp.ts');

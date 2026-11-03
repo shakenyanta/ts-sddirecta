@@ -108,13 +108,27 @@ let disposed = false;
 let lastMatchError = '';
 const textPanel = ref<HTMLElement | null>(null);
 const pathList = ref<HTMLElement | null>(null);
-const folders = computed(() => splitFolderPath(displayedDirectory.value));
+// Folder selection changes the source, while keeping the displayed hierarchy intact.
+const retainedTreeDirectory = ref<string | null>(null);
+const treeDirectory = computed(() => retainedTreeDirectory.value ?? displayedDirectory.value);
+const folders = computed(() => splitFolderPath(treeDirectory.value));
+const selectedFolderIndex = ref<number | null>(null);
 const collapsedFolderIndex = ref<number | null>(null);
 const visibleFolders = computed(() => collapsedFolderIndex.value === null
 	? folders.value : folders.value.slice(0, collapsedFolderIndex.value + 1));
 
 function toggleFolder(index: number) {
 	collapsedFolderIndex.value = collapsedFolderIndex.value === index ? null : index;
+}
+
+async function selectFolder(index: number) {
+	if (initializing.value || writing.value || closing.value || disposed) return;
+	if (index === (selectedFolderIndex.value ?? folders.value.length - 1)) return;
+	const directory = folderPathAt(treeDirectory.value, index);
+	if (!directory) return;
+	retainedTreeDirectory.value = treeDirectory.value;
+	selectedFolderIndex.value = index;
+	await initializeSource(undefined, directory, true);
 }
 
 onMounted(async () => {
@@ -190,14 +204,18 @@ function onRefreshKey(event: KeyboardEvent) {
 	void initializeSource(undefined, sourceDirectory.value || undefined);
 }
 
-async function initializeSource(paths?: string[], refreshDirectory?: string) {
+async function initializeSource(paths?: string[], refreshDirectory?: string, preserveTree = false) {
 	if (closing.value) return;
 	if (writing.value) { showNotice('SD処理中のため変更できません'); return; }
 	if (paths) messages.value = [];
 	const current = ++generation;
 	const active = () => !disposed && current === generation;
 	initializing.value = true;
-	collapsedFolderIndex.value = null;
+	if (!preserveTree) {
+		retainedTreeDirectory.value = null;
+		selectedFolderIndex.value = null;
+		collapsedFolderIndex.value = null;
+	}
 	ready = false;
 	sdDirectDictionary.value = new Map();
 	sdloadingDictionary.value = new Map();
@@ -216,11 +234,12 @@ async function initializeSource(paths?: string[], refreshDirectory?: string) {
 			: await invoke<string>('get_executable_directory'));
 		if (!active()) return;
 		sourceDirectory.value = directory;
-		if (refreshDirectory) await appendMessage('F5：表示を更新');
+		if (preserveTree) await appendMessage(`フォルダー選択：${directory}`);
+		else if (refreshDirectory) await appendMessage('F5：表示を更新');
 		else if (paths) await appendMessage('ドラッグ＆ドロップ');
 		await nextTick();
 		if (!active()) return;
-		if (pathList.value) pathList.value.scrollTop = pathList.value.scrollHeight;
+		if (!preserveTree && pathList.value) pathList.value.scrollTop = pathList.value.scrollHeight;
 		let exists: boolean;
 		try {
 			exists = await invoke<boolean>('check_startup_csv', { directory });
@@ -303,7 +322,7 @@ async function refreshMatchedFiles(report = false) {
 			useInputDirectory.value = true;
 			await nextTick();
 			if (disposed || current !== generation) return;
-			if (pathList.value) pathList.value.scrollTop = pathList.value.scrollHeight;
+			if (retainedTreeDirectory.value === null && pathList.value) pathList.value.scrollTop = pathList.value.scrollHeight;
 			await appendMessage('inputフォルダへ移動');
 			if (disposed || current !== generation) return;
 		}
@@ -691,7 +710,7 @@ function onFolderDoubleClick(index: number, event: MouseEvent) {
 }
 
 async function openFolder(index: number) {
-	const directory = folderPathAt(displayedDirectory.value, index);
+	const directory = folderPathAt(treeDirectory.value, index);
 	if (!directory || closing.value) return;
 	try {
 		await invoke('open_folder', { directory });
@@ -781,8 +800,8 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 					<p v-if="pathError" class="path-message path-error" role="alert">{{ pathError }}</p>
 					<ol v-else-if="folders.length" ref="pathList" class="path-list" aria-label="対象フォルダーの階層">
 						<li v-for="(folder, index) in visibleFolders" :key="index"
-							class="path-row" :class="{ 'path-current': index === folders.length - 1 }"
-							:aria-current="index === folders.length - 1 ? 'location' : undefined">
+							class="path-row" :class="{ 'path-current': index === (selectedFolderIndex ?? folders.length - 1) }"
+							:aria-current="index === (selectedFolderIndex ?? folders.length - 1) ? 'location' : undefined">
 							<span class="path-guides" :style="{ width: `${index * 14}px` }" aria-hidden="true"></span>
 							<button v-if="index < folders.length - 1" type="button" class="folder-toggle"
 								:aria-expanded="collapsedFolderIndex !== index" :aria-label="`${folder}の子階層を${collapsedFolderIndex === index ? '展開' : '折りたたむ'}`"
@@ -791,7 +810,8 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 							</button>
 							<span v-else class="folder-toggle-spacer" aria-hidden="true"></span>
 							<svg class="folder-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4a1 1 0 0 1 1-1H6l1.5 2h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1Z"/></svg>
-							<span class="path-name" :title="`${folderPathAt(displayedDirectory, index)}\nダブルクリックでエクスプローラーで開く`"
+							<span class="path-name" :title="`${folderPathAt(treeDirectory, index)}\nクリックで選択・ダブルクリックでエクスプローラーで開く`"
+								@click="selectFolder(index)"
 								@dblclick.prevent="onFolderDoubleClick(index, $event)">{{ folder }}</span>
 						</li>
 					</ol>
