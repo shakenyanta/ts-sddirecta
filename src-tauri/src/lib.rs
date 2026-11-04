@@ -401,6 +401,7 @@ fn read_startup_csv(directory: Option<String>) -> Result<StartupCsv, String> {
     Ok(StartupCsv {
         contents,
         source_folder,
+        embedded_csv: startup_csv::DEFAULT_CSV,
     })
 }
 
@@ -408,6 +409,7 @@ fn read_startup_csv(directory: Option<String>) -> Result<StartupCsv, String> {
 struct StartupCsv {
     contents: String,
     source_folder: &'static str,
+    embedded_csv: &'static str,
 }
 
 #[derive(Serialize)]

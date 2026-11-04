@@ -4,7 +4,7 @@ use std::{
 };
 
 const FILE_NAME: &str = "sdDirectaxs.csv";
-const DEFAULT_CSV: &str = include_str!("../../config/sdDirectaxs.csv");
+pub const DEFAULT_CSV: &str = include_str!("../../config/sdDirectaxs.csv");
 
 pub enum CsvSource {
     File(PathBuf),

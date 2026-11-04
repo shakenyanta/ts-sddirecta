@@ -576,6 +576,44 @@ test('embedded CSV is valid UTF-8 and preserves descriptions and added areas thr
   ]);
 });
 
+test('description defaults fill blanks without importing any fallback areas or write settings', () => {
+  const { parseSdDirectCsv } = utility('src/utils/sdDirectCsv.ts');
+  const defaults = parseSdDirectCsv('A,FILE-AA.001,1000,1FFF,内蔵の説明\nA,FILE-BA.001,2000,2FFF,カード種別\nA,ONLY-DEFAULT.001,3000,3FFF,追加禁止').dictionary;
+  const csv = 'W,FILE-AA.001,10,1F\nR,FILE-BA.001,20,2F,外部の説明\nA,UNKNOWN.001,30,3F,  \nE\nA,ONLY-DEFAULT.001,0,FFFFFFFF';
+  const parsed = parseSdDirectCsv(csv, defaults);
+  assert.deepEqual([...parsed.dictionary], [
+    ['FILE-AA.001', { accessFlag: 'W', startAddress: '10', endAddress: '1F', description: '内蔵の説明' }],
+    ['FILE-BA.001', { accessFlag: 'R', startAddress: '20', endAddress: '2F', description: '外部の説明' }],
+    ['UNKNOWN.001', { accessFlag: 'A', startAddress: '30', endAddress: '3F', description: '' }],
+  ]);
+  assert.deepEqual(parsed.addressRange, { startAddress: '0x00000010', endAddress: '0x0000003F' });
+  assert.equal(parseSdDirectCsv('A,FILE-BA.001,0,FF,  ', defaults).dictionary.get('FILE-BA.001').description, 'カード種別');
+  assert.equal(defaults.get('FILE-AA.001').startAddress, '1000');
+});
+
+test('external CSV in input retains its layout while grid descriptions use embedded defaults and refresh', async () => {
+  const embedded_csv = readFileSync('config/sdDirectaxs.csv', 'utf8');
+  let description = '';
+  const ui = view(backend({
+    read_startup_csv: () => ({ contents: `W,TS-DISP.HEX,10,1F,${description}\nA,CUSTOM.HEX,20,2F`, source_folder: '対象フォルダ', embedded_csv }),
+    find_dictionary_files: () => ({ files: ['TS-DISP.HEX', 'CUSTOM.HEX'], from_input: false, input_exists: false }),
+  }));
+  await ui.mount();
+  await ui.initializeSource(['C:\\parent\\input']);
+  assert.equal(ui.writeFiles.value[0].description, '表示');
+  assert.equal(ui.writeFiles.value[1].description, '');
+  assert.equal(ui.sdDirectDictionary.value.size, 2);
+  assert.equal(ui.sdloadingDictionary.value.size, 2);
+  assert.deepEqual(ui.sdDirectDictionary.value.get('TS-DISP.HEX'), { accessFlag: 'W', startAddress: '10', endAddress: '1F', description: '表示' });
+  assert.deepEqual(ui.sdAddressRange.value, { startAddress: '0x00000010', endAddress: '0x0000002F' });
+  description = '外部CSVの表示プログラム';
+  ui.key('F5');
+  await until(() => !ui.initializing.value);
+  assert.equal(ui.writeFiles.value[0].description, description);
+  assert.ok(panelContents(ui).includes('dictionary作成：2件'));
+  ui.unmount();
+});
+
 test('grid renders escaped descriptions, tooltips and more than 23 matching files', async () => {
   const { parse, compileScript } = require('@vue/compiler-sfc');
   const { createSSRApp } = require('vue');

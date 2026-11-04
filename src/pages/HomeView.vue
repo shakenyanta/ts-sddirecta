@@ -268,9 +268,10 @@ async function initializeSource(paths?: string[], refreshDirectory?: string, pre
 			return;
 		}
 		try {
-			const csv = await invoke<{ contents: string; source_folder: string }>('read_startup_csv', { directory });
+			const csv = await invoke<{ contents: string; source_folder: string; embedded_csv: string }>('read_startup_csv', { directory });
 			if (!active()) return;
-			const parsed = parseSdDirectCsv(csv.contents);
+			const defaults = csv.embedded_csv ? parseSdDirectCsv(csv.embedded_csv).dictionary : undefined;
+			const parsed = parseSdDirectCsv(csv.contents, defaults);
 			sdDirectDictionary.value = parsed.dictionary;
 			sdAddressRange.value = parsed.addressRange;
 			await appendMessage(`sdDirectaxs.csv読込完了 (${csv.source_folder})`, `dictionary作成：${sdDirectDictionary.value.size}件`);

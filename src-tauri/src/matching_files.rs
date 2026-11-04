@@ -297,6 +297,7 @@ mod tests {
         assert!(crate::check_startup_csv(source.clone()).unwrap());
         let loaded = crate::read_startup_csv(source.clone()).unwrap();
         assert_eq!(loaded.contents, csv);
+        assert_eq!(loaded.embedded_csv, crate::startup_csv::DEFAULT_CSV);
         assert_eq!(loaded.source_folder, "対象フォルダ");
         fs::create_dir(dir.0.join("input")).unwrap();
         fs::write(dir.0.join("input/FILE-AA.001"), b"test").unwrap();
