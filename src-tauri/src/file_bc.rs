@@ -48,6 +48,8 @@ fn update_numbers(name: &str) -> &'static [&'static str] {
         ("TS-SUB24", &["15"][..]),
         ("TS-SUB25", &["16"][..]),
         ("TS-DISP", &["17"][..]),
+        ("TS-PRN", &["18"][..]),
+        ("TS-PRNSW", &["19"][..]),
         ("FILE-BI", &["31"][..]),
         ("FILE-BH", &["32"][..]),
         ("FILE-BV", &["43"][..]),
@@ -300,6 +302,33 @@ mod tests {
         for name in ["FILE-AA.001", "FILE-BA.001", "FILE-BC.001", "OTHER.001"] {
             assert!(result.files[name].is_empty());
         }
+    }
+
+    #[test]
+    fn printer_update_numbers_use_bc_records_18_and_19() {
+        let dir = setup();
+        let mut bytes = record("18", "11060100", "00", "  ");
+        bytes[2..4].copy_from_slice(b"FU");
+        let mut switch = record("19", "10033000", "00", "  ");
+        switch[2..4].copy_from_slice(b"FU");
+        bytes.extend(switch);
+        bytes.extend([0xFF; 32]);
+        fs::write(dir.path().join("FILE-BC.001"), bytes).unwrap();
+        let result = load(dir.path(), &["TS-PRN.HEX", "TS-PRNSW.HEX", "FILE-BC.001"]);
+        assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+        for (filename, no, ver) in [
+            ("TS-PRN.HEX", "18", "110601_00"),
+            ("TS-PRNSW.HEX", "19", "100330_00"),
+        ] {
+            let rows = &result.files[filename];
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].update_no, no);
+            assert_eq!(rows[0].update_ver, ver);
+            assert_eq!(rows[0].condition, "00");
+            assert_eq!(rows[0].car_type, "  ");
+        }
+        assert_eq!(update_numbers("ts-prnsw.hex"), &["19"]);
+        assert!(update_numbers("TS-PRNSWA.HEX").is_empty());
     }
 
     #[test]

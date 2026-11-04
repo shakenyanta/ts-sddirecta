@@ -46,6 +46,7 @@ FILE-BCが1件だけ存在し、gridにも表示されている場合に限っ�
 | FILE-BO・FILE-BP・FILE-BQ・FILE-BR・FILE-BS・FILE-BU | 順に03・04・05・06・07・08 |
 | IM・FILE-BW・TS-MAIN | 順に09・10・11 |
 | TS-SUB21〜25・TS-DISP | 順に12〜16・17 |
+| TS-PRN・TS-PRNSW | 順に18・19 |
 | FILE-BI・FILE-BH・FILE-BV | 順に31・32・43 |
 
 参照元と同じく名称末尾の数字も許容し、TS-MAIN2・TS-MAIN3も11に対応します。FILE-BM.001・.002・将来の.003はそれぞれ01・02の2行に展開し、同じ更新Noの重複を許容します。FILE-AA・FILE-BA・FILE-BCや対応表にないファイルには疑似番号を付けず、4列とも空欄とします。
