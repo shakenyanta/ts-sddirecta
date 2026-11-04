@@ -15,21 +15,26 @@ pub fn for_files(
         .collect()
 }
 
+fn numbered_ts_main(stem: &str) -> bool {
+    stem.strip_prefix("TS-MAIN")
+        .is_some_and(|suffix| !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()))
+}
+
 fn supported(stem: &str) -> bool {
-    matches!(
-        stem,
-        "FILE-BM"
-            | "IM"
-            | "FILE-BA"
-            | "TS-MAIN"
-            | "TS-MAIN2"
-            | "TS-SUB21"
-            | "TS-SUB22"
-            | "TS-SUB23"
-            | "TS-SUB24"
-            | "TS-SUB25"
-            | "TS-DISP"
-    )
+    numbered_ts_main(stem)
+        || matches!(
+            stem,
+            "FILE-BM"
+                | "IM"
+                | "FILE-BA"
+                | "TS-MAIN"
+                | "TS-SUB21"
+                | "TS-SUB22"
+                | "TS-SUB23"
+                | "TS-SUB24"
+                | "TS-SUB25"
+                | "TS-DISP"
+        )
 }
 
 fn read(path: &Path) -> String {
@@ -41,7 +46,7 @@ fn read(path: &Path) -> String {
     if !supported(&stem) {
         return String::new();
     }
-    if stem == "TS-MAIN2"
+    if numbered_ts_main(&stem)
         && !path
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("HEX"))
@@ -107,7 +112,7 @@ fn extract(stem: &str, bytes: &[u8]) -> String {
             _ => "",
         }
         .into(),
-        "TS-MAIN2" => bytes
+        name if numbered_ts_main(name) => bytes
             .get(0x1002..0x1006)
             .map(|b| {
                 format!(
@@ -213,7 +218,53 @@ mod tests {
         main[0x1006..].copy_from_slice(&[0xAB, 0xCD]);
         assert_eq!(extract("TS-MAIN2", &main), "260122_00 ABCD");
         assert_eq!(extract("TS-MAIN2", &main[..0x1005]), "");
-        assert_eq!(extract("TS-MAIN3", &main), ""); // Not dispatched in the reference.
+        assert_eq!(extract("TS-MAIN3", &main), "260122_00 ABCD");
+    }
+
+    #[test]
+    fn ts_main_numeric_suffixes_share_binary_format_and_reject_mixed_suffixes() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut bytes = vec![0; 0x1008];
+        bytes[0x1002..0x1006].copy_from_slice(&[0x26, 0x11, 0x04, 0x01]);
+        bytes[0x1006..].copy_from_slice(&[0xAB, 0xCD]);
+        for stem in [
+            "TS-MAIN0",
+            "TS-MAIN1",
+            "TS-MAIN2",
+            "TS-MAIN3",
+            "TS-MAIN15",
+            "TS-MAIN003",
+            "TS-MAIN99999999999999999999",
+        ] {
+            assert!(supported(stem));
+            let path = dir
+                .path()
+                .join(format!("{}.hEx", stem.to_ascii_lowercase()));
+            fs::write(&path, &bytes).unwrap();
+            assert_eq!(read(&path), "261104_01 ABCD", "{stem}");
+            assert_eq!(extract(stem, &bytes[..0x1005]), "");
+        }
+        for stem in [
+            "TS-MAINA",
+            "TS-MAIN3A",
+            "TS-MAINA3",
+            "TS-MAIN3-1",
+            "TS-MAIN3_1",
+            "TS-MAIN 3",
+            "TS-MAIN３",
+            "OTHER-TS-MAIN3",
+        ] {
+            assert!(!supported(stem), "{stem}");
+            let path = dir.path().join(format!("{stem}.HEX"));
+            fs::write(&path, &bytes).unwrap();
+            assert_eq!(read(&path), "", "{stem}");
+        }
+        let path = dir.path().join("TS-MAIN3.bin");
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(read(&path), "");
+        let path = dir.path().join("TS-MAIN.HEX");
+        fs::write(&path, b"00001000465526110401").unwrap();
+        assert_eq!(read(&path), "261104_01");
     }
 
     #[test]

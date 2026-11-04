@@ -82,6 +82,19 @@ const writeFiles = computed(() => [...sdloadingDictionary.value]
     .filter(([, area]) => area.accessFlag !== 'E')
     .map(([filename, area]) => ({ filename, description: area.description, individualInfo: fileIndividualInfos.value.get(filename) ?? '', modifiedAt: fileModifiedTimes.value.get(filename) ?? null })));
 const allFileCount = computed(() => writeFiles.value.length);
+interface UpdateInfo { update_no: string; update_ver: string; condition: string; car_type: string }
+interface FileUpdates { files: Record<string, UpdateInfo[]>; warnings: string[] }
+const fileUpdates = ref<FileUpdates>({ files: {}, warnings: [] });
+const optionFiles = computed(() => writeFiles.value.flatMap(file => {
+    const updates = fileUpdates.value.files[file.filename];
+    if (!updates?.length) return [file];
+    return updates.map(update => ({ ...file,
+        description: update.update_no === '01' ? 'BM:パラメータ1'
+            : update.update_no === '02' ? 'BM:パラメータ2' : file.description,
+        updateNo: update.update_no, updateVer: update.update_ver,
+        condition: update.condition, carType: update.car_type,
+    }));
+}));
 let unlistenDrop: UnlistenFn | undefined;
 let generation = 0;
 let ready = false;
@@ -223,6 +236,7 @@ async function initializeSource(paths?: string[], refreshDirectory?: string, pre
 	matchedFiles.value = [];
 	fileModifiedTimes.value = new Map();
 	fileIndividualInfos.value = new Map();
+	fileUpdates.value = { files: {}, warnings: [] };
 	warningFiles.value = [];
 	useInputDirectory.value = false;
 	sourceDirectory.value = '';
@@ -234,7 +248,7 @@ async function initializeSource(paths?: string[], refreshDirectory?: string, pre
 			: await invoke<string>('get_executable_directory'));
 		if (!active()) return;
 		sourceDirectory.value = directory;
-		if (preserveTree) await appendMessage(`フォルダー選択：${directory}`);
+		if (preserveTree) await appendMessage(`フォルダー選択：${directory.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || directory}`);
 		else if (refreshDirectory) await appendMessage('F5：表示を更新');
 		else if (paths) await appendMessage('ドラッグ＆ドロップ');
 		await nextTick();
@@ -298,13 +312,15 @@ async function refreshMatchedFiles(report = false) {
 	if (matchingGeneration === current || disposed || !ready) return;
 	matchingGeneration = current;
 	try {
-		const result = await invoke<{ files: string[]; modified_times: Record<string, number | null>; individual_infos: Record<string, string>; warning_files: string[]; from_input: boolean; input_exists: boolean }>('find_dictionary_files', {
+		const result = await invoke<{ files: string[]; modified_times: Record<string, number | null>; individual_infos: Record<string, string>; file_updates: FileUpdates; warning_files: string[]; from_input: boolean; input_exists: boolean }>('find_dictionary_files', {
 			filenames: [...sdDirectDictionary.value.keys()],
 			directory: sourceDirectory.value,
 		});
 		if (disposed || current !== generation) return;
 		const warningsChanged = JSON.stringify(warningFiles.value) !== JSON.stringify(result.warning_files);
-		const changed = warningsChanged || useInputDirectory.value !== result.from_input || JSON.stringify(matchedFiles.value) !== JSON.stringify(result.files);
+		const updates = result.file_updates ?? { files: {}, warnings: [] };
+		const updateWarningsChanged = JSON.stringify(fileUpdates.value.warnings) !== JSON.stringify(updates.warnings);
+		const changed = warningsChanged || updateWarningsChanged || useInputDirectory.value !== result.from_input || JSON.stringify(matchedFiles.value) !== JSON.stringify(result.files);
 		const matchedDictionary = new Map<string, SdArea>();
 		for (const filename of result.files) {
 			const range = sdDirectDictionary.value.get(filename);
@@ -314,6 +330,7 @@ async function refreshMatchedFiles(report = false) {
 		matchedFiles.value = result.files;
 		fileModifiedTimes.value = new Map(Object.entries(result.modified_times ?? {}));
 		fileIndividualInfos.value = new Map(Object.entries(result.individual_infos ?? {}));
+		fileUpdates.value = updates;
 		warningFiles.value = result.warning_files;
 		useInputDirectory.value = result.from_input;
 		lastMatchError = '';
@@ -333,14 +350,19 @@ async function refreshMatchedFiles(report = false) {
 			})));
 			if (disposed || current !== generation) return;
 		}
+		if ((report || updateWarningsChanged) && updates.warnings.length) {
+			await appendMessage(...updates.warnings.map(text => ({ text: `警告：${text}`, warning: true as const })));
+			if (disposed || current !== generation) return;
+		}
 		if (!result.files.length) {
-			await appendMessage('一致するファイルはありません');
+			await appendMessage('書き込み対象ファイルはありません');
 		}
 	} catch (error) {
 		if (disposed || current !== generation) return;
 		matchedFiles.value = [];
 		fileModifiedTimes.value = new Map();
 		fileIndividualInfos.value = new Map();
+		fileUpdates.value = { files: {}, warnings: [] };
 		warningFiles.value = [];
 		sdloadingDictionary.value = new Map();
 		const message = `ファイル照合失敗: ${String(error)}`;
@@ -847,7 +869,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 			</div>
 			<div v-if="features.optionPanel" id="resizer3" class="resizer resizer-horizontal" @pointerdown="resizeOptions"></div>
 			<section v-if="features.optionPanel" id="panel_option" class="panel_option" aria-label="オプション">
-				<OptionGrid :files="writeFiles" />
+				<OptionGrid :files="optionFiles" />
 			</section>
 		</div>
 	</div>

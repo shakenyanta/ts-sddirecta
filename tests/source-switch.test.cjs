@@ -47,7 +47,7 @@ function view(invoke, clock = performance, DateClass = Date) {
   const api = new Function(...Object.keys(bindings), transpile(source) + `
     return { resizeOptions, baseWidthRatio, appendMessage, initializeSource, refreshMatchedFiles, sourceDirectory, displayedDirectory, openFolder,
       selectFolder, selectedFolderIndex, treeDirectory, visibleFolders, toggleFolder, collapsedFolderIndex, pathList,
-      sdDirectDictionary, sdloadingDictionary, sdAddressRange, matchedFiles, writeFiles, canSdWrite, allFileCount, initializing, messages, folders, pathError,
+      sdDirectDictionary, sdloadingDictionary, sdAddressRange, matchedFiles, writeFiles, optionFiles, canSdWrite, allFileCount, initializing, messages, folders, pathError,
       onSdWrite, onSdRead, onSdFfInitialize, onSdFormat, startSdFormat, formatPlan, formatLabel, formatSimpleTest, formatStep, formatLabelValid, writeStage, canSdRead, popupTitle, statusLabel, closeWriteDialog, copyWriteLog, writeDialogOpen, writeLog, writing, pendingPlan, progress, percent, currentRun, transientNotice, operationStatus, operationDetail };
   `)(...Object.values(bindings));
   return { ...api, mount: () => mount(), unmount: () => unmount(),
@@ -134,6 +134,7 @@ test('single click selects a folder and reloads grid data without changing the t
   ui.pathList.value = { scrollTop: 7, scrollHeight: 100 };
   await ui.selectFolder(1);
   assert.equal(ui.selectedFolderIndex.value, 1);
+  assert.ok(ui.messages.value.some(message => message.text === 'フォルダー選択：parent'));
   assert.equal(ui.sourceDirectory.value, 'C:\\parent');
   assert.equal(ui.displayedDirectory.value, 'C:\\parent\\input');
   assert.equal(ui.writeFiles.value[0].individualInfo, 'C:\\parent');
@@ -606,6 +607,56 @@ test('grid renders escaped descriptions, tooltips and more than 23 matching file
     assert.equal((compactHtml.match(/<tr>/g) || []).length, count + 1);
     assert.match(compactHtml, /class="grid-background[^\"]*" aria-hidden="true"/);
   }
+});
+
+test('grid expands each BM file without changing write count and clears updates on F5/source errors', async () => {
+  let valid = true;
+  const files = ['FILE-BM.001', 'FILE-BM.003', 'FILE-BC.001'];
+  const records = [
+    { update_no: '01', update_ver: '230619_00', condition: '00', car_type: '01' },
+    { update_no: '02', update_ver: '230112_00', condition: '01', car_type: 'XX' },
+  ];
+  const ui = view(backend({
+    read_startup_csv: () => files.map(name => `A,${name},0,FF,CSV説明`).join('\n'),
+    find_dictionary_files: () => ({ files, from_input: true, input_exists: true,
+      file_updates: { files: valid ? { 'FILE-BM.001': records, 'FILE-BM.003': records } : {},
+        warnings: valid ? ['FILE-AAがありません', 'FILE-BAが複数あります: FILE-BA.001, FILE-BA.002'] : ['FILE-BCの読込に失敗しました'] } }),
+    resolve_drop_directory: () => { throw new Error('対象なし'); },
+  }));
+  await ui.mount();
+  assert.equal(ui.allFileCount.value, 3);
+  assert.equal(ui.writeFiles.value.length, 3);
+  assert.equal(ui.optionFiles.value.length, 5);
+  assert.deepEqual(ui.optionFiles.value.map(row => row.updateNo ?? ''), ['01', '02', '01', '02', '']);
+  assert.deepEqual(ui.optionFiles.value.slice(0, 2).map(row => row.description), ['BM:パラメータ1', 'BM:パラメータ2']);
+  assert.equal(ui.optionFiles.value[1].updateVer, '230112_00');
+  assert.equal(ui.optionFiles.value[1].condition, '01');
+  assert.equal(ui.optionFiles.value[1].carType, 'XX');
+  assert.equal(ui.optionFiles.value[4].description, 'CSV説明');
+  assert.ok(ui.messages.value.some(m => m.warning && m.text.includes('FILE-AAがありません')));
+  assert.ok(ui.messages.value.some(m => m.warning && m.text.includes('FILE-BAが複数')));
+  valid = false;
+  ui.key('F5');
+  await until(() => !ui.initializing.value);
+  assert.equal(ui.optionFiles.value.length, 3);
+  assert.ok(ui.optionFiles.value.every(row => !row.updateVer));
+  assert.ok(ui.messages.value.some(m => m.warning && m.text.includes('読込に失敗')));
+  await ui.initializeSource(['invalid']);
+  assert.deepEqual(ui.optionFiles.value, []);
+  ui.unmount();
+});
+
+test('grid renders update number, version, condition and car type in separate cells', async () => {
+  const { parse, compileScript } = require('@vue/compiler-sfc');
+  const { createSSRApp } = require('vue');
+  const { renderToString } = require('@vue/server-renderer');
+  const { descriptor } = parse(readFileSync('src/components/OptionGrid.vue', 'utf8'));
+  const script = compileScript(descriptor, { id: 'update-grid-test', inlineTemplate: true });
+  const exports = {};
+  new Function('require', 'exports', transpile(script.content))(require, exports);
+  const html = (await renderToString(createSSRApp(exports.default, { files: [{ filename: 'FILE-BM.003', description: 'BM:パラメータ2', individualInfo: '', updateNo: '02', updateVer: '230112_00', condition: '00', carType: '01' }] }))).replace(/<!--[\s\S]*?-->/g, '');
+  const cells = [...html.matchAll(/<td\b[^>]*>(.*?)<\/td>/g)].map(match => match[1]);
+  assert.deepEqual(cells, ['1', 'FILE-BM.003', 'BM:パラメータ2', '', '02', '230112_00', '00', '01']);
 });
 
 test('CSV preserves every access flag and includes non-A areas in the bounds', () => {

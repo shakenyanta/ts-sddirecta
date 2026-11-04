@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watchEffect } from 'vue';
 
-const props = defineProps<{ files: { filename: string; description: string; individualInfo: string }[] }>();
+const props = defineProps<{ files: {
+    filename: string; description: string; individualInfo: string;
+    updateNo?: string; updateVer?: string; condition?: string; carType?: string;
+}[] }>();
 const grid = ref<HTMLElement | null>(null);
 const filenameWidth = ref(68);
 
@@ -26,7 +29,7 @@ const columns = computed(() => [
     { label: '説明' },
     { label: '個別情報', width: 168 },
     { label: '更新No', width: 48 },
-    { label: '更新Ver', width: 52 },
+    { label: '更新Ver', width: 68 },
     { label: '条件', width: 30 },
     { label: '車種', width: 40 },
 ]);
@@ -62,6 +65,10 @@ const backgroundColumns = computed(() => columns.value
                         <template v-else-if="column.label === 'ファイル名'">{{ file.filename }}</template>
                         <template v-else-if="column.label === '説明'">{{ file.description }}</template>
                         <template v-else-if="column.label === '個別情報'">{{ file.individualInfo }}</template>
+                        <template v-else-if="column.label === '更新No'">{{ file.updateNo }}</template>
+                        <template v-else-if="column.label === '更新Ver'">{{ file.updateVer }}</template>
+                        <template v-else-if="column.label === '条件'">{{ file.condition }}</template>
+                        <template v-else-if="column.label === '車種'">{{ file.carType }}</template>
                     </td>
                 </tr>
             </tbody>

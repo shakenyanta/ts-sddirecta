@@ -6,6 +6,7 @@ fn greet(name: &str) -> String {
 
 mod diagnostics;
 mod edition;
+mod file_bc;
 mod individual_info;
 mod matching_files;
 mod portable_update;
@@ -414,6 +415,7 @@ struct MatchedFiles {
     files: Vec<String>,
     modified_times: std::collections::HashMap<String, Option<u64>>,
     individual_infos: std::collections::HashMap<String, String>,
+    file_updates: file_bc::FileUpdates,
     warning_files: Vec<String>,
     from_input: bool,
     input_exists: bool,
@@ -445,10 +447,12 @@ fn find_dictionary_files(
     let individual_infos = individual_info::for_files(
         &matched_directory, &files, edition::current().edition,
     );
+    let file_updates = file_bc::for_files(&matched_directory, &files, edition::current().edition);
     Ok(MatchedFiles {
         files,
         modified_times,
         individual_infos,
+        file_updates,
         warning_files,
         from_input,
         input_exists,
