@@ -26,6 +26,7 @@ fn supported(stem: &str) -> bool {
             stem,
             "FILE-BM"
                 | "IM"
+                | "FILE-AA"
                 | "FILE-BA"
                 | "TS-MAIN"
                 | "TS-SUB21"
@@ -95,6 +96,20 @@ fn find_version(content: &str, pattern: &str) -> String {
 
 fn extract(stem: &str, bytes: &[u8]) -> String {
     match stem {
+        // Two bytes contain four decimal BCD digits; omit leading zeros.
+        "FILE-AA" => bytes
+            .get(0xCE..0xD0)
+            .map(|b| {
+                if b == [0xFF, 0xFF] {
+                    "無制限".into()
+                } else {
+                    hex(b, "")
+                        .parse::<u16>()
+                        .map(|count| count.to_string())
+                        .unwrap_or_default()
+                }
+            })
+            .unwrap_or_default(),
         "FILE-BM" => bytes.get(..8).map(|b| hex(b, " ")).unwrap_or_default(),
         "IM" => bytes
             .get(0xD7F0..0xD7FE)
@@ -201,6 +216,32 @@ fn from_checksum(content: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loading_limit_reads_bcd_at_ce_cf_and_rejects_invalid_or_short_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("FILE-AA.001");
+        let mut bytes = vec![0xFF; 0xD0];
+        for (value, expected) in [
+            ([0x01, 0x00], "100"),
+            ([0x00, 0x99], "99"),
+            ([0x00, 0x00], "0"),
+            ([0x00, 0x01], "1"),
+            ([0x12, 0x34], "1234"),
+            ([0x99, 0x99], "9999"),
+            ([0xFF, 0xFF], "無制限"),
+            ([0x0A, 0x01], ""),
+            ([0x01, 0x9F], ""),
+        ] {
+            bytes[0xCE..0xD0].copy_from_slice(&value);
+            fs::write(&path, &bytes).unwrap();
+            assert_eq!(read(&path), expected, "{value:02X?}");
+        }
+        for size in [0, 0xCE, 0xCF] {
+            fs::write(&path, &bytes[..size]).unwrap();
+            assert_eq!(read(&path), "");
+        }
+    }
 
     #[test]
     fn binary_formats_and_short_files_match_reference() {

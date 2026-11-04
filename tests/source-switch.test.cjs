@@ -562,7 +562,7 @@ test('embedded CSV is valid UTF-8 and preserves descriptions and added areas thr
   const { parseSdDirectCsv } = utility('src/utils/sdDirectCsv.ts');
   const parsed = parseSdDirectCsv(csv);
   assert.equal(parsed.dictionary.size, 108);
-  assert.equal(parsed.dictionary.get('FILE-AA.001').description, 'IDコード/器物番号/車番');
+  assert.equal(parsed.dictionary.get('FILE-AA.001').description, 'ローディング回数制限');
   assert.equal(parsed.dictionary.get('FILE-AB.014').description, 'デジタコ14日目');
   assert.equal(parsed.dictionary.get('FILE-BW.002').endAddress, '02583DFF');
   const ui = view(backend({
@@ -571,7 +571,7 @@ test('embedded CSV is valid UTF-8 and preserves descriptions and added areas thr
   }));
   await ui.initializeSource();
   assert.deepEqual(ui.writeFiles.value, [
-    { filename: 'FILE-AA.001', description: 'IDコード/器物番号/車番', individualInfo: '', modifiedAt: null },
+    { filename: 'FILE-AA.001', description: 'ローディング回数制限', individualInfo: '', modifiedAt: null },
     { filename: 'FILE-AB.014', description: 'デジタコ14日目', individualInfo: '', modifiedAt: null },
   ]);
 });
