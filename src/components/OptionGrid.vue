@@ -20,15 +20,6 @@ onMounted(() => {
     });
 });
 
-const rows = computed(() => Array.from(
-    { length: Math.max(23, props.files.length) },
-    (_, index) => ({
-        filename: props.files[index]?.filename ?? '',
-        description: props.files[index]?.description ?? '',
-        individualInfo: props.files[index]?.individualInfo ?? '',
-    }),
-));
-
 const columns = computed(() => [
     { label: 'No', width: 24 },
     { label: 'ファイル名', width: filenameWidth.value },
@@ -43,12 +34,16 @@ const columns = computed(() => [
 const tableMinWidth = computed(() => Math.max(520,
     columns.value.reduce((width, column) => width + (column.width ?? 80), 0),
 ));
+// 表と余白の縦罫線は、同じ列定義から幅を決める。
+const backgroundColumns = computed(() => columns.value
+    .map(column => column.width ? `${column.width}px` : 'minmax(0, 1fr)').join(' '));
 </script>
 
 <template>
     <div ref="grid" class="option-grid">
         <div class="grid-scroll">
-        <table aria-label="ファイル情報" :style="{ minWidth: `${tableMinWidth}px` }">
+        <div class="grid-content" :style="{ minWidth: `${tableMinWidth}px` }">
+        <table aria-label="ファイル情報">
             <colgroup>
                 <col v-for="column in columns" :key="column.label" :style="{ width: column.width ? `${column.width}px` : undefined }">
             </colgroup>
@@ -60,10 +55,10 @@ const tableMinWidth = computed(() => Math.max(520,
                 </tr>
             </thead>
             <tbody>
-                <tr v-for="(file, index) in rows" :key="index">
+                <tr v-for="(file, index) in files" :key="index">
                     <td v-for="column in columns" :key="column.label"
                         :title="column.label === '個別情報' ? file.individualInfo || undefined : column.label === '説明' ? file.description || undefined : column.label === 'ファイル名' ? file.filename || undefined : undefined">
-                        <template v-if="column.label === 'No'">{{ index < files.length ? index + 1 : '' }}</template>
+                        <template v-if="column.label === 'No'">{{ index + 1 }}</template>
                         <template v-else-if="column.label === 'ファイル名'">{{ file.filename }}</template>
                         <template v-else-if="column.label === '説明'">{{ file.description }}</template>
                         <template v-else-if="column.label === '個別情報'">{{ file.individualInfo }}</template>
@@ -71,12 +66,19 @@ const tableMinWidth = computed(() => Math.max(520,
                 </tr>
             </tbody>
         </table>
+        <div class="grid-background" aria-hidden="true"
+            :class="{ 'starts-even': files.length % 2 === 1 }"
+            :style="{ gridTemplateColumns: backgroundColumns }">
+            <div v-for="column in columns" :key="column.label"></div>
+        </div>
+        </div>
         </div>
     </div>
 </template>
 
 <style scoped>
 .option-grid {
+    --grid-row-height: 18px;
     width: 100%;
     height: 100%;
     padding: 6px;
@@ -92,14 +94,37 @@ const tableMinWidth = computed(() => Math.max(520,
     border: 1px solid #dce2eb;
     border-radius: 4px;
 }
+.grid-content {
+    display: flex;
+    flex-direction: column;
+    min-height: 100%;
+}
+.grid-background {
+    /* 空行は作らず、残りの高さだけを罫線・縞模様で埋める。 */
+    display: grid;
+    flex: 1;
+    --first-row-color: #fff;
+    --second-row-color: #f5f9fe;
+    background: repeating-linear-gradient(to bottom,
+        var(--first-row-color) 0 calc(var(--grid-row-height) - 1px),
+        #e8edf4 calc(var(--grid-row-height) - 1px) var(--grid-row-height),
+        var(--second-row-color) var(--grid-row-height) calc(2 * var(--grid-row-height) - 1px),
+        #e8edf4 calc(2 * var(--grid-row-height) - 1px) calc(2 * var(--grid-row-height)));
+}
+.grid-background.starts-even {
+    --first-row-color: #f5f9fe;
+    --second-row-color: #fff;
+}
+.grid-background > div:not(:last-child) { border-right: 1px solid #edf1f6; }
 table {
+    flex-shrink: 0;
     width: 100%;
     table-layout: fixed;
     border-collapse: separate;
     border-spacing: 0;
 }
 th, td {
-    height: 18px;
+    height: var(--grid-row-height);
     padding: 0 3px;
     border-right: 1px solid #edf1f6;
     border-bottom: 1px solid #e8edf4;

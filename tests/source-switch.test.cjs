@@ -600,6 +600,12 @@ test('grid renders escaped descriptions, tooltips and more than 23 matching file
   assert.match(html.replace(/<!--[\s\S]*?-->/g, ''), />日本語 &lt;説明&gt;<\/td>/);
   assert.match(html, /FILE-23\.001/);
   assert.equal((html.match(/<tr>/g) || []).length, 25);
+  // 少数・空の一覧でも、装飾のための空行をスクロール対象にしない。
+  for (const count of [0, 3, 4]) {
+    const compactHtml = await renderToString(createSSRApp(exports.default, { files: files.slice(0, count) }));
+    assert.equal((compactHtml.match(/<tr>/g) || []).length, count + 1);
+    assert.match(compactHtml, /class="grid-background[^\"]*" aria-hidden="true"/);
+  }
 });
 
 test('CSV preserves every access flag and includes non-A areas in the bounds', () => {
