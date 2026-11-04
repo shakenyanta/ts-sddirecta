@@ -28,6 +28,7 @@ fn supported(stem: &str) -> bool {
                 | "IM"
                 | "FILE-AA"
                 | "FILE-BA"
+                | "FILE-BC"
                 | "TS-MAIN"
                 | "TS-SUB21"
                 | "TS-SUB22"
@@ -111,6 +112,12 @@ fn extract(stem: &str, bytes: &[u8]) -> String {
             })
             .unwrap_or_default(),
         "FILE-BM" => bytes.get(..8).map(|b| hex(b, " ")).unwrap_or_default(),
+        "FILE-BC" => bytes
+            .chunks_exact(32)
+            .filter(|block| block[..2] != [0xFF, 0xFF] && block[2..4] == *b"FU")
+            .map(|block| String::from_utf8_lossy(&block[..2]).into_owned())
+            .collect::<Vec<_>>()
+            .join(" "),
         "IM" => bytes
             .get(0xD7F0..0xD7FE)
             .map(|b| b.iter().map(|&b| char::from(b)).collect())
@@ -216,6 +223,32 @@ fn from_checksum(content: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_bc_lists_block_numbers_in_order_only_with_fu_signature() {
+        let block = |header: [u8; 4]| {
+            let mut bytes = vec![0xFF; 32];
+            bytes[..4].copy_from_slice(&header);
+            bytes
+        };
+        let mut bytes = block(*b"01FU");
+        bytes.extend(block(*b"99XX"));
+        bytes.extend(block([0xFF, 0xFF, b'F', b'U']));
+        bytes.extend(block(*b"02FU"));
+        bytes.extend(block(*b"01FU"));
+        bytes.extend(block(*b"03Fu"));
+        bytes.extend([0xFF; 32]);
+        bytes.extend(b"04FU"); // Ignore an incomplete final block.
+        let dir = tempfile::tempdir().unwrap();
+        for filename in ["FILE-BC.001", "FILE-BC.002", "file-bc.003"] {
+            let path = dir.path().join(filename);
+            fs::write(&path, &bytes).unwrap();
+            assert_eq!(read(&path), "01 02 01", "{filename}");
+        }
+        for bytes in [vec![], vec![0xFF; 64], block(*b"01XX"), b"01FU".to_vec()] {
+            assert_eq!(extract("FILE-BC", &bytes), "");
+        }
+    }
 
     #[test]
     fn loading_limit_reads_bcd_at_ce_cf_and_rejects_invalid_or_short_data() {
