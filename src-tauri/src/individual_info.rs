@@ -36,6 +36,8 @@ fn supported(stem: &str) -> bool {
                 | "TS-SUB24"
                 | "TS-SUB25"
                 | "TS-DISP"
+                | "TS-PRN"
+                | "TS-PRNSW"
         )
 }
 
@@ -156,7 +158,13 @@ fn extract(stem: &str, bytes: &[u8]) -> String {
         }
         name if supported(name) => {
             let content = String::from_utf8_lossy(bytes);
-            find_version(&content, &hex(name.as_bytes(), ""))
+            let search_name = match name {
+                "TS-DISP" => "TS-SUB20",
+                "TS-PRN" => "TS-PRN  ",
+                "TS-PRNSW" => "TS-SUB26",
+                _ => name,
+            };
+            find_version(&content, &hex(search_name.as_bytes(), ""))
         }
         _ => String::new(),
     }
@@ -363,9 +371,7 @@ mod tests {
 
     #[test]
     fn text_versions_do_not_cross_lines_and_invalid_checksums_still_allow_version() {
-        for name in [
-            "TS-SUB21", "TS-SUB22", "TS-SUB23", "TS-SUB24", "TS-SUB25", "TS-DISP",
-        ] {
+        for name in ["TS-SUB21", "TS-SUB22", "TS-SUB23", "TS-SUB24", "TS-SUB25"] {
             let content = format!("prefix{}26021800suffix\r\n", hex(name.as_bytes(), ""));
             assert_eq!(extract(name, content.as_bytes()), "260218_00");
             assert_eq!(extract(name, b"not a version"), "");
@@ -390,6 +396,51 @@ mod tests {
             ),
             "260122_00 A16C"
         );
+    }
+
+    #[test]
+    fn ts_disp_reads_ts_sub20_version_instead_of_filename_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("TS-DISP.HEX");
+        // Include both markers to ensure TS-DISP does not take precedence.
+        fs::write(
+            &path,
+            b"54532D4449535026010100\r\n54532D535542323026021800\r\n",
+        )
+        .unwrap();
+        assert_eq!(read(&path), "260218_00");
+        assert_eq!(extract("TS-DISP", b"54532D4449535026010100"), "");
+        assert_eq!(extract("TS-DISP", b"54532D53554232302602\n1800"), "");
+        assert_eq!(extract("TS-DISP", b"not a version"), "");
+        assert_eq!(
+            extract("TS-SUB21", b"54532D535542323126021800"),
+            "260218_00"
+        );
+    }
+
+    #[test]
+    fn printer_versions_use_padded_prn_and_sub26_markers() {
+        let dir = tempfile::tempdir().unwrap();
+        for (filename, content, expected) in [
+            ("TS-PRN.HEX", "54532D50524E202026110400", "261104_00"),
+            ("TS-PRNSW.HEX", "54532D535542323610033000", "100330_00"),
+            ("ts-prnsw.hex", "54532D535542323610033001", "100330_01"),
+        ] {
+            let path = dir.path().join(filename);
+            fs::write(&path, content).unwrap();
+            assert_eq!(read(&path), expected, "{filename}");
+        }
+        // The two padding spaces are part of the TS-PRN signature.
+        assert_eq!(extract("TS-PRN", b"54532D50524E26110400"), "");
+        assert_eq!(extract("TS-PRN", b"54532D50524E2026110400"), "");
+        assert_eq!(extract("TS-PRNSW", b"54532D50524E535710033000"), "");
+        for (name, content) in [
+            ("TS-PRN", &b"54532D50524E20202611\n0400"[..]),
+            ("TS-PRNSW", &b"54532D53554232361003\n3000"[..]),
+        ] {
+            assert_eq!(extract(name, content), "");
+            assert_eq!(extract(name, b"not a version"), "");
+        }
     }
 
     #[test]
