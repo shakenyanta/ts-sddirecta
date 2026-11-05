@@ -16,6 +16,7 @@
         "dragDropEnabled": true,
         "width": 300,
         "height": 350,
+        "visible": false,
         "resizable": true
       }
     ],

@@ -45,7 +45,7 @@ function view(invoke, clock = performance, DateClass = Date) {
     }),
   };
   const api = new Function(...Object.keys(bindings), transpile(source) + `
-    return { resizeOptions, baseWidthRatio, appendMessage, initializeSource, refreshMatchedFiles, sourceDirectory, displayedDirectory, openFolder,
+    return { resize, sdHeightRatio, menuHeight, resizeOptions, baseWidthRatio, appendMessage, initializeSource, refreshMatchedFiles, sourceDirectory, displayedDirectory, openFolder,
       selectFolder, selectedFolder, folderNodes, visibleFolders, toggleFolder, pathList,
       sdDirectDictionary, sdloadingDictionary, sdAddressRange, matchedFiles, writeFiles, optionFiles, canSdWrite, allFileCount, initializing, messages, pathError,
       onSdWrite, onSdRead, onSdFfInitialize, onSdFormat, startSdFormat, formatPlan, formatLabel, formatSimpleTest, formatStep, formatLabelValid, writeStage, canSdRead, popupTitle, statusLabel, closeWriteDialog, copyWriteLog, writeDialogOpen, writeLog, writing, pendingPlan, progress, percent, currentRun, transientNotice, operationStatus, operationDetail };
@@ -93,6 +93,51 @@ test('option divider adjusts the width ratio, keeps both panels visible and stop
   ui.resizeOptions({ currentTarget: target, clientX: 100, pointerId: 2 });
   listeners.get('pointermove')({ clientX: -1000 });
   assert.equal(ui.baseWidthRatio.value, 1 / 3);
+  listeners.get('lostpointercapture')();
+});
+
+test('vertical dividers start at 4:3 and preserve menu and text bounds while dragging', () => {
+  const ui = view(async () => {});
+  assert.equal(ui.sdHeightRatio.value, 4 / 7);
+  const listeners = new Map();
+  const target = {
+    parentElement: { querySelector: selector => ({ offsetHeight: selector === '.panel_sd' ? 240 : 180 }) },
+    setPointerCapture: () => {},
+    addEventListener: (name, handler) => listeners.set(name, handler),
+    removeEventListener: name => listeners.delete(name),
+  };
+  ui.resize({ currentTarget: target, clientY: 0, pointerId: 1 }, 2);
+  listeners.get('pointermove')({ clientY: 60 });
+  assert.equal(ui.sdHeightRatio.value, 300 / 420);
+  listeners.get('pointermove')({ clientY: 1000 });
+  assert.equal(ui.sdHeightRatio.value, (420 - 66) / 420);
+  listeners.get('pointermove')({ clientY: -1000 });
+  assert.equal(ui.sdHeightRatio.value, 0);
+  listeners.get('lostpointercapture')();
+  assert.equal(listeners.size, 0);
+
+  ui.resize({ currentTarget: target, clientY: 0, pointerId: 2 }, 1);
+  listeners.get('pointermove')({ clientY: 60 });
+  assert.equal(ui.menuHeight.value, 108);
+  assert.equal(ui.sdHeightRatio.value, 180 / 360);
+  listeners.get('pointermove')({ clientY: -1000 });
+  assert.equal(ui.menuHeight.value, 48);
+  assert.equal(ui.sdHeightRatio.value, 240 / 420);
+  listeners.get('lostpointercapture')();
+});
+
+test('menu divider avoids an invalid ratio when no text height remains', () => {
+  const ui = view(async () => {});
+  const listeners = new Map();
+  const target = {
+    parentElement: { querySelector: selector => ({ offsetHeight: selector === '.panel_sd' ? 40 : 0 }) },
+    setPointerCapture: () => {},
+    addEventListener: (name, handler) => listeners.set(name, handler),
+    removeEventListener: name => listeners.delete(name),
+  };
+  ui.resize({ currentTarget: target, clientY: 0, pointerId: 1 }, 1);
+  listeners.get('pointermove')({ clientY: 100 });
+  assert.equal(ui.sdHeightRatio.value, 0);
   listeners.get('lostpointercapture')();
 });
 

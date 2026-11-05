@@ -17,7 +17,7 @@ const menuContent = ref<HTMLElement | null>(null);
 let menuObserver: ResizeObserver | undefined;
 let textObserver: ResizeObserver | undefined;
 let textScrollMaximum = 0;
-const sdHeight = ref(120);
+const sdHeightRatio = ref(4 / 7);
 const baseWidthRatio = ref(1 / 3);
 const sourceDirectory = ref('');
 const dragging = ref(false);
@@ -840,8 +840,10 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 	const target = event.currentTarget as HTMLElement;
 	const startY = event.clientY;
 	const initialMenuHeight = Math.max(menuHeight.value, minimumMenuHeight.value);
-	const initialSdHeight = sdHeight.value;
+	const initialSdHeight = target.parentElement!.querySelector<HTMLElement>('.panel_sd')!.offsetHeight;
 	const textHeight = target.parentElement!.querySelector<HTMLElement>('.panel_text')!.offsetHeight;
+	const availableHeight = initialSdHeight + textHeight;
+	if (availableHeight <= 0) return;
 	target.setPointerCapture(event.pointerId);
 
 	const move = (moveEvent: PointerEvent) => {
@@ -849,9 +851,9 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 		if (divider === 1) {
 			const change = Math.max(minimumMenuHeight.value - initialMenuHeight, Math.min(delta, initialSdHeight));
 			menuHeight.value = initialMenuHeight + change;
-			sdHeight.value = initialSdHeight - change;
+			sdHeightRatio.value = (initialSdHeight - change) / Math.max(1, availableHeight - change);
 		} else {
-			sdHeight.value = initialSdHeight + Math.max(-initialSdHeight, Math.min(delta, Math.max(0, textHeight - 66)));
+			sdHeightRatio.value = (initialSdHeight + Math.max(-initialSdHeight, Math.min(delta, Math.max(0, textHeight - 66)))) / availableHeight;
 		}
 	};
 	const stop = () => {
@@ -867,7 +869,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 	<div class="panel-outer" :class="{ 'drop-active': dragging }">
 		<div class="panel-inner" :class="{ 'has-options': features.optionPanel }"
 			:style="features.optionPanel ? { gridTemplateColumns: `minmax(0, ${baseWidthRatio}fr) 1px minmax(0, ${1 - baseWidthRatio}fr)` } : undefined">
-			<div class="panel-base" :style="{ gridTemplateRows: `${Math.max(menuHeight, minimumMenuHeight)}px 1px ${sdHeight}px 1px minmax(0, 1fr) minmax(44px, auto)` }">
+			<div class="panel-base" :style="{ gridTemplateRows: `${Math.max(menuHeight, minimumMenuHeight)}px 1px minmax(0, ${sdHeightRatio}fr) 1px minmax(0, ${1 - sdHeightRatio}fr) minmax(44px, auto)` }">
 				<div id="panel_menu" class="panel_menu">
 					<div ref="menuContent" class="menu-content">
 						<SdMenu ref="sdMenu" :can-write="canSdWrite" :can-read="canSdRead" :can-initialize="canSdRead" :busy="initializing || writing || closing || writeDialogOpen" :write-label="closing ? '終了待ち…' : writing ? `${statusLabel}…` : 'SD書込'"
@@ -1100,6 +1102,10 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 	/* The menu's measured content sets its minimum row height. */
 	overflow: visible;
 	container: sd-menu-panel / inline-size;
+	background: #fff;
+	border-radius: 7px;
+	/* Draw the frame inside without changing the measured menu height. */
+	box-shadow: inset 0 0 0 1px #e2e7ee;
 }
 .menu-content {
 	min-width: 0;
@@ -1282,9 +1288,24 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 	touch-action: none;
 	user-select: none;
 }
+#resizer2,
+.resizer-horizontal {
+	position: relative;
+	z-index: 1;
+}
+#resizer2::after {
+	content: '';
+	position: absolute;
+	inset: -3px 0;
+}
+#resizer2:hover,
+#resizer2:active,
+.resizer-horizontal:hover,
+.resizer-horizontal:active {
+	background: #4285d4;
+}
 .resizer-horizontal {
 	cursor: col-resize;
-	position: relative;
 }
 .resizer-horizontal::after {
 	content: '';

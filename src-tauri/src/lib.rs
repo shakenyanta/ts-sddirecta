@@ -19,6 +19,7 @@ mod sd_worker;
 mod source_directory;
 mod startup_csv;
 mod windows_api;
+mod window_layout;
 pub use portable_update::run_if_helper;
 pub use sd_worker::run_if_worker;
 
@@ -544,8 +545,16 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 window.set_title(&format!("{} {}", app.package_info().name, edition.label()))?;
                 if edition.edition == edition::Edition::Pro {
-                    window.set_size(tauri::LogicalSize::new(900.0, 350.0))?;
+                    window.set_size(tauri::LogicalSize::new(1000.0, 600.0))?;
                 }
+                if let Err(error) = window_layout::fit_startup_window(&window) {
+                    diagnostics::record(
+                        "WARN",
+                        &format!("startup window layout failed: {error}; maximizing"),
+                    );
+                    window.maximize()?;
+                }
+                window.show()?;
             }
             Ok(())
         })

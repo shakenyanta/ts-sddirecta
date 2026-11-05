@@ -88,7 +88,7 @@ const backgroundColumns = computed(() => columns.value
     --grid-row-height: 18px;
     width: 100%;
     height: 100%;
-    padding: 6px;
+    padding: 0 3px 3px 0;
     background: #fff;
     color: #334155;
     font: 11px/16px 'Yu Gothic UI', Meiryo, sans-serif;
@@ -100,6 +100,7 @@ const backgroundColumns = computed(() => columns.value
     scrollbar-width: thin;
     border: 1px solid #dce2eb;
     border-radius: 4px;
+    border-top-left-radius: 0;
 }
 .grid-content {
     display: flex;
