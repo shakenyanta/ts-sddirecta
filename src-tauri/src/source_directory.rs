@@ -61,3 +61,41 @@ pub fn input_exists(directory: &std::path::Path) -> Result<bool, String> {
         Err(error) => Err(error.to_string()),
     }
 }
+
+/// Only enumerate immediate directories. Do not follow descendants or read file contents.
+pub fn child_folders(path: String) -> Result<Vec<String>, String> {
+    let directory = directory(Some(path))?;
+    let mut names = Vec::new();
+    for entry in fs::read_dir(directory).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+            names.push(
+                entry
+                    .file_name()
+                    .into_string()
+                    .map_err(|_| "フォルダー名を変換できませんでした")?,
+            );
+        }
+    }
+    names.sort_by_cached_key(|name| name.to_lowercase());
+    Ok(names)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lists_only_immediate_folders_and_reports_invalid_paths() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("B")).unwrap();
+        fs::create_dir_all(root.path().join("a").join("nested")).unwrap();
+        fs::write(root.path().join("file.txt"), b"data").unwrap();
+        let list = |path: PathBuf| child_folders(path.to_str().unwrap().to_owned());
+        assert_eq!(list(root.path().to_path_buf()).unwrap(), vec!["a", "B"]);
+        assert!(list(root.path().join("B")).unwrap().is_empty());
+        assert!(list(root.path().join("missing")).is_err());
+        assert!(list(root.path().join("file.txt")).is_err());
+        assert!(child_folders("relative".into()).is_err());
+    }
+}

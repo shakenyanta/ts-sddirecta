@@ -378,6 +378,11 @@ fn resolve_drop_directory(paths: Vec<String>) -> Result<String, String> {
     source_directory::dropped_directory(paths)
 }
 
+#[tauri::command(async)]
+fn list_child_folders(directory: String) -> Result<Vec<String>, String> {
+    source_directory::child_folders(directory)
+}
+
 #[tauri::command]
 fn check_startup_csv(directory: Option<String>) -> Result<bool, String> {
     startup_csv_source(directory).map(|_| true)
@@ -552,6 +557,7 @@ pub fn run() {
             install_portable_update,
             get_executable_directory,
             resolve_drop_directory,
+            list_child_folders,
             check_startup_csv,
             read_startup_csv,
             find_dictionary_files,

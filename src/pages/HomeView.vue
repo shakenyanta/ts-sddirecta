@@ -121,27 +121,86 @@ let disposed = false;
 let lastMatchError = '';
 const textPanel = ref<HTMLElement | null>(null);
 const pathList = ref<HTMLElement | null>(null);
-// Folder selection changes the source, while keeping the displayed hierarchy intact.
-const retainedTreeDirectory = ref<string | null>(null);
-const treeDirectory = computed(() => retainedTreeDirectory.value ?? displayedDirectory.value);
-const folders = computed(() => splitFolderPath(treeDirectory.value));
-const selectedFolderIndex = ref<number | null>(null);
-const collapsedFolderIndex = ref<number | null>(null);
-const visibleFolders = computed(() => collapsedFolderIndex.value === null
-	? folders.value : folders.value.slice(0, collapsedFolderIndex.value + 1));
+interface FolderNode {
+	path: string;
+	name: string;
+	children: string[];
+	expanded: boolean;
+	loaded: boolean;
+	loading: boolean;
+}
+const folderNodes = ref(new Map<string, FolderNode>());
+const treeRoot = ref('');
+const selectedFolder = ref('');
+const visibleFolders = computed(() => {
+	const rows: { node: FolderNode; depth: number }[] = [];
+	const pending = treeRoot.value ? [{ path: treeRoot.value, depth: 0 }] : [];
+	while (pending.length) {
+		const { path, depth } = pending.pop()!;
+		const node = folderNodes.value.get(path);
+		if (!node) continue;
+		rows.push({ node, depth });
+		if (node.expanded) {
+			for (let i = node.children.length - 1; i >= 0; i--) pending.push({ path: node.children[i], depth: depth + 1 });
+		}
+	}
+	return rows;
+});
 
-function toggleFolder(index: number) {
-	collapsedFolderIndex.value = collapsedFolderIndex.value === index ? null : index;
+function resetFolderTree(directory: string) {
+	const parts = splitFolderPath(directory);
+	const nodes = new Map<string, FolderNode>();
+	parts.forEach((name, index) => {
+		const path = folderPathAt(directory, index);
+		nodes.set(path, { path, name, children: index + 1 < parts.length ? [folderPathAt(directory, index + 1)] : [],
+			expanded: index + 1 < parts.length, loaded: false, loading: false });
+	});
+	folderNodes.value = nodes;
+	treeRoot.value = parts.length ? folderPathAt(directory, 0) : '';
+	selectedFolder.value = parts.length ? folderPathAt(directory, parts.length - 1) : '';
 }
 
-async function selectFolder(index: number) {
+async function loadChildFolders(path: string) {
+	const nodes = folderNodes.value;
+	const node = nodes.get(path);
+	if (!node || node.loaded || node.loading) return;
+	node.loading = true;
+	try {
+		const names = await invoke<string[]>('list_child_folders', { directory: path });
+		if (disposed || folderNodes.value !== nodes) return;
+		const separator = path.startsWith('/') ? '/' : '\\';
+		const children = names.map(name => {
+			const child = path.replace(/[\\/]+$/, '') + separator + name;
+			if (!nodes.has(child)) nodes.set(child, { path: child, name, children: [], expanded: false, loaded: false, loading: false });
+			return child;
+		});
+		node.children = children;
+		node.loaded = true;
+	} catch (error) {
+		if (!disposed && folderNodes.value === nodes) {
+			await appendMessage({ text: `子フォルダー一覧を取得できませんでした: ${path}: ${String(error)}`, warning: true });
+		}
+	} finally {
+		node.loading = false;
+	}
+}
+
+async function toggleFolder(path: string) {
+	const node = folderNodes.value.get(path);
+	if (!node || closing.value) return;
+	node.expanded = !node.expanded;
+	if (node.expanded) await loadChildFolders(path);
+}
+
+async function selectFolder(path: string) {
 	if (initializing.value || writing.value || closing.value || disposed) return;
-	if (index === (selectedFolderIndex.value ?? folders.value.length - 1)) return;
-	const directory = folderPathAt(treeDirectory.value, index);
-	if (!directory) return;
-	retainedTreeDirectory.value = treeDirectory.value;
-	selectedFolderIndex.value = index;
-	await initializeSource(undefined, directory, true);
+	const node = folderNodes.value.get(path);
+	if (!node) return;
+	node.expanded = true;
+	const children = loadChildFolders(path);
+	if (path === selectedFolder.value) { await children; return; }
+	selectedFolder.value = path;
+	await Promise.all([initializeSource(undefined, path, true), children]);
 }
 
 onMounted(async () => {
@@ -225,9 +284,7 @@ async function initializeSource(paths?: string[], refreshDirectory?: string, pre
 	const active = () => !disposed && current === generation;
 	initializing.value = true;
 	if (!preserveTree) {
-		retainedTreeDirectory.value = null;
-		selectedFolderIndex.value = null;
-		collapsedFolderIndex.value = null;
+		resetFolderTree('');
 	}
 	ready = false;
 	sdDirectDictionary.value = new Map();
@@ -248,6 +305,7 @@ async function initializeSource(paths?: string[], refreshDirectory?: string, pre
 			: await invoke<string>('get_executable_directory'));
 		if (!active()) return;
 		sourceDirectory.value = directory;
+		if (!preserveTree) resetFolderTree(directory);
 		if (preserveTree) await appendMessage(`フォルダー選択：${directory.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || directory}`);
 		else if (refreshDirectory) await appendMessage('F5：表示を更新');
 		else if (paths) await appendMessage('ドラッグ＆ドロップ');
@@ -288,7 +346,14 @@ async function initializeSource(paths?: string[], refreshDirectory?: string, pre
 		pathError.value = `対象フォルダーを取得できませんでした: ${String(error)}`;
 		await appendMessage(pathError.value);
 	} finally {
-		if (active()) initializing.value = false;
+		if (active()) {
+			if (!preserveTree && displayedDirectory.value) resetFolderTree(displayedDirectory.value);
+			initializing.value = false;
+			if (!preserveTree) {
+				await nextTick();
+				if (active() && pathList.value) pathList.value.scrollTop = pathList.value.scrollHeight;
+			}
+		}
 	}
 }
 
@@ -340,7 +405,6 @@ async function refreshMatchedFiles(report = false) {
 			useInputDirectory.value = true;
 			await nextTick();
 			if (disposed || current !== generation) return;
-			if (retainedTreeDirectory.value === null && pathList.value) pathList.value.scrollTop = pathList.value.scrollHeight;
 			await appendMessage('inputフォルダへ移動');
 			if (disposed || current !== generation) return;
 		}
@@ -727,13 +791,12 @@ function acceptOperation(event: OperationStatus) {
     operationAnchor = performance.now() - event.operation_ms;
 }
 
-function onFolderDoubleClick(index: number, event: MouseEvent) {
+function onFolderDoubleClick(path: string, event: MouseEvent) {
 	window.getSelection()?.selectAllChildren(event.currentTarget as Node);
-	void openFolder(index);
+	void openFolder(path);
 }
 
-async function openFolder(index: number) {
-	const directory = folderPathAt(treeDirectory.value, index);
+async function openFolder(directory: string) {
 	if (!directory || closing.value) return;
 	try {
 		await invoke('open_folder', { directory });
@@ -821,21 +884,22 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 						</button>
 					</div>
 					<p v-if="pathError" class="path-message path-error" role="alert">{{ pathError }}</p>
-					<ol v-else-if="folders.length" ref="pathList" class="path-list" aria-label="対象フォルダーの階層">
-						<li v-for="(folder, index) in visibleFolders" :key="index"
-							class="path-row" :class="{ 'path-current': index === (selectedFolderIndex ?? folders.length - 1) }"
-							:aria-current="index === (selectedFolderIndex ?? folders.length - 1) ? 'location' : undefined">
-							<span class="path-guides" :style="{ width: `${index * 14}px` }" aria-hidden="true"></span>
-							<button v-if="index < folders.length - 1" type="button" class="folder-toggle"
-								:aria-expanded="collapsedFolderIndex !== index" :aria-label="`${folder}の子階層を${collapsedFolderIndex === index ? '展開' : '折りたたむ'}`"
-								@click="toggleFolder(index)">
-								<svg viewBox="0 0 12 12" aria-hidden="true" :class="{ 'folder-expanded': collapsedFolderIndex !== index }"><path d="m4 2 4 4-4 4"/></svg>
+					<ol v-else-if="visibleFolders.length" ref="pathList" class="path-list" aria-label="対象フォルダーの階層">
+						<li v-for="{ node, depth } in visibleFolders" :key="node.path"
+							class="path-row" :class="{ 'path-current': node.path === selectedFolder }"
+							:aria-current="node.path === selectedFolder ? 'location' : undefined" :aria-busy="node.loading">
+							<span class="path-guides" :style="{ width: `${depth * 14}px` }" aria-hidden="true"></span>
+							<button v-if="!node.loaded || node.children.length" type="button" class="folder-toggle"
+								:aria-expanded="node.expanded" :aria-label="`${node.name}の子階層を${node.expanded ? '折りたたむ' : '展開'}`"
+								@click="toggleFolder(node.path)">
+								<svg viewBox="0 0 12 12" aria-hidden="true" :class="{ 'folder-expanded': node.expanded }"><path d="m4 2 4 4-4 4"/></svg>
 							</button>
 							<span v-else class="folder-toggle-spacer" aria-hidden="true"></span>
 							<svg class="folder-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4a1 1 0 0 1 1-1H6l1.5 2h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1Z"/></svg>
-							<span class="path-name" :title="`${folderPathAt(treeDirectory, index)}\nクリックで選択・ダブルクリックでエクスプローラーで開く`"
-								@click="selectFolder(index)"
-								@dblclick.prevent="onFolderDoubleClick(index, $event)">{{ folder }}</span>
+							<button type="button" class="path-name" :title="`${node.path}\nクリックで選択・ダブルクリックでエクスプローラーで開く`"
+								@click="selectFolder(node.path)"
+								@dblclick.prevent="onFolderDoubleClick(node.path, $event)">{{ node.name }}</button>
+							<span v-if="node.loading" class="folder-loading" role="status">読込中…</span>
 						</li>
 					</ol>
 					<p v-else class="path-message" role="status">保存先を取得中…</p>
@@ -1104,11 +1168,20 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 .folder-toggle .folder-expanded { transform: rotate(90deg); }
 .folder-icon { flex: 0 0 13px; width: 13px; height: 13px; margin-right: 4px; fill: #f4c45e; stroke: #e4ac3f; stroke-width: .6; }
 .path-name {
+	border: 0;
+	padding: 0;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	text-align: left;
+	cursor: pointer;
 	min-width: 0;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
+.folder-loading { margin-left: 6px; color: #64748b; font-size: 10px; white-space: nowrap; }
+.path-name:focus-visible { outline: 2px solid #4285d4; }
 .path-current {
 	font-weight: 700;
 	color: #174a75;

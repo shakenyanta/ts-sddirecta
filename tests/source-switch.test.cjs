@@ -46,8 +46,8 @@ function view(invoke, clock = performance, DateClass = Date) {
   };
   const api = new Function(...Object.keys(bindings), transpile(source) + `
     return { resizeOptions, baseWidthRatio, appendMessage, initializeSource, refreshMatchedFiles, sourceDirectory, displayedDirectory, openFolder,
-      selectFolder, selectedFolderIndex, treeDirectory, visibleFolders, toggleFolder, collapsedFolderIndex, pathList,
-      sdDirectDictionary, sdloadingDictionary, sdAddressRange, matchedFiles, writeFiles, optionFiles, canSdWrite, allFileCount, initializing, messages, folders, pathError,
+      selectFolder, selectedFolder, folderNodes, visibleFolders, toggleFolder, pathList,
+      sdDirectDictionary, sdloadingDictionary, sdAddressRange, matchedFiles, writeFiles, optionFiles, canSdWrite, allFileCount, initializing, messages, pathError,
       onSdWrite, onSdRead, onSdFfInitialize, onSdFormat, startSdFormat, formatPlan, formatLabel, formatSimpleTest, formatStep, formatLabelValid, writeStage, canSdRead, popupTitle, statusLabel, closeWriteDialog, copyWriteLog, writeDialogOpen, writeLog, writing, pendingPlan, progress, percent, currentRun, transientNotice, operationStatus, operationDetail };
   `)(...Object.values(bindings));
   return { ...api, mount: () => mount(), unmount: () => unmount(),
@@ -117,64 +117,73 @@ test('panel logs retain their local HH:MM timestamp and warning status', async (
 
 const csv = 'A,FILE-AA.001,00000000,000001FF';
 
-test('single click selects a folder and reloads grid data without changing the tree or scroll position', async () => {
+test('folder click lists immediate children, preserves open branches, and updates the filtered grid', async () => {
   const calls = [];
   const ui = view(backend({
-    find_dictionary_files: ({ directory }) => {
+    list_child_folders: ({ directory }) => {
       calls.push(directory);
-      return { files: ['FILE-AA.001'], from_input: true, input_exists: true,
-        individual_infos: { 'FILE-AA.001': directory }, modified_times: {} };
+      return directory === 'C:\\parent' ? ['child', 'sibling'] : ['nested'];
     },
-    open_folder: ({ directory }) => { calls.push(directory); },
+    find_dictionary_files: ({ directory }) => ({ files: ['FILE-AA.001'], from_input: true,
+      individual_infos: { 'FILE-AA.001': directory } }),
   }));
   await ui.initializeSource(['C:\\parent\\child']);
-  const folders = [...ui.folders.value];
-  ui.toggleFolder(1);
-  const visible = [...ui.visibleFolders.value];
   ui.pathList.value = { scrollTop: 7, scrollHeight: 100 };
-  await ui.selectFolder(1);
-  assert.equal(ui.selectedFolderIndex.value, 1);
-  assert.ok(ui.messages.value.some(message => message.text === 'フォルダー選択：parent'));
+  await ui.selectFolder('C:\\parent');
   assert.equal(ui.sourceDirectory.value, 'C:\\parent');
   assert.equal(ui.displayedDirectory.value, 'C:\\parent\\input');
   assert.equal(ui.writeFiles.value[0].individualInfo, 'C:\\parent');
-  assert.equal(ui.allFileCount.value, 1);
-  assert.deepEqual(ui.folders.value, folders);
-  assert.deepEqual(ui.visibleFolders.value, visible);
-  assert.equal(ui.collapsedFolderIndex.value, 1);
   assert.equal(ui.pathList.value.scrollTop, 7);
-  const count = calls.length;
-  await ui.selectFolder(1);
-  assert.equal(calls.length, count);
-  ui.toggleFolder(1);
-  await ui.selectFolder(2);
-  assert.equal(ui.sourceDirectory.value, 'C:\\parent\\child');
-  assert.deepEqual(ui.folders.value, folders);
-  await ui.openFolder(3);
-  assert.equal(calls.at(-1), 'C:\\parent\\child\\input');
+  assert.ok(ui.visibleFolders.value.some(({ node }) => node.name === 'sibling'));
+  await ui.selectFolder('C:\\parent\\child');
+  await ui.selectFolder('C:\\parent');
+  assert.ok(ui.visibleFolders.value.some(({ node }) => node.name === 'nested'));
+  assert.deepEqual(calls, ['C:\\parent', 'C:\\parent\\child']);
+  await ui.toggleFolder('C:\\parent');
+  assert.deepEqual(ui.visibleFolders.value.map(({ node }) => node.name), ['C:\\', 'parent']);
+  assert.equal(ui.sourceDirectory.value, 'C:\\parent');
+  await ui.toggleFolder('C:\\parent');
+  assert.ok(ui.visibleFolders.value.some(({ node }) => node.name === 'nested'));
   await ui.initializeSource(['C:\\new']);
-  assert.deepEqual(ui.folders.value, ['C:\\', 'new', 'input']);
-  assert.equal(ui.selectedFolderIndex.value, null);
+  assert.deepEqual(ui.visibleFolders.value.map(({ node }) => node.name), ['C:\\', 'new', 'input']);
 });
 
-test('folder selection clears stale grid data on missing CSV and is blocked while busy', async () => {
+test('folder list failure permits retry and does not prevent grid reload; stale results are ignored', async () => {
+  let fail = true, release;
+  const ui = view(backend({ list_child_folders: () => {
+    if (fail) throw new Error('access denied');
+    return new Promise(resolve => { release = resolve; });
+  } }));
+  await ui.initializeSource(['C:\\parent\\child']);
+  await ui.selectFolder('C:\\parent');
+  assert.equal(ui.sourceDirectory.value, 'C:\\parent');
+  assert.equal(ui.writeFiles.value.length, 1);
+  assert.ok(ui.messages.value.some(m => m.warning && /access denied/.test(m.text)));
+  fail = false;
+  const loading = ui.selectFolder('C:\\parent');
+  assert.equal(ui.folderNodes.value.get('C:\\parent').loading, true);
+  await ui.initializeSource(['C:\\new']);
+  release(['late']);
+  await loading;
+  assert.ok(!ui.visibleFolders.value.some(({ node }) => node.name === 'late'));
+});
+
+test('folder selection clears stale grid on missing CSV and is blocked while busy', async () => {
   const ui = view(backend({ check_startup_csv: ({ directory }) => directory !== 'C:\\parent' }));
   await ui.initializeSource(['C:\\parent\\child']);
-  const folders = [...ui.folders.value];
+  const selected = ui.selectedFolder.value;
   for (const busy of [ui.initializing, ui.writing]) {
     busy.value = true;
-    await ui.selectFolder(1);
-    assert.equal(ui.sourceDirectory.value, 'C:\\parent\\child');
-    assert.equal(ui.selectedFolderIndex.value, null);
+    await ui.selectFolder('C:\\parent');
+    assert.equal(ui.selectedFolder.value, selected);
     busy.value = false;
   }
-  await ui.selectFolder(99);
-  assert.equal(ui.selectedFolderIndex.value, null);
-  await ui.selectFolder(1);
+  await ui.selectFolder('C:\\missing');
+  assert.equal(ui.selectedFolder.value, selected);
+  await ui.selectFolder('C:\\parent');
   assert.deepEqual(ui.writeFiles.value, []);
   assert.equal(ui.canSdWrite.value, false);
-  assert.equal(ui.selectedFolderIndex.value, 1);
-  assert.deepEqual(ui.folders.value, folders);
+  assert.equal(ui.selectedFolder.value, 'C:\\parent');
 });
 
 test('file timestamps use local time with seconds and leave unavailable dates blank', () => {
@@ -261,9 +270,9 @@ test('opening a hierarchy folder uses its full path and reports failures', async
     if (calls.length === 2) throw new Error('access denied');
   } }));
   ui.sourceDirectory.value = 'C:\\日本語 folder\\input';
-  await ui.openFolder(1);
-  await ui.openFolder(2);
-  await ui.openFolder(99);
+  await ui.openFolder('C:\\日本語 folder');
+  await ui.openFolder('C:\\日本語 folder\\input');
+  await ui.openFolder('');
   assert.deepEqual(calls, ['C:\\日本語 folder', 'C:\\日本語 folder\\input']);
   assert.match(panelContents(ui).at(-1), /フォルダーを開けませんでした:.*access denied/);
   assert.equal(ui.sourceDirectory.value, 'C:\\日本語 folder\\input');
@@ -729,6 +738,7 @@ function backend(overrides = {}) {
     switch (command) {
       case 'get_executable_directory': return 'C:\\app';
       case 'resolve_drop_directory': return args.paths[0];
+      case 'list_child_folders': return [];
       case 'check_startup_csv': return true;
       case 'read_startup_csv': return { contents: csv, source_folder: 'EXEフォルダ' };
       case 'find_dictionary_files': return { files: ['FILE-AA.001'], warning_files: [], from_input: true, input_exists: true };
@@ -893,7 +903,7 @@ test('startup and native drop share initialization and use the selected source f
   assert.deepEqual(ui.matchedFiles.value, ['FILE-AA.001']);
   assert.equal(ui.sdDirectDictionary.value.size, 1);
   assert.equal(ui.canSdWrite.value, true);
-  assert.deepEqual(ui.folders.value, ['C:\\', '日本語 folder', 'input']);
+  assert.deepEqual(ui.visibleFolders.value.map(({ node }) => node.name), ['C:\\', '日本語 folder', 'input']);
   for (const command of ['check_startup_csv', 'read_startup_csv', 'find_dictionary_files']) {
     assert.equal(calls.filter(call => call[0] === command).at(-1)[1].directory, 'C:\\日本語 folder');
   }
