@@ -100,9 +100,115 @@ CSV・config・input・outputなどの利用者データは変更しません。
 
 ## ポータブル版の更新ファイルの作成・公開
 
-[ポータブル版のリリース手順](docs/portable-release-guide.md) の **手順1〜5** を実行してください。
-`0.1.1` から `0.1.2` への更新を例に、バージョン変更 → 配布ファイル作成 → 起動確認 → GitHub公開 → 更新テストの順にまとめています。
-実行するコマンドと添付する3ファイルは、リンク先に記載しています。
+以下は `0.1.4` から `0.1.5` へ更新する例です。実際の更新元と、前回公開した番号より大きい更新先のバージョンに読み替えてください。
+プロジェクトのフォルダー（`package.json` がある場所）でPowerShellを開き、順番に実行します。
+
+### 事前準備
+
+配布用exeをビルドできるWindows環境、更新機能を備えた旧版exe、前回と同じ署名鍵が必要です。
+署名鍵の標準保存先は次のとおりです。暗号化している場合はパスワードも用意してください。
+
+- 秘密鍵：`$env:USERPROFILE\.tauri\ts-sddirecta.key`
+- 公開鍵：`$env:USERPROFILE\.tauri\ts-sddirecta.key.pub`
+
+前回と同じ鍵を使い続け、リリースのたびに作り直さないでください。秘密鍵とパスワードは公開しないでください。
+
+GitHub CLIが未導入の場合は、次を実行してからPowerShellを開き直します。
+
+```powershell
+winget install --id GitHub.cli --exact
+```
+
+配布先 `shakenyanta/ts-sddirecta-releases` に書き込みできるアカウントで、初回のみログインします。
+
+```powershell
+gh auth login --hostname github.com
+```
+
+### 1. 更新元のexeを保存する
+
+新しいexeをビルドする前に、旧版を更新テスト用フォルダーへコピーします。
+
+```powershell
+npm.cmd run update:test:prepare -- -Version 0.1.4
+```
+
+コピー元は `dist-update\v0.1.4\ts-sddirecta.exe`、なければ `src-tauri\target\release\ts-sddirecta.exe` です。
+バージョンが一致しない場合は停止します。別の場所の旧版を使う場合は、代わりに次を実行します。
+
+```powershell
+npm.cmd run update:test:prepare -- -Version 0.1.4 -SourceExe 'D:\アプリ\ts-sddirecta.exe'
+```
+
+保存先は `dist-update\update-test\v0.1.4\ts-sddirecta.exe` です。手順5で使うため、新しいexeで上書きしないでください。
+既存のテスト用フォルダーは上書きされません。既にある場合は、中のexeのバージョンを確認して使ってください。
+データの保持も確認する場合は、CSV・`config`・`.config`・`input`・`output` などのテスト用コピーを保存先に置きます。
+
+### 2. バージョンを変更し、更新ファイルを作る
+
+`package.json` の `version` だけを変更して保存します。
+
+```json
+"version": "0.1.5"
+```
+
+今回の変更内容を `CHANGELOG.md` の「未リリース」欄に日本語で記録し、次のコマンドの `-Notes` にも指定します。
+
+```powershell
+npm.cmd run release:prepare -- -Notes "今回の変更内容"
+```
+
+署名鍵のパスワードを求められたら入力し、「配布ファイルの作成が完了しました」と表示されるまで待ちます。
+バージョンの同期・ビルド・署名をまとめて行うため、`build:exe` や `version:sync` の個別実行は不要です。
+署名鍵が標準以外の場所にある場合は、代わりに次を実行します。公開鍵も秘密鍵のパスに `.pub` を付けた場所に必要です。
+
+```powershell
+npm.cmd run release:prepare -- -PrivateKeyPath 'D:\署名鍵\ts-sddirecta.key' -Notes "今回の変更内容"
+```
+
+`dist-update\v0.1.5\` に次の3ファイルが生成されます。同じ実行で作成したものを使い、生成後の内容・名前は変更しないでください。
+
+```text
+ts-sddirecta.exe
+latest.json
+latest.json.sig
+```
+
+ライト版・プロ版でこの3ファイルは共通です。プロ設定セット `tools/pro-kit/` は通常の配布物やGitHub Releasesの添付に含めず、開発部署へ別途配布します。
+
+### 3. 新しいexeの動作を確認する
+
+`dist-update\v0.1.5\ts-sddirecta.exe` を起動し、「バージョン情報」が `0.1.5` であることと、変更した機能が正常に動くことを確認して終了します。
+
+### 4. GitHubへ公開する
+
+公開前に、配布ファイルと公開先を確認します。このコマンドでは公開されません。
+
+```powershell
+npm.cmd run release:publish -- -DryRun
+```
+
+確認できたら、次を実行します。**実行すると最新版として公開され、利用者の「アップデート確認」から取得できるようになります。**
+
+```powershell
+npm.cmd run release:publish
+```
+
+`package.json` のバージョンからタグ・タイトルを設定し、3ファイルを添付して公開します。説明には手順2の `-Notes` が使われます。
+「公開が完了しました」と表示されたら次へ進みます。既存の同じタグは上書きしません。
+失敗した場合は表示されたエラーとGitHubの公開状態を確認してから対処してください。公開済みの番号で修正を出す場合は、さらに大きいバージョンで作り直します。
+
+### 5. 旧版からアップデートを確認する
+
+SD処理をしていない状態で、手順1で保存した `dist-update\update-test\v0.1.4\ts-sddirecta.exe` を起動します。
+
+1. メニューの「アップデート確認」を押し、`0.1.5` への更新案内で **YES** を選びます。
+2. 自動で再起動したら、「バージョン情報」が `0.1.5` になっていることを確認します。
+3. CSV・`config`・`.config`・`input`・`output` などが保持され、アプリが正常に動くことを確認します。プロ版では版の設定も維持されていることを確認してください。
+4. 再度「アップデート確認」を押し、「最新バージョンです。」と表示されることを確認します。
+
+更新後は、exeの隣の `.ts-sddirecta-update-*` フォルダーに旧exe（`previous.exe`）が残ります。動作確認が終わるまで保管してください。
+署名鍵・公開失敗時の対処などの詳細は、[ポータブル版のリリース手順](docs/portable-release-guide.md) を参照してください。
 
 ## SD操作の権限
 
