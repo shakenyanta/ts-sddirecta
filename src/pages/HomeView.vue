@@ -83,7 +83,7 @@ const statusLabel = computed(() => operationKind.value === 'format' && writeStag
     ? 'FF初期化中' : writeStageLabel(writeStage.value));
 const writeFiles = computed(() => [...sdloadingDictionary.value]
     .filter(([, area]) => area.accessFlag !== 'E')
-    .map(([filename, area]) => ({ filename, description: area.description, individualInfo: fileIndividualInfos.value.get(filename) ?? '', modifiedAt: fileModifiedTimes.value.get(filename) ?? null })));
+    .map(([filename, area]) => ({ filename, description: area.description, individualInfo: fileIndividualInfos.value.get(filename)?.value ?? '', modifiedAt: fileModifiedTimes.value.get(filename) ?? null })));
 const allFileCount = computed(() => writeFiles.value.length);
 interface UpdateInfo { update_no: string; update_ver: string; condition: string; car_type: string }
 interface FileUpdates { files: Record<string, UpdateInfo[]>; warnings: string[] }
@@ -92,6 +92,8 @@ const optionFiles = computed(() => writeFiles.value.flatMap(file => {
     const updates = fileUpdates.value.files[file.filename];
     if (!updates?.length) return [file];
     return updates.map(update => ({ ...file,
+        individualInfo: update.update_no === '02'
+            ? fileIndividualInfos.value.get(file.filename)?.bm_parameter2 ?? '' : file.individualInfo,
         description: update.update_no === '01' ? 'BM:パラメータ1'
             : update.update_no === '02' ? 'BM:パラメータ2' : file.description,
         updateNo: update.update_no, updateVer: update.update_ver,
@@ -116,7 +118,8 @@ const requiredSdCapacity = computed(() => sdAddressRange.value ? Number(BigInt(s
 const mapDetailsOpen = ref(false);
 const matchedFiles = ref<string[]>([]);
 const fileModifiedTimes = ref(new Map<string, number | null>());
-const fileIndividualInfos = ref(new Map<string, string>());
+interface FileIndividualInfo { value: string; bm_parameter2: string }
+const fileIndividualInfos = ref(new Map<string, FileIndividualInfo>());
 const warningFiles = ref<string[]>([]);
 const canSdWrite = computed(() => !initializing.value && !writing.value && !closing.value && allFileCount.value > 0);
 const canSdRead = computed(() => !initializing.value && !writing.value && !closing.value && sdDirectDictionary.value.size > 0);
@@ -382,7 +385,7 @@ async function refreshMatchedFiles(report = false) {
 	if (matchingGeneration === current || disposed || !ready) return;
 	matchingGeneration = current;
 	try {
-		const result = await invoke<{ files: string[]; modified_times: Record<string, number | null>; individual_infos: Record<string, string>; file_updates: FileUpdates; warning_files: string[]; from_input: boolean; input_exists: boolean }>('find_dictionary_files', {
+		const result = await invoke<{ files: string[]; modified_times: Record<string, number | null>; individual_infos: Record<string, FileIndividualInfo>; file_updates: FileUpdates; warning_files: string[]; from_input: boolean; input_exists: boolean }>('find_dictionary_files', {
 			filenames: [...sdDirectDictionary.value.keys()],
 			directory: sourceDirectory.value,
 		});
@@ -816,6 +819,21 @@ function onFolderDoubleClick(path: string, event: MouseEvent) {
 	void openFolder(path);
 }
 
+const openingFile = ref(false);
+async function openGridFile(filename: string) {
+    if (openingFile.value || initializing.value || writing.value || closing.value || !displayedDirectory.value) return;
+    if (!optionFiles.value.some(file => file.filename === filename)) return;
+    openingFile.value = true;
+    const directory = displayedDirectory.value;
+    try {
+        await invoke('open_grid_file', { directory, filename });
+    } catch (error) {
+        await appendMessage(`ファイルを開けませんでした: ${filename}: ${String(error)}`);
+    } finally {
+        openingFile.value = false;
+    }
+}
+
 async function openFolder(directory: string) {
 	if (!directory || closing.value) return;
 	try {
@@ -956,7 +974,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 			</div>
 			<div v-if="features.optionPanel" id="resizer3" class="resizer resizer-horizontal" @pointerdown="resizeOptions"></div>
 			<section v-if="features.optionPanel" id="panel_option" class="panel_option" aria-label="オプション">
-				<OptionGrid :files="optionFiles" />
+				<OptionGrid :files="optionFiles" :disabled="initializing || writing || closing" @open-file="openGridFile" />
 			</section>
 		</div>
 	</div>

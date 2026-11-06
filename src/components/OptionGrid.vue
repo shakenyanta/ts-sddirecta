@@ -1,11 +1,24 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watchEffect } from 'vue';
+import { computed, onMounted, ref, watch, watchEffect } from 'vue';
 import { formatFileTimestamp } from '../utils/fileTimestamp';
 
 const props = defineProps<{ files: {
     filename: string; description: string; individualInfo: string; modifiedAt?: number | null;
     updateNo?: string; updateVer?: string; condition?: string; carType?: string;
-}[] }>();
+}[]; disabled?: boolean }>();
+const emit = defineEmits<{ openFile: [filename: string] }>();
+const selectedRow = ref<number | null>(null);
+watch(() => props.files, () => { selectedRow.value = null; });
+
+function selectFile(index: number) {
+    if (!props.disabled) selectedRow.value = index;
+}
+
+function openFile(index: number) {
+    if (props.disabled) return;
+    selectedRow.value = index;
+    emit('openFile', props.files[index].filename);
+}
 const grid = ref<HTMLElement | null>(null);
 const filenameWidth = ref(68);
 const resizedWidths = ref<number[] | null>(null);
@@ -101,6 +114,9 @@ const backgroundColumns = computed(() => columns.value
             <tbody>
                 <tr v-for="(file, index) in files" :key="index">
                     <td v-for="column in columns" :key="column.label"
+                        :class="{ 'filename-cell': column.label === 'ファイル名', 'selected-cell': column.label === 'ファイル名' && selectedRow === index }"
+                        @click="column.label === 'ファイル名' && selectFile(index)"
+                        @dblclick="column.label === 'ファイル名' && openFile(index)"
                         :title="column.label === '個別情報' ? file.individualInfo || undefined : column.label === '説明' ? file.description || undefined : column.label === 'ファイル名' ? formatFileTimestamp(file.modifiedAt) || undefined : undefined">
                         <template v-if="column.label === 'No'">{{ index + 1 }}</template>
                         <template v-else-if="column.label === 'ファイル名'">{{ file.filename }}</template>
@@ -214,4 +230,10 @@ tbody tr:nth-child(even) { background: #f5f9fe; }
 tbody tr:hover { background: #eaf3ff; }
 tbody td:nth-child(2), tbody td:nth-child(3) { text-align: left; }
 tbody td { text-overflow: ellipsis; }
+.filename-cell { user-select: none; }
+tbody td.selected-cell {
+    background: #dbeafe;
+    box-shadow: inset 0 0 0 1px #60a5fa;
+    color: #1e40af;
+}
 </style>

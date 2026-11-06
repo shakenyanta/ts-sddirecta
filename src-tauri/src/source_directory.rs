@@ -62,6 +62,20 @@ pub fn input_exists(directory: &std::path::Path) -> Result<bool, String> {
     }
 }
 
+/// Resolve a single file in the displayed directory, never a URL or another directory.
+pub fn file_to_open(folder: String, filename: &str) -> Result<PathBuf, String> {
+    if filename.is_empty() || filename.contains(['/', '\\', ':']) || filename == "." || filename == ".." {
+        return Err("ファイル名が不正です".into());
+    }
+    let folder = directory(Some(folder))?;
+    let path = fs::canonicalize(folder.join(filename))
+        .map_err(|e| format!("ファイルが存在しないか、アクセスできません: {e}"))?;
+    if path.parent() != Some(folder.as_path()) || !path.is_file() {
+        return Err("表示中のフォルダーの通常ファイルではありません".into());
+    }
+    Ok(path)
+}
+
 /// Only enumerate immediate directories. Do not follow descendants or read file contents.
 pub fn child_folders(path: String) -> Result<Vec<String>, String> {
     let directory = directory(Some(path))?;
@@ -84,6 +98,23 @@ pub fn child_folders(path: String) -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_file_resolves_only_files_in_the_displayed_folder() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("input")).unwrap();
+        fs::write(root.path().join("日本語 file.001"), b"root").unwrap();
+        fs::write(root.path().join("input").join("日本語 file.001"), b"input").unwrap();
+        for folder in [root.path().to_path_buf(), root.path().join("input")] {
+            let resolve = |name| file_to_open(folder.to_str().unwrap().to_owned(), name);
+            assert_eq!(fs::read(resolve("日本語 file.001").unwrap()).unwrap(),
+                if folder == root.path() { b"root".to_vec() } else { b"input".to_vec() });
+            for invalid in ["", ".", "..", "../file.001", "input\\file.001", "https:example", "missing", "input"] {
+                assert!(resolve(invalid).is_err(), "{invalid}");
+            }
+        }
+        assert!(file_to_open("relative".into(), "file.001").is_err());
+    }
 
     #[test]
     fn lists_only_immediate_folders_and_reports_invalid_paths() {

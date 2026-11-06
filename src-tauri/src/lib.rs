@@ -186,6 +186,30 @@ async fn open_folder(directory: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn open_grid_file(directory: String, filename: String) -> Result<(), String> {
+    if edition::current().edition != edition::Edition::Pro {
+        return Err("ファイル一覧からの起動はプロ版専用です".into());
+    }
+    if EXIT_WAITING.load(Ordering::SeqCst) || WRITE_RUNNING.load(Ordering::SeqCst) || sd_worker::is_busy() {
+        return Err("SD処理中または終了処理中です".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = (|| {
+            let path = source_directory::file_to_open(directory.clone(), &filename)?;
+            tauri_plugin_opener::open_path(path, None::<&str>)
+                .map_err(|e| format!("関連付けされたアプリで開けません。関連付けとアクセス権を確認してください: {e}"))
+        })();
+        match &result {
+            Ok(()) => diagnostics::record("INFO", &format!("open grid file: directory={directory:?} filename={filename:?}")),
+            Err(error) => diagnostics::record("WARN", &format!("open grid file failed: directory={directory:?} filename={filename:?} error={error}")),
+        }
+        result
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 async fn open_sd_output() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(|| {
         let path = sd_read_batch::output_directory()?;
@@ -423,7 +447,7 @@ struct StartupCsv {
 struct MatchedFiles {
     files: Vec<String>,
     modified_times: std::collections::HashMap<String, Option<u64>>,
-    individual_infos: std::collections::HashMap<String, String>,
+    individual_infos: std::collections::HashMap<String, individual_info::IndividualInfo>,
     file_updates: file_bc::FileUpdates,
     warning_files: Vec<String>,
     from_input: bool,
@@ -575,6 +599,7 @@ pub fn run() {
             get_drives,
             sd_admin_status,
             open_folder,
+            open_grid_file,
             open_diagnostic_log,
             open_sd_output,
             prepare_sd_write,

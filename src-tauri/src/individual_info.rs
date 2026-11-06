@@ -1,11 +1,17 @@
 //! Individual-info formats ported from ts-sddirect's fileDataUtils.ts/getUniqueInfo.
 use std::{fs, path::Path};
 
+#[derive(Default, serde::Serialize)]
+pub struct IndividualInfo {
+    pub value: String,
+    pub bm_parameter2: String,
+}
+
 pub fn for_files(
     directory: &Path,
     files: &[String],
     edition: crate::edition::Edition,
-) -> std::collections::HashMap<String, String> {
+) -> std::collections::HashMap<String, IndividualInfo> {
     if edition != crate::edition::Edition::Pro {
         return std::collections::HashMap::new();
     }
@@ -41,24 +47,31 @@ fn supported(stem: &str) -> bool {
         )
 }
 
-fn read(path: &Path) -> String {
+fn read(path: &Path) -> IndividualInfo {
     let stem = path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_ascii_uppercase();
     if !supported(&stem) {
-        return String::new();
+        return IndividualInfo::default();
     }
     if numbered_ts_main(&stem)
         && !path
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("HEX"))
     {
-        return String::new();
+        return IndividualInfo::default();
     }
     match fs::read(path) {
-        Ok(bytes) => extract(&stem, &bytes),
+        Ok(bytes) => IndividualInfo {
+            value: extract(&stem, &bytes),
+            bm_parameter2: if stem == "FILE-BM" {
+                bm_parameter2(&bytes)
+            } else {
+                String::new()
+            },
+        },
         Err(error) => {
             crate::diagnostics::record(
                 "WARN",
@@ -67,9 +80,33 @@ fn read(path: &Path) -> String {
                     path.display()
                 ),
             );
-            String::new()
+            IndividualInfo::default()
         }
     }
+}
+
+fn bm_parameter2(bytes: &[u8]) -> String {
+    const FORMATS: [&str; 11] = [
+        "Nフォーマット",
+        "Fフォーマット",
+        "マルチ",
+        "日本交通(CC)",
+        "扇橋(CD)",
+        "京王自動車",
+        "名鉄",
+        "両備",
+        "TS(自動日報2)",
+        "高速",
+        "CBフォーマット",
+    ];
+    bytes
+        .get(0x007F)
+        .and_then(|&value| {
+            FORMATS
+                .get(value as usize)
+                .map(|name| format!("{value:02X}[{name}]"))
+        })
+        .unwrap_or_default()
 }
 
 fn hex(bytes: &[u8], separator: &str) -> String {
@@ -251,7 +288,7 @@ mod tests {
         for filename in ["FILE-BC.001", "FILE-BC.002", "file-bc.003"] {
             let path = dir.path().join(filename);
             fs::write(&path, &bytes).unwrap();
-            assert_eq!(read(&path), "01 02 01", "{filename}");
+            assert_eq!(read(&path).value, "01 02 01", "{filename}");
         }
         for bytes in [vec![], vec![0xFF; 64], block(*b"01XX"), b"01FU".to_vec()] {
             assert_eq!(extract("FILE-BC", &bytes), "");
@@ -276,11 +313,11 @@ mod tests {
         ] {
             bytes[0xCE..0xD0].copy_from_slice(&value);
             fs::write(&path, &bytes).unwrap();
-            assert_eq!(read(&path), expected, "{value:02X?}");
+            assert_eq!(read(&path).value, expected, "{value:02X?}");
         }
         for size in [0, 0xCE, 0xCF] {
             fs::write(&path, &bytes[..size]).unwrap();
-            assert_eq!(read(&path), "");
+            assert_eq!(read(&path).value, "");
         }
     }
 
@@ -323,7 +360,7 @@ mod tests {
                 .path()
                 .join(format!("{}.hEx", stem.to_ascii_lowercase()));
             fs::write(&path, &bytes).unwrap();
-            assert_eq!(read(&path), "261104_01 ABCD", "{stem}");
+            assert_eq!(read(&path).value, "261104_01 ABCD", "{stem}");
             assert_eq!(extract(stem, &bytes[..0x1005]), "");
         }
         for stem in [
@@ -339,14 +376,14 @@ mod tests {
             assert!(!supported(stem), "{stem}");
             let path = dir.path().join(format!("{stem}.HEX"));
             fs::write(&path, &bytes).unwrap();
-            assert_eq!(read(&path), "", "{stem}");
+            assert_eq!(read(&path).value, "", "{stem}");
         }
         let path = dir.path().join("TS-MAIN3.bin");
         fs::write(&path, &bytes).unwrap();
-        assert_eq!(read(&path), "");
+        assert_eq!(read(&path).value, "");
         let path = dir.path().join("TS-MAIN.HEX");
         fs::write(&path, b"00001000465526110401").unwrap();
-        assert_eq!(read(&path), "261104_01");
+        assert_eq!(read(&path).value, "261104_01");
     }
 
     #[test]
@@ -408,7 +445,7 @@ mod tests {
             b"54532D4449535026010100\r\n54532D535542323026021800\r\n",
         )
         .unwrap();
-        assert_eq!(read(&path), "260218_00");
+        assert_eq!(read(&path).value, "260218_00");
         assert_eq!(extract("TS-DISP", b"54532D4449535026010100"), "");
         assert_eq!(extract("TS-DISP", b"54532D53554232302602\n1800"), "");
         assert_eq!(extract("TS-DISP", b"not a version"), "");
@@ -428,7 +465,7 @@ mod tests {
         ] {
             let path = dir.path().join(filename);
             fs::write(&path, content).unwrap();
-            assert_eq!(read(&path), expected, "{filename}");
+            assert_eq!(read(&path).value, expected, "{filename}");
         }
         // The two padding spaces are part of the TS-PRN signature.
         assert_eq!(extract("TS-PRN", b"54532D50524E26110400"), "");
@@ -453,16 +490,75 @@ mod tests {
         use crate::edition::Edition::{Lite, Pro};
         assert!(for_files(dir.path(), &files, Lite).is_empty());
         assert_eq!(
-            for_files(dir.path(), &files, Pro)["FILE-BM.001"],
+            for_files(dir.path(), &files, Pro)["FILE-BM.001"].value,
             "00 00 00 00 00 00 00 00"
         );
         assert_eq!(
-            for_files(&dir.path().join("input"), &files, Pro)["FILE-BM.001"],
+            for_files(&dir.path().join("input"), &files, Pro)["FILE-BM.001"].value,
             "FF FF FF FF FF FF FF FF"
         );
-        assert_eq!(read(&dir.path().join("missing/FILE-BM.001")), "");
-        assert_eq!(read(&dir.path().join("unsupported.001")), "");
+        assert_eq!(read(&dir.path().join("missing/FILE-BM.001")).value, "");
+        assert_eq!(read(&dir.path().join("unsupported.001")).value, "");
         fs::write(dir.path().join("TS-MAIN2.bin"), vec![0xFF; 0x1008]).unwrap();
-        assert_eq!(read(&dir.path().join("TS-MAIN2.bin")), "");
+        assert_eq!(read(&dir.path().join("TS-MAIN2.bin")).value, "");
+    }
+
+    #[test]
+    fn bm_parameter2_reads_the_binary_byte_at_007f() {
+        let names = [
+            "Nフォーマット",
+            "Fフォーマット",
+            "マルチ",
+            "日本交通(CC)",
+            "扇橋(CD)",
+            "京王自動車",
+            "名鉄",
+            "両備",
+            "TS(自動日報2)",
+            "高速",
+            "CBフォーマット",
+        ];
+        let mut bytes = vec![0xFF; 0x81];
+        for (value, name) in names.iter().enumerate() {
+            bytes[0x7F] = value as u8;
+            assert_eq!(bm_parameter2(&bytes), format!("{value:02X}[{name}]"));
+        }
+        for value in [0x0B, 0x30, 0xFF] {
+            bytes[0x7F] = value;
+            assert_eq!(bm_parameter2(&bytes), "");
+        }
+        assert_eq!(bm_parameter2(&bytes[..0x7F]), "");
+        assert_eq!(bm_parameter2(&[]), "");
+    }
+
+    #[test]
+    fn bm_info_is_read_once_per_file_and_refreshed_in_each_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("input")).unwrap();
+        let mut bytes = vec![0; 0x80];
+        bytes[0x7F] = 0x0A;
+        fs::write(dir.path().join("file-bm.002"), &bytes).unwrap();
+        bytes[0x7F] = 1;
+        fs::write(dir.path().join("input/file-bm.002"), &bytes).unwrap();
+        let files = vec!["file-bm.002".into()];
+        use crate::edition::Edition::{Lite, Pro};
+        assert!(for_files(dir.path(), &files, Lite).is_empty());
+        assert_eq!(
+            for_files(dir.path(), &files, Pro)["file-bm.002"].bm_parameter2,
+            "0A[CBフォーマット]"
+        );
+        assert_eq!(
+            for_files(&dir.path().join("input"), &files, Pro)["file-bm.002"].bm_parameter2,
+            "01[Fフォーマット]"
+        );
+        fs::write(dir.path().join("file-bm.002"), [0; 8]).unwrap();
+        let refreshed = for_files(dir.path(), &files, Pro);
+        assert_eq!(refreshed["file-bm.002"].bm_parameter2, "");
+        assert_eq!(refreshed["file-bm.002"].value, "00 00 00 00 00 00 00 00");
+        fs::remove_file(dir.path().join("file-bm.002")).unwrap();
+        assert_eq!(
+            for_files(dir.path(), &files, Pro)["file-bm.002"].bm_parameter2,
+            ""
+        );
     }
 }
