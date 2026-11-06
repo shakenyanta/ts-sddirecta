@@ -48,7 +48,7 @@ function view(invoke, clock = performance, DateClass = Date) {
   const api = new Function(...Object.keys(bindings), transpile(source) + `
     return { resize, sdHeightRatio, menuHeight, resizeOptions, baseWidthRatio, appendMessage, initializeSource, refreshMatchedFiles, sourceDirectory, displayedDirectory, openFolder,
       selectFolder, selectedFolder, folderNodes, visibleFolders, toggleFolder, pathList,
-      sdDirectDictionary, sdloadingDictionary, sdAddressRange, matchedFiles, writeFiles, optionFiles, canSdWrite, allFileCount, initializing, messages, pathError,
+      sdDirectDictionary, sdloadingDictionary, sdAddressRange, requiredSdCapacity, matchedFiles, writeFiles, optionFiles, canSdWrite, allFileCount, initializing, messages, pathError,
       onSdWrite, onSdRead, onSdFfInitialize, onSdFormat, startSdFormat, formatPlan, formatLabel, formatSimpleTest, formatStep, formatLabelValid, writeStage, canSdRead, popupTitle, statusLabel, closeWriteDialog, copyWriteLog, openDiagnosticLog, failureDetails, writeDialogOpen, writeLog, writing, pendingPlan, progress, percent, currentRun, transientNotice, operationStatus, operationDetail };
   `)(...Object.values(bindings));
   return { ...api, mount: () => mount(), unmount: () => unmount(),
@@ -64,6 +64,18 @@ function view(invoke, clock = performance, DateClass = Date) {
 }
 
 // Compare log content independently of its display timestamp.
+test('card capacity requirement uses the inclusive CSV end address and clears without a map', () => {
+  const ui = view(async () => {});
+  assert.equal(ui.requiredSdCapacity.value, 0);
+  const { parseSdDirectCsv } = utility('src/utils/sdDirectCsv.ts');
+  ui.sdAddressRange.value = parseSdDirectCsv('A,MAIN,078B0000,07BAFFFF\nE').addressRange;
+  assert.equal(ui.requiredSdCapacity.value, 129695744);
+  ui.sdAddressRange.value = parseSdDirectCsv('A,PARAM,0,1FF\nE').addressRange;
+  assert.equal(ui.requiredSdCapacity.value, 512);
+  ui.sdAddressRange.value = null;
+  assert.equal(ui.requiredSdCapacity.value, 0);
+});
+
 function panelContents(ui) {
   return ui.messages.value.map(({ text, warning }) => warning ? { text, warning } : text);
 }
@@ -1260,6 +1272,20 @@ test('failure guidance does not interpret diagnostic query failures as the prima
   for (const [code, text] of [[19, /書き込み禁止/], [21, /接続/], [1167, /接続/], [32, /別の処理/], [1117, /転送/], [23, /転送/]]) {
     assert.match(explainSdFailure(`処理失敗 (os error ${code})`).cause, text);
   }
+});
+
+test('CSV capacity and overlap failures explain the cause and preserve write status', () => {
+  const { explainSdFailure } = utility('src/utils/sdWrite.ts');
+  const message = 'TS-MAIN3.HEX: SDカードの容量が不足しています\n不足容量: 1245184 バイト';
+  const failure = explainSdFailure(message, true);
+  assert.equal(failure.causeLabel, '原因');
+  assert.match(failure.cause, /実容量を超え/);
+  assert.match(failure.action, /交換/);
+  assert.match(failure.note, /書込みは開始していません/);
+  assert.doesNotMatch(explainSdFailure(message).note, /開始していません/);
+  const overlap = explainSdFailure('FILE: CSVに定義された領域が直前の領域と重複しています', true);
+  assert.match(overlap.action, /重複を修正/);
+  assert.match(explainSdFailure('処理失敗\n診断: SDカードの容量が不足しています').cause, /特定できません/);
 });
 
 test('size comments distinguish truncation, padding, zero-byte fill, and exact size', () => {

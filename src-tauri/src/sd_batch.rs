@@ -134,9 +134,18 @@ pub fn validate_entries(entries: &[Entry], capacity: u64) -> Result<u64, String>
             .address
             .checked_add(entry.size)
             .ok_or("領域サイズが大きすぎます")?;
-        if entry.size == 0 || next > capacity || (i > 0 && entry.address < end) {
+        if entry.size == 0 {
+            return Err(format!("{}: CSVの領域サイズが0です", entry.filename));
+        }
+        if next > capacity {
             return Err(format!(
-                "{}: 領域が重複しているかSD容量外です",
+                "{}: SDカードの容量が不足しています\n対象領域の終端までに必要な容量: {} バイト\nSDの実容量: {} バイト\n不足容量: {} バイト",
+                entry.filename, next, capacity, next - capacity
+            ));
+        }
+        if i > 0 && entry.address < end {
+            return Err(format!(
+                "{}: CSVに定義された領域が直前の領域と重複しています",
                 entry.filename
             ));
         }
@@ -646,8 +655,15 @@ mod tests {
         assert!(parse_areas("A,a,0,FF\nW,a,100,1FF").is_err());
         assert!(parse_areas("A,a,100,FF").is_err());
         assert_eq!(parse_areas("A,a,0,FF\nE\ninvalid").unwrap().len(), 1);
-        assert!(validate_entries(&[entry(0, 1024, 0), entry(512, 512, 0)], 2048).is_err());
-        assert!(validate_entries(&[entry(1024, 1025, 0)], 2048).is_err());
+        assert!(validate_entries(&[entry(0, 1024, 0), entry(512, 512, 0)], 2048)
+            .unwrap_err()
+            .contains("領域が直前の領域と重複"));
+        let shortage = validate_entries(&[entry(126550016, 3145728, 0)], 128450560)
+            .unwrap_err();
+        assert!(shortage.contains("SDカードの容量が不足"));
+        assert!(shortage.contains("必要な容量: 129695744 バイト"));
+        assert!(shortage.contains("SDの実容量: 128450560 バイト"));
+        assert!(shortage.contains("不足容量: 1245184 バイト"));
         assert_eq!(
             validate_entries(&[entry(0, 1024, 0), entry(1024, 512, 0)], 2048).unwrap(),
             1536

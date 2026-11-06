@@ -50,7 +50,7 @@ const writeTotal = ref(0);
 const copyStatus = ref('');
 const operationError = ref('');
 const failureDetails = computed(() => writeStage.value === 'failed' && operationError.value
-    ? explainSdFailure(operationError.value) : null);
+    ? explainSdFailure(operationError.value, operationKind.value === 'ff' && progress.value === null) : null);
 const operationKind = ref<'read' | 'write' | 'ff' | 'format'>('write');
 const operationName = computed(() => operationKind.value === 'format' ? 'フォーマット' : operationKind.value === 'ff' ? 'SD FF初期化' : operationKind.value === 'read' ? 'SD読込' : 'SD書込');
 const popupTitle = computed(() => writing.value ? `${statusLabel.value}…`
@@ -112,6 +112,7 @@ const messages = ref<TimedPanelMessage[]>([]);
 const sdDirectDictionary = ref(new Map<string, SdArea>());
 const sdloadingDictionary = ref(new Map<string, SdArea>());
 const sdAddressRange = ref<AddressRange | null>(null);
+const requiredSdCapacity = computed(() => sdAddressRange.value ? Number(BigInt(sdAddressRange.value.endAddress) + 1n) : 0);
 const mapDetailsOpen = ref(false);
 const matchedFiles = ref<string[]>([]);
 const fileModifiedTimes = ref(new Map<string, number | null>());
@@ -736,7 +737,7 @@ function closeWriteDialog() {
 async function copyWriteLog() {
     try {
         const text = writeLog.value.map(message => typeof message === 'string' ? message : message.text);
-        if (failureDetails.value) text.push(`原因候補: ${failureDetails.value.cause}`, `対処: ${failureDetails.value.action}`);
+        if (failureDetails.value) text.push(`${failureDetails.value.causeLabel}: ${failureDetails.value.cause}`, `対処: ${failureDetails.value.action}`, failureDetails.value.note);
         await navigator.clipboard.writeText(text.join('\n'));
         copyStatus.value = 'コピーしました';
     } catch {
@@ -891,7 +892,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 			<div class="panel-base" :style="{ gridTemplateRows: `${Math.max(menuHeight, minimumMenuHeight)}px 1px minmax(0, ${sdHeightRatio}fr) 1px minmax(0, ${1 - sdHeightRatio}fr) minmax(44px, auto)` }">
 				<div id="panel_menu" class="panel_menu">
 					<div ref="menuContent" class="menu-content">
-						<SdMenu ref="sdMenu" :can-write="canSdWrite" :can-read="canSdRead" :can-initialize="canSdRead" :busy="initializing || writing || closing || writeDialogOpen" :write-label="closing ? '終了待ち…' : writing ? `${statusLabel}…` : 'SD書込'"
+						<SdMenu ref="sdMenu" :required-capacity="requiredSdCapacity" :can-write="canSdWrite" :can-read="canSdRead" :can-initialize="canSdRead" :busy="initializing || writing || closing || writeDialogOpen" :write-label="closing ? '終了待ち…' : writing ? `${statusLabel}…` : 'SD書込'"
 							@write="onSdWrite" @read="onSdRead" @initialize="onSdFfInitialize" @format="onSdFormat" @action="logButtonPress" @error="appendMessage" />
 					</div>
 				</div>
@@ -987,9 +988,9 @@ function resize(event: PointerEvent, divider: 1 | 2) {
             <section v-if="failureDetails" class="failure-summary" role="alert" aria-label="失敗の確認結果と対処">
                 <strong>確認できた内容</strong>
                 <p class="failure-facts">{{ failureDetails.message }}</p>
-                <p><strong>原因候補：</strong>{{ failureDetails.cause }}</p>
+                <p><strong>{{ failureDetails.causeLabel }}：</strong>{{ failureDetails.cause }}</p>
                 <p><strong>対処：</strong>{{ failureDetails.action }}</p>
-                <p class="failure-note">書込・初期化・フォーマットでは、処理途中まで変更されている場合があります。原因候補は診断ログで確認してください。</p>
+                <p class="failure-note">{{ failureDetails.note }}</p>
             </section>
             <div ref="writeLogPanel" class="write-log" :class="{ 'format-log': operationKind === 'format' }" role="log" :aria-label="`${operationName}ログ`" tabindex="0" @scroll="writeLogScroller.onScroll">
                 <p v-for="(message, index) in writeLog" :key="index" :class="{ 'log-warning': typeof message !== 'string' && message.warning, 'log-done': typeof message === 'string' && (message.startsWith('全件完了') || message.startsWith('フォーマット完了 ')) }">{{ typeof message === 'string' ? message : message.text }}</p>

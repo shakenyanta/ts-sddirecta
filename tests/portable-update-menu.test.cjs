@@ -29,13 +29,40 @@ function menu(invoke) {
   };
   const api = new Function(...Object.keys(bindings), compiled + `
     return { showAppInfo, installUpdate, closeAppInfo, infoDialog, infoMessage, appVersion, availableUpdate, installingUpdate,
-      refreshDrives, drives, selectedDrive, requestFormat, canRequestWrite };
+      refreshDrives, drives, displayedDrives, selectedDrive, requestFormat, canRequestWrite };
   `)(...Object.values(bindings));
   api.infoDialog.value = { showModal() {}, close() { closes++; } };
   return { ...api, mount: () => mount(), props, calls, actions, closes: () => closes };
 }
 
 const update = { status: 'available', current_version: '0.1.0', version: '0.2.0', notes: 'Changes' };
+
+test('capacity warning follows the CSV requirement and actual media capacity without blocking writes', async () => {
+  let size = 128450560;
+  const ui = menu(command => command === 'get_drives' ? [
+    { drive: 'E:', type: 'Removable', size },
+    { drive: 'F:', type: 'Removable', size: 31274827776 },
+    { drive: 'G:', type: 'Removable', size: 0 },
+  ] : undefined);
+  ui.props.requiredCapacity = 129695744;
+  await ui.refreshDrives();
+  assert.deepEqual(ui.displayedDrives.value.map(drive => drive.shortage), [true, false, false]);
+  const title = ui.displayedDrives.value[0].title;
+  assert.match(title, /^容量が不足しています。\n/);
+  assert.match(title, /129\.70 MB（129,695,744 バイト）/);
+  assert.match(title, /128\.45 MB（128,450,560 バイト）/);
+  assert.match(title, /1\.25 MB（1,245,184 バイト）/);
+  assert.equal(ui.canRequestWrite.value, true);
+  ui.props.requiredCapacity = size;
+  assert.equal(ui.displayedDrives.value[0].shortage, false);
+  ui.props.requiredCapacity = size + 1;
+  assert.equal(ui.displayedDrives.value[0].shortage, true);
+  size = 129695744;
+  await ui.refreshDrives();
+  assert.equal(ui.displayedDrives.value[0].shortage, false);
+  ui.props.requiredCapacity = 0;
+  assert.equal(ui.displayedDrives.value[0].shortage, false);
+});
 
 test('unassigned media are selectable for format without a filesystem or drive letter', async () => {
   const ui = menu(command => command === 'get_drives' ? [

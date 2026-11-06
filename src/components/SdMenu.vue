@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { getName, getVersion } from '@tauri-apps/api/app';
 import { editionLabel } from '../editions';
 
-const props = defineProps<{ canWrite: boolean; canRead?: boolean; canInitialize?: boolean; busy?: boolean; writeLabel?: string }>();
+const props = defineProps<{ canWrite: boolean; canRead?: boolean; canInitialize?: boolean; busy?: boolean; writeLabel?: string; requiredCapacity?: number }>();
 const emit = defineEmits<{ write: [drive: string]; read: [drive: string]; initialize: [drive: string]; format: [drive: string]; action: [label: string]; error: [message: string] }>();
 const actionsOpen = ref(false);
 const actionsContainer = ref<HTMLElement | null>(null);
@@ -87,6 +87,14 @@ function onActionsFocusout(event: FocusEvent) {
 
 interface DriveInfo { drive: string; type: string; size: number; label?: string }
 const drives = ref<DriveInfo[]>([]);
+const displayedDrives = computed(() => drives.value.map(drive => {
+    const required = props.requiredCapacity ?? 0;
+    const shortage = drive.size > 0 && required > drive.size;
+    const mb = (bytes: number) => `${(bytes / 1_000_000).toFixed(2)} MB（${bytes.toLocaleString('ja-JP')} バイト）`;
+    return { ...drive, shortage, title: shortage
+        ? `容量が不足しています。\n必要: ${mb(required)}\n実容量: ${mb(drive.size)}\n不足: ${mb(required - drive.size)}`
+        : props.busy ? '処理中' : drive.size > 0 ? formatCapacity(drive.size) : 'メディア未挿入' };
+}));
 const selectedDrive = ref('');
 const selectedDriveHasMedia = computed(() => drives.value.some(drive => drive.drive === selectedDrive.value && drive.size > 0));
 const selectedDriveHasLetter = computed(() => /^[A-Z]:$/.test(selectedDrive.value));
@@ -251,16 +259,17 @@ onUnmounted(() => {
 				<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z" /></svg>
 				<span>{{ backendStatus === 'checking' ? '確認中…' : backendStatus === 'stopped' ? '取得失敗' : 'SDドライブなし' }}</span>
 			</div>
-			<label v-for="drive in drives" :key="drive.drive" class="drive-item-inline" :class="{ 'drive-disabled': busy }">
+			<label v-for="drive in displayedDrives" :key="drive.drive" class="drive-item-inline" :class="{ 'drive-disabled': busy }" :title="drive.title">
 				<span class="radio-label-inline">
 					<input v-model="selectedDrive" type="radio" :value="drive.drive" name="drive-select" :disabled="busy" @change="selectDrive" :aria-label="`ドライブ ${drive.label || drive.drive}`" />
 					<span class="drive-letter">{{ drive.drive.startsWith('PhysicalDrive') ? '?:' : drive.label || drive.drive }}</span>
 				</span>
-				<span class="sd-icon-wrapper-inline" role="img" :aria-label="`${drive.drive} ${busy ? '処理中' : drive.size > 0 ? formatCapacity(drive.size) : 'メディア未挿入'}`">
-					<span class="sd-card-icon-inline" :class="busy ? 'status-busy' : drive.size > 0 ? 'status-inserted' : 'status-empty'" :title="busy ? '処理中' : drive.size > 0 ? formatCapacity(drive.size) : 'メディア未挿入'">
+				<span class="sd-icon-wrapper-inline" role="img" :aria-label="`${drive.drive} ${drive.title}`">
+					<span class="sd-card-icon-inline" :class="busy ? 'status-busy' : drive.size > 0 ? 'status-inserted' : 'status-empty'">
 						<svg viewBox="0 0 24 24" width="32" height="32" aria-hidden="true"><path fill="currentColor" d="M18 2h-8L4 8v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-6 6h-2V4h2v4zm3 0h-2V4h2v4zm3 0h-2V4h2v4z" /></svg>
 					</span>
 					<span v-if="drive.size > 0" class="sd-capacity-display-inline"><span>{{ formatCapacity(drive.size) }}</span></span>
+					<svg v-if="drive.shortage" class="sd-capacity-warning-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" stroke="white" stroke-width="1" d="M1 21h22L12 2 1 21z" /><path fill="white" d="M11 8h2v6h-2zm0 8h2v2h-2z" /></svg>
 				</span>
 			</label>
 		</div>
@@ -376,6 +385,7 @@ onUnmounted(() => {
 .radio-label-inline input { cursor: pointer; margin: 0; width: 16px; height: 16px; }
 .drive-letter { font-size: 0.95rem; font-weight: 600; }
 .sd-icon-wrapper-inline { position: relative; display: flex; align-items: center; justify-content: center; }
+.sd-capacity-warning-icon { position: absolute; top: -2px; right: -6px; color: #b96800; z-index: 2; }
 .sd-card-icon-inline { display: flex; align-items: center; justify-content: center; background: #fff; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
 .sd-card-icon-inline:hover { transform: scale(1.1); }
 .status-inserted { color: #4285f4; animation: sdCardInsert 0.6s cubic-bezier(0.34, 1.56, 0.64, 1); }

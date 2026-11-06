@@ -17,12 +17,26 @@ export interface OperationStatus {
   run_id: string; operation_id: string; detail: string; operation_ms: number; waiting: boolean;
 }
 
-export function explainSdFailure(message: string): { message: string; cause: string; action: string } {
+export function explainSdFailure(message: string, beforeWrite = false): { message: string; cause: string; action: string; causeLabel: string; note: string } {
   // Only classify the primary failure. A later diagnostic query can have its own error code.
   const code = Number(message.split('\n', 1)[0].match(/os error (\d+)/)?.[1]);
   let cause = 'このエラー情報だけでは原因を特定できません。';
   let action = '「診断ログを開く」で詳細を確認し、必要に応じてログを共有してください。';
-  if (message.split('\n', 1)[0].includes('SD書込確定失敗')) {
+  let causeLabel = '原因候補';
+  let note = '書込・初期化・フォーマットでは、処理途中まで変更されている場合があります。原因候補は診断ログで確認してください。';
+  const primary = message.split('\n', 1)[0];
+  const capacityShortage = primary.includes('SDカードの容量が不足しています');
+  const overlap = primary.includes('CSVに定義された領域が直前の領域と重複しています');
+  if (capacityShortage || overlap) {
+    causeLabel = '原因';
+    cause = capacityShortage
+      ? 'CSVに定義された対象領域がSDカードの実容量を超えています。'
+      : 'CSVに定義された対象領域が重複しています。';
+    action = capacityShortage
+      ? '必要な容量を満たすSDカードに交換してください。'
+      : 'CSVの開始・終了アドレスを確認し、領域の重複を修正してください。';
+    note = beforeWrite ? 'SDカードへの書込みは開始していません。' : '処理の進行状況はログで確認してください。';
+  } else if (primary.includes('SD書込確定失敗')) {
     cause = '書き込み後の確定処理に失敗しました。データの保存と照合は完了していません。';
     action = '診断ログを保存してください。書込API・確定処理・照合のどの段階まで成功したか確認が必要です。';
   } else if (code === 5) {
@@ -41,7 +55,7 @@ export function explainSdFailure(message: string): { message: string; cause: str
     cause = 'データ転送・読み書きのエラーが報告されました。カード・リーダー・接続経路などが原因候補です。';
     action = '処理終了後に接続を確認し、別のリーダーで結果が変わるか切り分けてください。';
   }
-  return { message, cause, action };
+  return { message, cause, action, causeLabel, note };
 }
 
 export function writePercent(progress: WriteProgress | null): number {
