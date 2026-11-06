@@ -1,12 +1,44 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watchEffect } from 'vue';
+import { formatFileTimestamp } from '../utils/fileTimestamp';
 
 const props = defineProps<{ files: {
-    filename: string; description: string; individualInfo: string;
+    filename: string; description: string; individualInfo: string; modifiedAt?: number | null;
     updateNo?: string; updateVer?: string; condition?: string; carType?: string;
 }[] }>();
 const grid = ref<HTMLElement | null>(null);
 const filenameWidth = ref(68);
+const resizedWidths = ref<number[] | null>(null);
+const resizing = ref(false);
+let resizeState: { index: number; pointerId: number; startX: number; startWidth: number } | null = null;
+
+function startResize(event: PointerEvent, index: number) {
+    if (event.button !== 0 || resizeState) return;
+    const handle = event.currentTarget as HTMLElement;
+    const header = handle.closest('tr');
+    if (!header) return;
+    // 自動配分されていた説明列も実際の幅で固定し、ほかの列の幅を保つ。
+    const widths = Array.from(header.cells, cell => cell.getBoundingClientRect().width);
+    resizedWidths.value = widths;
+    resizeState = { index, pointerId: event.pointerId, startX: event.clientX, startWidth: widths[index] };
+    resizing.value = true;
+    handle.setPointerCapture(event.pointerId);
+    event.preventDefault();
+}
+
+function resizeColumn(event: PointerEvent) {
+    if (!resizeState || event.pointerId !== resizeState.pointerId || !resizedWidths.value) return;
+    resizedWidths.value[resizeState.index] = Math.max(24,
+        resizeState.startWidth + event.clientX - resizeState.startX);
+}
+
+function stopResize(event: PointerEvent) {
+    if (!resizeState || event.pointerId !== resizeState.pointerId) return;
+    resizeState = null;
+    resizing.value = false;
+    const handle = event.currentTarget as HTMLElement;
+    if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+}
 
 onMounted(() => {
     const context = document.createElement('canvas').getContext('2d');
@@ -32,35 +64,44 @@ const columns = computed(() => [
     { label: '更新Ver', width: 68 },
     { label: '条件', width: 30 },
     { label: '車種', width: 40 },
-]);
+].map((column, index) => ({ ...column, width: resizedWidths.value?.[index] ?? column.width })));
 // 説明列に最低80pxを残し、収まらない場合は横スクロールする。
 const tableMinWidth = computed(() => Math.max(520,
     columns.value.reduce((width, column) => width + (column.width ?? 80), 0),
 ));
+const contentStyle = computed(() => resizedWidths.value
+    ? { width: `${resizedWidths.value.reduce((sum, width) => sum + width, 0)}px` }
+    : { minWidth: `${tableMinWidth.value}px` });
 // 表と余白の縦罫線は、同じ列定義から幅を決める。
 const backgroundColumns = computed(() => columns.value
     .map(column => column.width ? `${column.width}px` : 'minmax(0, 1fr)').join(' '));
 </script>
 
 <template>
-    <div ref="grid" class="option-grid">
+    <div ref="grid" class="option-grid" :class="{ resizing }">
         <div class="grid-scroll">
-        <div class="grid-content" :style="{ minWidth: `${tableMinWidth}px` }">
+        <div class="grid-content" :style="contentStyle">
         <table aria-label="ファイル情報">
             <colgroup>
                 <col v-for="column in columns" :key="column.label" :style="{ width: column.width ? `${column.width}px` : undefined }">
             </colgroup>
             <thead>
                 <tr>
-                    <th v-for="column in columns" :key="column.label" scope="col">
+                    <th v-for="(column, index) in columns" :key="column.label" scope="col">
                         <div class="header-content"><span>{{ column.label }}</span></div>
+                        <span class="column-resizer" aria-hidden="true" :title="`${column.label}の列幅を調整`"
+                            @pointerdown.stop="startResize($event, index)"
+                            @pointermove="resizeColumn"
+                            @pointerup="stopResize"
+                            @pointercancel="stopResize"
+                            @lostpointercapture="stopResize"></span>
                     </th>
                 </tr>
             </thead>
             <tbody>
                 <tr v-for="(file, index) in files" :key="index">
                     <td v-for="column in columns" :key="column.label"
-                        :title="column.label === '個別情報' ? file.individualInfo || undefined : column.label === '説明' ? file.description || undefined : column.label === 'ファイル名' ? file.filename || undefined : undefined">
+                        :title="column.label === '個別情報' ? file.individualInfo || undefined : column.label === '説明' ? file.description || undefined : column.label === 'ファイル名' ? formatFileTimestamp(file.modifiedAt) || undefined : undefined">
                         <template v-if="column.label === 'No'">{{ index + 1 }}</template>
                         <template v-else-if="column.label === 'ファイル名'">{{ file.filename }}</template>
                         <template v-else-if="column.label === '説明'">{{ file.description }}</template>
@@ -152,6 +193,21 @@ th {
     font-weight: 600;
 }
 .header-content { overflow: hidden; }
+.column-resizer {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 7px;
+    cursor: col-resize;
+    touch-action: none;
+    user-select: none;
+}
+.column-resizer:hover { background: #93c5fd; }
+.option-grid.resizing, .option-grid.resizing * {
+    cursor: col-resize;
+    user-select: none;
+}
 th:last-child, td:last-child { border-right: 0; }
 tbody tr:nth-child(odd) { background: #fff; }
 tbody tr:nth-child(even) { background: #f5f9fe; }
