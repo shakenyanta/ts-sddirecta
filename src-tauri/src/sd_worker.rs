@@ -541,6 +541,18 @@ fn serve_requests(stream: &mut TcpStream) -> Result<(), String> {
         let operation = receive::<Operation>(stream)?;
         let reading = matches!(&operation, Operation::ReadBatch { .. });
         let initializing = matches!(&operation, Operation::FfBatch { .. });
+        let evidence_target = match &operation {
+            Operation::Format { plan, .. } => Some((
+                plan.run_id.clone(), plan.drive.clone(), plan.target.disk, plan.target.capacity, "format",
+            )),
+            Operation::Batch { plan, .. }
+            | Operation::ReadBatch { plan, .. }
+            | Operation::FfBatch { plan, .. } => Some((
+                plan.run_id.clone(), plan.drive.clone(), plan.disk, plan.capacity,
+                if reading { "read" } else if initializing { "ff" } else { "write" },
+            )),
+            _ => None,
+        };
         let result = match operation {
             Operation::Format {
                 plan,
@@ -607,6 +619,9 @@ fn serve_requests(stream: &mut TcpStream) -> Result<(), String> {
             }
             operation => execute(operation),
         };
+        if let Some((run_id, drive, disk, capacity, operation)) = evidence_target {
+            crate::storage_diagnostics::on_failure(&result, run_id, drive, disk, capacity, operation);
+        }
         send(stream, &Response::Finished(result))?;
     }
 }

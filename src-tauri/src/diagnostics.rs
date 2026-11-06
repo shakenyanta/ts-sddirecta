@@ -164,6 +164,10 @@ pub fn operation_label(name: &str) -> String {
     }
     let label = if name == "FSCTL_LOCK_VOLUME" {
         "SDをロックしています"
+    } else if name == "FSCTL_DISMOUNT_VOLUME" {
+        "SDのマウントを解除しています"
+    } else if name == "FSCTL_ALLOW_EXTENDED_DASD_IO" {
+        "SD全体へのアクセスを準備しています"
     } else if name.starts_with("get_physical_size") || name.starts_with("IOCTL_DISK_GET_LENGTH") {
         "SD容量を確認しています"
     } else if name.starts_with("IOCTL_DISK_GET_DRIVE_GEOMETRY") {

@@ -160,6 +160,9 @@ fn script(
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).map_err(|e| e.to_string()))
         {
             Ok(event) => {
+                if let Some(snapshot) = event.get("diagnostic") {
+                    crate::diagnostics::record("INFO", &format!("storage snapshot {snapshot}"));
+                }
                 if let Some(error) = event["error"].as_str() {
                     failure = Some(error.to_owned());
                 }

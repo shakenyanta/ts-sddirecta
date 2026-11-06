@@ -22,6 +22,17 @@ const PUBLIC_KEY: &str = include_str!("../update-public-key.txt");
 const MAX_MANIFEST: u64 = 64 * 1024;
 const MAX_EXE: u64 = 256 * 1024 * 1024;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+const UPDATE_PREFIX: &str = ".ts-sddirecta-update-";
+// Delete only updater-owned files, never recurse into user data.
+const COMPLETED_FILES: [&str; 7] = [
+    "helper.exe",
+    "previous.exe",
+    "latest.json",
+    "latest.json.sig",
+    "ready",
+    "commit",
+    "request.json",
+];
 static PENDING: Mutex<Option<VerifiedManifest>> = Mutex::new(None);
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -182,6 +193,121 @@ pub struct PreparedUpdate {
     directory: PathBuf,
 }
 
+fn completed_update(directory: &Path, target: &Path, version: &Version) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+    let validate = || -> Option<()> {
+        if directory.parent()? != target.parent()?
+            || !directory.file_name()?.to_str()?.starts_with(UPDATE_PREFIX)
+        {
+            return None;
+        }
+        let metadata = fs::symlink_metadata(directory).ok()?;
+        if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return None;
+        }
+        let mut count = 0;
+        for entry in fs::read_dir(directory).ok()? {
+            let entry = entry.ok()?;
+            let name = entry.file_name();
+            let metadata = fs::symlink_metadata(entry.path()).ok()?;
+            if !COMPLETED_FILES.contains(&name.to_str()?)
+                || !metadata.is_file()
+                || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+            {
+                return None;
+            }
+            count += 1;
+        }
+        if count != COMPLETED_FILES.len()
+            || fs::read(directory.join("ready")).ok()? != b"ready"
+            || fs::read(directory.join("commit")).ok()? != b"commit"
+        {
+            return None;
+        }
+        let request: Request =
+            serde_json::from_slice(&fs::read(directory.join("request.json")).ok()?).ok()?;
+        if fs::canonicalize(request.target).ok()? != target {
+            return None;
+        }
+        let manifest = validate_manifest(&fs::read(directory.join("latest.json")).ok()?).ok()?;
+        if Version::parse(&manifest.version).ok()? > *version {
+            return None;
+        }
+        Some(())
+    };
+    validate().is_some()
+}
+
+fn remove_completed_update(directory: &Path) -> std::io::Result<()> {
+    // helper.exe is first: Windows keeps it locked until the updater exits.
+    // Keep the identifying metadata until the executables have been removed.
+    for name in COMPLETED_FILES {
+        match fs::remove_file(directory.join(name)) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+            _ => {}
+        }
+    }
+    fs::remove_dir(directory)
+}
+
+pub fn cleanup_completed_updates() {
+    if cfg!(debug_assertions) {
+        return;
+    }
+    // The restarted app may run before the helper has exited. Retry off the UI thread.
+    std::thread::spawn(|| {
+        let cleanup = || -> Result<(), String> {
+            let target = std::env::current_exe()
+                .and_then(fs::canonicalize)
+                .map_err(|e| e.to_string())?;
+            let version = Version::parse(env!("CARGO_PKG_VERSION")).map_err(|e| e.to_string())?;
+            for entry in fs::read_dir(target.parent().ok_or("exeの保存先が不正です")?)
+                .map_err(|e| e.to_string())?
+            {
+                let directory = entry.map_err(|e| e.to_string())?.path();
+                if !completed_update(&directory, &target, &version) {
+                    continue;
+                }
+                crate::diagnostics::record(
+                    "INFO",
+                    &format!("update cleanup started path={}", directory.display()),
+                );
+                let start = Instant::now();
+                loop {
+                    match remove_completed_update(&directory) {
+                        Ok(()) => {
+                            crate::diagnostics::record(
+                                "INFO",
+                                &format!("update cleanup completed path={}", directory.display()),
+                            );
+                            break;
+                        }
+                        Err(_) if start.elapsed() < Duration::from_secs(10) => {
+                            std::thread::sleep(Duration::from_millis(100));
+                        }
+                        Err(error) => {
+                            crate::diagnostics::record(
+                                "WARN",
+                                &format!(
+                                    "update cleanup failed path={} reason={error}",
+                                    directory.display()
+                                ),
+                            );
+                            break;
+                        }
+                    }
+                }
+            }
+            Ok(())
+        };
+        if let Err(error) = cleanup() {
+            crate::diagnostics::record("WARN", &format!("update cleanup failed reason={error}"));
+        }
+    });
+}
+
 pub fn prepare(version: &str) -> Result<PreparedUpdate, String> {
     if cfg!(debug_assertions) {
         return Err("開発ビルドではexeの更新を実行できません。配布用exeで確認してください".into());
@@ -202,7 +328,7 @@ pub fn prepare(version: &str) -> Result<PreparedUpdate, String> {
     let parent = target.parent().ok_or("exeの保存先を取得できません")?;
     // Same-volume staging allows renames and never changes CSV/input/output.
     let directory = tempfile::Builder::new()
-        .prefix(".ts-sddirecta-update-")
+        .prefix(UPDATE_PREFIX)
         .tempdir_in(parent)
         .map_err(|e| format!("exeの保存先に更新ファイルを作成できません: {e}"))?;
     let write = |name: &str, content: &[u8]| -> Result<(), String> {
@@ -413,6 +539,127 @@ pub fn run_if_helper() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn completed_fixture(parent: &Path, target: &Path) -> PathBuf {
+        let directory = parent.join(format!("{UPDATE_PREFIX}test"));
+        fs::create_dir(&directory).unwrap();
+        for name in COMPLETED_FILES {
+            fs::write(directory.join(name), b"updater artifact").unwrap();
+        }
+        fs::write(directory.join("ready"), b"ready").unwrap();
+        fs::write(directory.join("commit"), b"commit").unwrap();
+        fs::write(
+            directory.join("latest.json"),
+            serde_json::to_vec(&fixture()).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            directory.join("request.json"),
+            serde_json::to_vec(&Request {
+                parent_pid: 0,
+                target: target.to_owned(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        directory
+    }
+
+    #[test]
+    fn cleanup_removes_completed_update_and_preserves_user_data() {
+        let parent = tempfile::tempdir().unwrap();
+        let target = parent.path().join("app.exe");
+        fs::write(&target, b"new exe").unwrap();
+        let target = fs::canonicalize(target).unwrap();
+        let parent = target.parent().unwrap();
+        fs::create_dir(parent.join(".config")).unwrap();
+        fs::write(parent.join(".config/edition.json"), br#"{"edition":"pro"}"#).unwrap();
+        fs::write(parent.join("data.csv"), b"user data").unwrap();
+        let directory = completed_fixture(parent, &target);
+        assert!(completed_update(
+            &directory,
+            &target,
+            &Version::parse("0.2.0").unwrap()
+        ));
+        remove_completed_update(&directory).unwrap();
+        assert!(!directory.exists());
+        assert_eq!(fs::read(&target).unwrap(), b"new exe");
+        assert_eq!(
+            fs::read(parent.join(".config/edition.json")).unwrap(),
+            br#"{"edition":"pro"}"#
+        );
+        assert_eq!(fs::read(parent.join("data.csv")).unwrap(), b"user data");
+    }
+
+    #[test]
+    fn cleanup_preserves_incomplete_unrelated_and_modified_directories() {
+        for case in [
+            "pending",
+            "extra_file",
+            "subdirectory",
+            "wrong_target",
+            "no_commit",
+            "newer",
+            "renamed",
+        ] {
+            let parent = tempfile::tempdir().unwrap();
+            let target = parent.path().join("app.exe");
+            fs::write(&target, b"exe").unwrap();
+            let target = fs::canonicalize(target).unwrap();
+            let parent = target.parent().unwrap();
+            let mut directory = completed_fixture(parent, &target);
+            let mut version = Version::parse("0.2.0").unwrap();
+            match case {
+                "pending" => {
+                    fs::write(directory.join("next.exe"), b"pending or rolled back").unwrap()
+                }
+                "extra_file" => fs::write(directory.join("user.txt"), b"keep").unwrap(),
+                "subdirectory" => fs::create_dir(directory.join("input")).unwrap(),
+                "wrong_target" => {
+                    let other = parent.join("other.exe");
+                    fs::write(&other, b"other").unwrap();
+                    fs::write(
+                        directory.join("request.json"),
+                        serde_json::to_vec(&Request {
+                            parent_pid: 0,
+                            target: other,
+                        })
+                        .unwrap(),
+                    )
+                    .unwrap();
+                }
+                "no_commit" => fs::remove_file(directory.join("commit")).unwrap(),
+                "newer" => version = Version::parse("0.1.0").unwrap(),
+                "renamed" => {
+                    let renamed = parent.join("user-folder");
+                    fs::rename(&directory, &renamed).unwrap();
+                    directory = renamed;
+                }
+                _ => unreachable!(),
+            }
+            assert!(!completed_update(&directory, &target, &version), "{case}");
+            assert!(directory.join("previous.exe").exists(), "{case}");
+        }
+    }
+
+    #[test]
+    fn cleanup_can_retry_after_helper_exits() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let parent = tempfile::tempdir().unwrap();
+        let target = parent.path().join("app.exe");
+        fs::write(&target, b"exe").unwrap();
+        let directory = completed_fixture(parent.path(), &target);
+        let lock = OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(directory.join("helper.exe"))
+            .unwrap();
+        assert!(remove_completed_update(&directory).is_err());
+        assert!(directory.join("previous.exe").exists());
+        drop(lock);
+        remove_completed_update(&directory).unwrap();
+        assert!(!directory.exists());
+    }
+
     fn fixture() -> Manifest {
         Manifest {
             version: "0.2.0".into(),

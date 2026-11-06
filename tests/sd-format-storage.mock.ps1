@@ -19,6 +19,9 @@ function Get-Disk {
 function Get-Partition {
     param($DiskNumber, $PartitionNumber, $ErrorAction)
     Call 'Get-Partition'
+    if ($Mode -eq 'diagnostic-error' -and (Get-PSCallStack | Where-Object FunctionName -eq 'Storage-Snapshot')) {
+        throw 'Simulated diagnostic query error'
+    }
     return [pscustomobject]@{ DriveLetter = $(if ($Mode -eq 'unassigned' -and -not $script:assigned) { '' } else { 'H' }); DiskNumber = 77; PartitionNumber = 1
         Offset = $(if ($Mode -eq 'unassigned') { 0 } else { 1048576 }); Size = $(if ($Mode -eq 'unassigned') { 536870912 } else { 530000000 }) }
 }

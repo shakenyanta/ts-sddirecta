@@ -9,7 +9,7 @@ import { features } from '../editions';
 import { folderPathAt, splitFolderPath } from '../utils/executablePath';
 import { createLogScroller } from '../utils/logScroll';
 import { parseSdDirectCsv, type AddressRange, type SdArea } from '../utils/sdDirectCsv';
-import { writePercent, writeStageLabel, sizeComment, formatByteCount, formatCardCapacity, type WritePlan, type WriteProgress, type OperationStatus } from '../utils/sdWrite';
+import { writePercent, writeStageLabel, sizeComment, formatByteCount, formatCardCapacity, explainSdFailure, type WritePlan, type WriteProgress, type OperationStatus } from '../utils/sdWrite';
 
 const menuHeight = ref(48);
 const minimumMenuHeight = ref(48);
@@ -48,6 +48,9 @@ const writeLogPanel = ref<HTMLElement | null>(null);
 const writeLogScroller = createLogScroller(() => writeLogPanel.value);
 const writeTotal = ref(0);
 const copyStatus = ref('');
+const operationError = ref('');
+const failureDetails = computed(() => writeStage.value === 'failed' && operationError.value
+    ? explainSdFailure(operationError.value) : null);
 const operationKind = ref<'read' | 'write' | 'ff' | 'format'>('write');
 const operationName = computed(() => operationKind.value === 'format' ? 'フォーマット' : operationKind.value === 'ff' ? 'SD FF初期化' : operationKind.value === 'read' ? 'SD読込' : 'SD書込');
 const popupTitle = computed(() => writing.value ? `${statusLabel.value}…`
@@ -460,11 +463,17 @@ function logButtonPress(label: string) {
     void appendMessage(`「${label}」ボタン押下`);
 }
 
+async function openDiagnosticLog() {
+    try { await invoke('open_diagnostic_log'); }
+    catch (error) { transientNotice.value = `診断ログを開けませんでした: ${String(error)}`; }
+}
+
 async function onSdWrite(drive: string) {
 	if (writeDialogOpen.value || writing.value || closing.value || initializing.value || !drive || !sourceDirectory.value) return;
     void appendMessage('「SD書込」ボタン押下');
 	if (!progressUnlisten) { await appendMessage('進捗通知を受信できません。アプリを再起動してください'); return; }
     operationKind.value = 'write';
+    operationError.value = '';
 	writing.value = true;
 	dragging.value = false;
 	writeStage.value = 'prepare';
@@ -502,6 +511,7 @@ async function onSdWrite(drive: string) {
 		if (latestProgress()?.stage !== 'done') throw new Error('正常完了通知を確認できませんでした');
 	} catch (error) {
 		writeStage.value = 'failed';
+		operationError.value = String(error);
 		const last = latestProgress();
 		if (last) progress.value = { ...last, stage: 'failed' };
 		await appendWriteMessage({ text: `SD書込を停止しました: ${String(error)}`, warning: true });
@@ -531,6 +541,7 @@ async function onSdRead(drive: string) {
     if (writeDialogOpen.value || writing.value || closing.value || initializing.value || !drive || !sourceDirectory.value) return;
     if (!progressUnlisten) { await appendMessage('進捗通知を受信できません。アプリを再起動してください'); return; }
     operationKind.value = 'read';
+    operationError.value = '';
     writing.value = true;
     dragging.value = false;
     writeStage.value = 'prepare';
@@ -557,6 +568,7 @@ async function onSdRead(drive: string) {
         if (latestProgress()?.stage !== 'done') throw new Error('正常完了通知を確認できませんでした');
     } catch (error) {
         writeStage.value = 'failed';
+        operationError.value = String(error);
         const last = latestProgress();
         if (last) progress.value = { ...last, stage: 'failed' };
         appendWriteMessage({ text: `SD読込を停止しました: ${String(error)}`, warning: true });
@@ -577,6 +589,7 @@ async function onSdFfInitialize(drive: string) {
     if (writeDialogOpen.value || writing.value || closing.value || initializing.value || !drive || !sourceDirectory.value) return;
     if (!progressUnlisten) { await appendMessage('進捗通知を受信できません。アプリを再起動してください'); return; }
     operationKind.value = 'ff';
+    operationError.value = '';
     writing.value = true;
     dragging.value = false;
     writeStage.value = 'prepare';
@@ -602,6 +615,7 @@ async function onSdFfInitialize(drive: string) {
         if (latestProgress()?.stage !== 'done') throw new Error('正常完了通知を確認できませんでした');
     } catch (error) {
         writeStage.value = 'failed';
+        operationError.value = String(error);
         const last = latestProgress();
         if (last) progress.value = { ...last, stage: 'failed' };
         appendWriteMessage({ text: `SD FF初期化を停止しました: ${String(error)}`, warning: true });
@@ -627,6 +641,7 @@ async function onSdFormat(drive: string) {
     if (writeDialogOpen.value || writing.value || closing.value || initializing.value || !drive) return;
     if (!progressUnlisten) { await appendMessage('進捗通知を受信できません。アプリを再起動してください'); return; }
     operationKind.value = 'format';
+    operationError.value = '';
     writing.value = true;
     dragging.value = false;
     currentRun.value = crypto.randomUUID();
@@ -654,6 +669,7 @@ async function onSdFormat(drive: string) {
         appendWriteMessage(`対象: ${driveDisplay(formatPlan.value.drive)} / ${formatCardCapacity(formatPlan.value.target.capacity)} / ${formatPlan.value.file_system}`);
     } catch (error) {
         writeStage.value = 'failed';
+        operationError.value = String(error);
         appendWriteMessage({ text: `フォーマットを開始できません: ${String(error)}`, warning: true });
     } finally { writing.value = false; operationStatus.value = null; }
 }
@@ -693,6 +709,7 @@ async function startSdFormat() {
         appendWriteMessage(`フォーマット完了 ${total}/${total} ${(elapsedMs.value / 1000).toFixed(2)}秒`);
     } catch (error) {
         writeStage.value = 'failed';
+        operationError.value = String(error);
         appendWriteMessage({ text: `フォーマットを停止しました: ${String(error)}。書換え済みの内容は元に戻しません。`, warning: true });
     } finally {
         updateFormatPreparation(true);
@@ -718,7 +735,9 @@ function closeWriteDialog() {
 
 async function copyWriteLog() {
     try {
-        await navigator.clipboard.writeText(writeLog.value.map(message => typeof message === 'string' ? message : message.text).join('\n'));
+        const text = writeLog.value.map(message => typeof message === 'string' ? message : message.text);
+        if (failureDetails.value) text.push(`原因候補: ${failureDetails.value.cause}`, `対処: ${failureDetails.value.action}`);
+        await navigator.clipboard.writeText(text.join('\n'));
         copyStatus.value = 'コピーしました';
     } catch {
         copyStatus.value = 'コピーできませんでした';
@@ -965,6 +984,13 @@ function resize(event: PointerEvent, divider: 1 | 2) {
                 <span class="write-current" :title="progress?.filename ? `${statusLabel} ${progress.filename}` : statusLabel">{{ statusLabel }}<template v-if="progress?.filename"> {{ progress.filename }}</template></span>
             </p>
             <p class="write-operation" :title="operationDetail" role="status">{{ writing ? operationDetail : '' }}</p>
+            <section v-if="failureDetails" class="failure-summary" role="alert" aria-label="失敗の確認結果と対処">
+                <strong>確認できた内容</strong>
+                <p class="failure-facts">{{ failureDetails.message }}</p>
+                <p><strong>原因候補：</strong>{{ failureDetails.cause }}</p>
+                <p><strong>対処：</strong>{{ failureDetails.action }}</p>
+                <p class="failure-note">書込・初期化・フォーマットでは、処理途中まで変更されている場合があります。原因候補は診断ログで確認してください。</p>
+            </section>
             <div ref="writeLogPanel" class="write-log" :class="{ 'format-log': operationKind === 'format' }" role="log" :aria-label="`${operationName}ログ`" tabindex="0" @scroll="writeLogScroller.onScroll">
                 <p v-for="(message, index) in writeLog" :key="index" :class="{ 'log-warning': typeof message !== 'string' && message.warning, 'log-done': typeof message === 'string' && (message.startsWith('全件完了') || message.startsWith('フォーマット完了 ')) }">{{ typeof message === 'string' ? message : message.text }}</p>
             </div>
@@ -972,6 +998,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
             <div class="write-actions">
                 <button v-if="operationKind === 'format' && writeStage === 'confirm'" type="button" class="close-write" :disabled="writing || !formatLabelValid" @click="startSdFormat">開始</button>
                 <button v-if="operationKind === 'read'" type="button" class="copy-log open-output" :disabled="writing" @click="openOutput">outputを開く</button>
+                <button v-if="failureDetails" type="button" class="copy-log" :disabled="writing" @click="openDiagnosticLog">診断ログを開く</button>
                 <button type="button" class="copy-log" aria-live="polite" @click="copyWriteLog">{{ copyStatus || 'ログをコピー' }}</button>
                 <button type="button" class="close-write" :disabled="writing" @click="closeWriteDialog">{{ operationKind === 'format' && writeStage === 'confirm' ? 'キャンセル' : '閉じる' }}</button>
             </div>
@@ -980,6 +1007,10 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 </template>
 
 <style scoped>
+.failure-summary { flex: 0 1 auto; min-height: 0; max-height: 50%; overflow: auto; padding: 7px 9px; border: 1px solid #e3bcb5; border-radius: 6px; background: #fff5f2; color: #6c251c; line-height: 1.4; overflow-wrap: anywhere; }
+.failure-summary p { margin: 4px 0 0; }
+.failure-facts { white-space: pre-wrap; }
+.failure-note { font-size: 11px; }
 .format-settings { flex-shrink: 0; padding: 8px; border: 1px solid #c5cad3; border-radius: 6px; }
 .format-settings p { margin: 3px 0; }
 .format-settings .format-warning { color: #a3271d; font-weight: bold; }
@@ -1014,7 +1045,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 .write-log p { width: max-content; min-width: 100%; margin: 0; white-space: nowrap; overflow-wrap: normal; word-break: normal; }
 .write-log .log-warning { color: #ffb4ab; }
 .write-log .log-done { margin-top: 2px; padding: 2px 4px; border-radius: 3px; background: #183e46; color: #00d8ff; font-weight: bold; }
-.write-actions { display: flex; flex-shrink: 0; justify-content: flex-end; align-items: center; gap: 6px; }
+.write-actions { display: flex; flex-wrap: wrap; flex-shrink: 0; justify-content: flex-end; align-items: center; gap: 6px; }
 .write-actions button { flex-shrink: 0; border-radius: 20px; padding: 5px 12px; font: inherit; line-height: 1.2; cursor: pointer; }
 .copy-log { border: 1px solid #c5cad3; background: #e9ecf2; color: #242424; }
 .open-output { margin-right: auto; }

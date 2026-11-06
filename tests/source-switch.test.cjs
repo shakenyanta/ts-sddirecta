@@ -17,7 +17,7 @@ function utility(path) {
 function view(invoke, clock = performance, DateClass = Date) {
   const source = readFileSync('src/pages/HomeView.vue', 'utf8').match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
     .replace(/^import .*;\r?$/gm, '');
-  let mount, unmount, listener, timer, unlistened = false;
+  let mount, unmount, listener, timer, copied, unlistened = false;
   const eventListeners = new Map();
   const keyListeners = new Set();
   const bindings = {
@@ -30,6 +30,7 @@ function view(invoke, clock = performance, DateClass = Date) {
     onUnmounted: fn => { unmount = fn; },
     getCurrentWebview: () => ({ onDragDropEvent: async fn => { listener = fn; return () => { unlistened = true; }; } }),
     invoke,
+    navigator: { clipboard: { writeText: async text => { copied = text; } } },
     listen: async (name, fn) => { eventListeners.set(name, fn); return () => eventListeners.delete(name); },
     window: {
       addEventListener: (name, fn) => { if (name === 'keydown') keyListeners.add(fn); },
@@ -48,7 +49,7 @@ function view(invoke, clock = performance, DateClass = Date) {
     return { resize, sdHeightRatio, menuHeight, resizeOptions, baseWidthRatio, appendMessage, initializeSource, refreshMatchedFiles, sourceDirectory, displayedDirectory, openFolder,
       selectFolder, selectedFolder, folderNodes, visibleFolders, toggleFolder, pathList,
       sdDirectDictionary, sdloadingDictionary, sdAddressRange, matchedFiles, writeFiles, optionFiles, canSdWrite, allFileCount, initializing, messages, pathError,
-      onSdWrite, onSdRead, onSdFfInitialize, onSdFormat, startSdFormat, formatPlan, formatLabel, formatSimpleTest, formatStep, formatLabelValid, writeStage, canSdRead, popupTitle, statusLabel, closeWriteDialog, copyWriteLog, writeDialogOpen, writeLog, writing, pendingPlan, progress, percent, currentRun, transientNotice, operationStatus, operationDetail };
+      onSdWrite, onSdRead, onSdFfInitialize, onSdFormat, startSdFormat, formatPlan, formatLabel, formatSimpleTest, formatStep, formatLabelValid, writeStage, canSdRead, popupTitle, statusLabel, closeWriteDialog, copyWriteLog, openDiagnosticLog, failureDetails, writeDialogOpen, writeLog, writing, pendingPlan, progress, percent, currentRun, transientNotice, operationStatus, operationDetail };
   `)(...Object.values(bindings));
   return { ...api, mount: () => mount(), unmount: () => unmount(),
     drop: paths => listener({ payload: { type: 'drop', paths } }),
@@ -59,7 +60,7 @@ function view(invoke, clock = performance, DateClass = Date) {
       return prevented;
     },
     get hasTimer() { return !!timer; },
-    tick: () => timer?.(), get unlistened() { return unlistened; } };
+    tick: () => timer?.(), get unlistened() { return unlistened; }, get copied() { return copied; } };
 }
 
 // Compare log content independently of its display timestamp.
@@ -1204,12 +1205,61 @@ test('failed verification preserves progress and identifies the failed and unexe
   assert.equal(ui.writing.value, false);
   assert.equal(ui.percent.value, 50);
   assert.equal(ui.writeDialogOpen.value, true);
+  assert.match(ui.failureDetails.value.message, /照合不一致/);
   assert.ok(ui.writeLog.value.some(m => typeof m === 'object' && /照合不一致/.test(m.text)));
   assert.equal(ui.hasTimer, false);
   assert.ok(ui.writeLog.value.some(m => typeof m === 'object' && /b: 一部だけ/.test(m.text)));
   assert.ok(ui.writeLog.value.includes('未実行: c'));
   assert.ok(panelContents(ui).every(m => typeof m === 'string' ? !/未実行|正常完了/.test(m) : !/照合不一致|一部だけ/.test(m.text)));
   ui.unmount();
+});
+
+test('failure guidance retains observed state, opens diagnostics and clears for a new operation', async () => {
+  let failed = true;
+  let opened = 0;
+  let failOpen = false;
+  let ui;
+  const error = 'SD書込失敗: アクセスが拒否されました。 (os error 5)\nSDのロック: 取得済み（処理中に保持）\nマウント状態: 確認できません（Windowsエラー 21）';
+  ui = view(backend({
+    prepare_sd_write: args => ({ run_id: args.runId, drive: 'G:', total_bytes: 512, entries: [{ filename: 'a', size: 512, file_size: 512 }] }),
+    run_sd_write: args => {
+      if (failed) throw error;
+      return { run_id: args.runId, filename: '', index: 1, total: 1, completed: 1, stage: 'done', processed_bytes: 1536, total_bytes: 1536 };
+    },
+    open_diagnostic_log: () => { if (failOpen) throw new Error('editor unavailable'); opened++; }, discard_sd_write: () => {},
+  }));
+  await ui.mount();
+  await ui.onSdWrite('G:');
+  assert.equal(ui.failureDetails.value.message, error);
+  assert.match(ui.failureDetails.value.cause, /アクセスを拒否/);
+  assert.match(ui.failureDetails.value.action, /USBごと抜き差し/);
+  await ui.openDiagnosticLog();
+  assert.equal(opened, 1);
+  await ui.copyWriteLog();
+  assert.ok(ui.copied.includes(error));
+  assert.ok(ui.copied.includes(`原因候補: ${ui.failureDetails.value.cause}`));
+  assert.ok(ui.copied.includes(`対処: ${ui.failureDetails.value.action}`));
+  failOpen = true;
+  await ui.openDiagnosticLog();
+  assert.match(ui.transientNotice.value, /診断ログを開けませんでした/);
+  assert.equal(ui.failureDetails.value.message, error);
+  ui.closeWriteDialog();
+  failed = false;
+  await ui.onSdWrite('G:');
+  assert.equal(ui.writeStage.value, 'done');
+  assert.equal(ui.failureDetails.value, null);
+  ui.unmount();
+});
+
+test('failure guidance does not interpret diagnostic query failures as the primary cause', () => {
+  const { explainSdFailure } = utility('src/utils/sdWrite.ts');
+  const completion = explainSdFailure('SD書込確定失敗: デバイスの準備ができていません。 (os error 21)');
+  assert.match(completion.cause, /確定処理に失敗/);
+  assert.doesNotMatch(completion.cause, /接続が失われた/);
+  assert.match(explainSdFailure('入力ファイルがありません\n診断: (os error 19)').cause, /特定できません/);
+  for (const [code, text] of [[19, /書き込み禁止/], [21, /接続/], [1167, /接続/], [32, /別の処理/], [1117, /転送/], [23, /転送/]]) {
+    assert.match(explainSdFailure(`処理失敗 (os error ${code})`).cause, text);
+  }
 });
 
 test('size comments distinguish truncation, padding, zero-byte fill, and exact size', () => {

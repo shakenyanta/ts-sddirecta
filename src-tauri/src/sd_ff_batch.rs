@@ -103,10 +103,16 @@ pub fn execute(
                 file_ms: 0,
                 error: None,
             })?;
+            // Record the intended metadata change even if opening the SD fails.
+            let sector_zero = plan.entries.iter().any(|e| e.address == 0 && e.size >= 512);
+            crate::diagnostics::record("INFO", &format!(
+                "FF initialization plan sector_zero_included={sector_zero}; filesystem_metadata_may_be_erased={sector_zero}; no_filesystem_repair_performed"));
             let mut disk =
                 crate::windows_api::BatchDisk::open(&plan.drive, plan.disk, plan.capacity)?;
             let done = run_entries(&plan, &mut disk, started, &mut notify)?;
             drop(disk); // Close and unlock before reporting normal completion.
+            crate::diagnostics::record("INFO", &format!(
+                "FF initialization completed verified_regions={} sector_zero_included={sector_zero}; filesystem_not_recreated", done.completed));
             notify(done.clone())?;
             Ok(done)
         },

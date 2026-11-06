@@ -17,6 +17,33 @@ export interface OperationStatus {
   run_id: string; operation_id: string; detail: string; operation_ms: number; waiting: boolean;
 }
 
+export function explainSdFailure(message: string): { message: string; cause: string; action: string } {
+  // Only classify the primary failure. A later diagnostic query can have its own error code.
+  const code = Number(message.split('\n', 1)[0].match(/os error (\d+)/)?.[1]);
+  let cause = 'このエラー情報だけでは原因を特定できません。';
+  let action = '「診断ログを開く」で詳細を確認し、必要に応じてログを共有してください。';
+  if (message.split('\n', 1)[0].includes('SD書込確定失敗')) {
+    cause = '書き込み後の確定処理に失敗しました。データの保存と照合は完了していません。';
+    action = '診断ログを保存してください。書込API・確定処理・照合のどの段階まで成功したか確認が必要です。';
+  } else if (code === 5) {
+    cause = 'Windowsがアクセスを拒否しました。使用中の状態やアクセス権、カードリーダー側の状態などが原因候補です。';
+    action = '対象を使用中のアプリを閉じてください。SDへのアクセスで再発する場合は、処理終了後に本アプリを終了し、リーダーをUSBごと抜き差ししてください。内蔵リーダーではPCを再起動してください。';
+  } else if (code === 19) {
+    cause = 'デバイスから書き込み禁止が報告されました。';
+    action = 'SDカードやアダプターのLOCKスイッチを確認してください。';
+  } else if ([21, 1167].includes(code)) {
+    cause = 'デバイスが準備できていないか、接続が失われた可能性があります。';
+    action = '処理終了後にカード・リーダーの接続を確認し、接続し直してください。';
+  } else if (code === 32) {
+    cause = '別の処理による使用が報告されました。';
+    action = '対象を開いているエクスプローラーやアプリを閉じてください。';
+  } else if ([23, 1117].includes(code)) {
+    cause = 'データ転送・読み書きのエラーが報告されました。カード・リーダー・接続経路などが原因候補です。';
+    action = '処理終了後に接続を確認し、別のリーダーで結果が変わるか切り分けてください。';
+  }
+  return { message, cause, action };
+}
+
 export function writePercent(progress: WriteProgress | null): number {
   if (!progress || progress.total_bytes === 0) return 0;
   if (progress.stage === 'done') return 100;

@@ -35,6 +35,42 @@ function Current-Disk($expected, [bool]$checkUniqueId = $false) {
     return $disk
 }
 
+# Best-effort, read-only observations. Never refresh storage caches or change mounts here.
+function Storage-Snapshot($phase) {
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    try {
+        $observedDisk = Get-Disk -Path $request.target.path -ErrorAction Stop
+        $observedPartitions = @(Get-Partition -DiskNumber $observedDisk.Number -ErrorAction Stop)
+        $entries = @($observedPartitions | ForEach-Object {
+            $entry = @{
+                number = $_.PartitionNumber; offset = $_.Offset; size = $_.Size
+                drive_letter = [string]$_.DriveLetter; access_paths = @($_.AccessPaths)
+                type = [string]$_.Type; mbr_type = [string]$_.MbrType
+            }
+            try {
+                $observedVolume = Get-Volume -Partition $_ -ErrorAction Stop
+                $entry.volume = @{
+                    file_system = [string]$observedVolume.FileSystem; size = $observedVolume.Size
+                    health = [string]$observedVolume.HealthStatus
+                    operational_status = @($observedVolume.OperationalStatus | ForEach-Object { [string]$_ })
+                }
+            } catch { $entry.volume_error = $_.Exception.Message }
+            $entry
+        })
+        Send-Event @{ diagnostic = @{
+            phase = $phase; disk = $observedDisk.Number; path = [string]$observedDisk.Path
+            bus_type = [string]$observedDisk.BusType; partition_style = [string]$observedDisk.PartitionStyle
+            size = $observedDisk.Size; logical_sector = $observedDisk.LogicalSectorSize
+            physical_sector = $observedDisk.PhysicalSectorSize; read_only = $observedDisk.IsReadOnly
+            offline = $observedDisk.IsOffline; health = [string]$observedDisk.HealthStatus
+            operational_status = @($observedDisk.OperationalStatus | ForEach-Object { [string]$_ })
+            partitions = $entries; elapsed_ms = $timer.ElapsedMilliseconds
+        } }
+    } catch {
+        Send-Event @{ diagnostic = @{ phase = $phase; error = $_.Exception.Message; elapsed_ms = $timer.ElapsedMilliseconds } }
+    }
+}
+
 try {
     Import-Module Storage -ErrorAction Stop
     foreach ($name in @('Get-Disk', 'Get-Partition', 'Clear-Disk', 'Initialize-Disk', 'New-Partition', 'Format-Volume', 'Get-Volume', 'Add-PartitionAccessPath')) {
@@ -69,6 +105,7 @@ try {
         if ($letters -contains $page.Name.Substring(0, 1)) { throw 'ページファイルを含むディスクはフォーマットできません。' }
     }
     Stage 'format_partition' 'パーティションを作り直しています'
+    Storage-Snapshot 'before_format'
     $disk = Current-Disk $expected $true
     # Windows exposes some removable media as one whole-device volume at offset 0.
     # Such a device already has a format target; rebuilding its partition table is not supported.
@@ -97,6 +134,7 @@ try {
     }
     $null = Current-Disk $expected
     Stage-Done 'format_partition' 'パーティション作成'
+    Storage-Snapshot 'after_partition'
     Stage 'format_volume' 'クイックフォーマットしています'
     $volume = Format-Volume -Partition $partition -FileSystem $fs -NewFileSystemLabel $label -Force -Confirm:$false -ErrorAction Stop
     $null = Current-Disk $expected
@@ -106,6 +144,7 @@ try {
         $partition = Get-Partition -DiskNumber $expected.disk -PartitionNumber $partition.PartitionNumber -ErrorAction Stop
     }
     Stage-Done 'format_volume' 'フォーマット実行'
+    Storage-Snapshot 'after_format'
     Stage 'format_verify' 'フォーマット結果を確認しています'
     $partitions = @(Get-Partition -DiskNumber $expected.disk -ErrorAction Stop)
     $volume = Get-Volume -Partition $partition -ErrorAction Stop
@@ -133,8 +172,16 @@ try {
         $null = Current-Disk $expected
         Stage-Done 'format_test' 'FAT簡易テスト'
     }
+    Storage-Snapshot 'format_completed'
     Send-Event @{ result = $result }
 } catch {
-    Send-Event @{ error = $_.Exception.Message }
+    $originalError = $_
+    Send-Event @{ diagnostic = @{
+        phase = 'format_failed'; error = $originalError.Exception.Message
+        hresult = $originalError.Exception.HResult; error_id = $originalError.FullyQualifiedErrorId
+        category = [string]$originalError.CategoryInfo.Category
+    } }
+    if ($request.mode -eq 'format') { Storage-Snapshot 'after_failure' }
+    Send-Event @{ error = $originalError.Exception.Message }
     exit 1
 }

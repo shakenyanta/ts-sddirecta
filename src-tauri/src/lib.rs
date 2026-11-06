@@ -18,6 +18,7 @@ mod sd_read_batch;
 mod sd_worker;
 mod source_directory;
 mod startup_csv;
+mod storage_diagnostics;
 mod windows_api;
 mod window_layout;
 pub use portable_update::run_if_helper;
@@ -539,6 +540,7 @@ async fn sd_verify_fill(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let edition = edition::current();
+    portable_update::cleanup_completed_updates();
     tauri::Builder::default()
         .setup(move |app| {
             use tauri::Manager;

@@ -1,8 +1,14 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { mkdtempSync, mkdirSync, readdirSync, rmSync } = require('node:fs');
+const { mkdtempSync, mkdirSync, readdirSync, rmSync, readFileSync } = require('node:fs');
 const { resolve, join, sep } = require('node:path');
 const { spawnSync } = require('node:child_process');
+
+test('embedded formatter fits the Windows encoded command line limit', () => {
+  const source = readFileSync('src-tauri/src/sd_format.ps1', 'utf8');
+  const encoded = Buffer.from(source, 'utf16le').toString('base64');
+  assert.ok(encoded.length + 1024 < 32767, 'Leave room for the executable path and PowerShell arguments');
+});
 
 test('Windows formatter sequences only the confirmed disk and stops on errors', { skip: process.platform !== 'win32' }, () => {
   const cache = resolve('.cache/format-storage-tests');
@@ -31,6 +37,13 @@ test('Windows formatter sequences only the confirmed disk and stops on errors', 
     assert.deepEqual(completed.map(e => e.message), ['パーティション作成', 'フォーマット実行', 'フォーマット確認', 'フォーマット完了', 'FAT簡易テスト']);
     assert.ok(completed.every(e => Number.isInteger(e.file_ms) && e.file_ms >= 0));
     assert.equal(good.events.at(-1).result.file_system, 'FAT');
+    const snapshots = good.events.filter(e => e.diagnostic).map(e => e.diagnostic);
+    assert.deepEqual(snapshots.map(e => e.phase), ['before_format', 'after_partition', 'after_format', 'format_completed']);
+    assert.ok(snapshots.every(e => e.disk === 77 && e.partitions[0].offset === 1048576));
+    const diagnosticFailure = run('diagnostic-error');
+    assert.equal(diagnosticFailure.status, 0, diagnosticFailure.stdout + diagnosticFailure.stderr);
+    assert.equal(diagnosticFailure.events.at(-1).result.file_system, 'FAT');
+    assert.ok(diagnosticFailure.events.filter(e => e.diagnostic).every(e => e.diagnostic.error === 'Simulated diagnostic query error'));
     assert.deepEqual(readdirSync(root), []); // Readback succeeded and the temporary file was removed.
     // An absent folder would fail if the optional test tried to create a file.
     const skipped = run('success', { simple_test: false }, join(root, 'absent'));
@@ -74,6 +87,10 @@ test('Windows formatter sequences only the confirmed disk and stops on errors', 
       assert.notEqual(failed.status, 0);
       assert.ok(failed.events.at(-1).error);
       assert.ok(!failed.events.some(e => e.result));
+      assert.ok(failed.events.some(e => e.diagnostic?.phase === 'format_failed' && Number.isInteger(e.diagnostic.hresult)));
+      if (mode === 'format-error') {
+        assert.equal(failed.events.at(-1).error, 'Simulated formatter error');
+      }
     }
   } finally {
     const resolved = resolve(root);
