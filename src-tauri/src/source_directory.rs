@@ -62,6 +62,32 @@ pub fn input_exists(directory: &std::path::Path) -> Result<bool, String> {
     }
 }
 
+/// Fall back only for missing/non-directory paths. Access failures must not imply deletion.
+pub fn saved_directory(path: String) -> Result<Option<String>, String> {
+    let mut candidate = PathBuf::from(path);
+    if !candidate.is_absolute() {
+        return Err("保存されたフォルダーは絶対パスではありません".into());
+    }
+    // An unreachable share cannot prove its descendants were deleted.
+    #[cfg(windows)]
+    if matches!(candidate.components().next(), Some(std::path::Component::Prefix(prefix))
+        if matches!(prefix.kind(), std::path::Prefix::UNC(..) | std::path::Prefix::VerbatimUNC(..)))
+    {
+        let root = candidate.ancestors().last().ok_or("共有フォルダーのルートを取得できませんでした")?;
+        fs::metadata(root).map_err(|error| error.to_string())?;
+    }
+    loop {
+        match fs::metadata(&candidate) {
+            Ok(metadata) if metadata.is_dir() => return Ok(Some(candidate.to_string_lossy().into_owned())),
+            Ok(_) => {},
+            Err(error) if matches!(error.kind(), io::ErrorKind::NotFound | io::ErrorKind::NotADirectory)
+                && !matches!(error.raw_os_error(), Some(53 | 64 | 67 | 121 | 1231 | 1232)) => {},
+            Err(error) => return Err(error.to_string()),
+        }
+        if !candidate.pop() { return Ok(None); }
+    }
+}
+
 /// Resolve a single file in the displayed directory, never a URL or another directory.
 pub fn file_to_open(folder: String, filename: &str) -> Result<PathBuf, String> {
     if filename.is_empty() || filename.contains(['/', '\\', ':']) || filename == "." || filename == ".." {
@@ -98,6 +124,20 @@ pub fn child_folders(path: String) -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_selection_uses_nearest_existing_directory_only() {
+        let root = tempfile::tempdir().unwrap();
+        let existing = root.path().join("existing");
+        fs::create_dir(&existing).unwrap();
+        let resolve = |path: PathBuf| saved_directory(path.to_str().unwrap().to_owned()).unwrap();
+        assert_eq!(resolve(existing.clone()), Some(existing.to_string_lossy().into_owned()));
+        assert_eq!(resolve(existing.join("deleted").join("nested")), Some(existing.to_string_lossy().into_owned()));
+        fs::write(existing.join("file"), b"data").unwrap();
+        assert_eq!(resolve(existing.join("file")), Some(existing.to_string_lossy().into_owned()));
+        assert_eq!(resolve(existing.join("file").join("nested")), Some(existing.to_string_lossy().into_owned()));
+        assert!(saved_directory("relative".into()).is_err());
+    }
 
     #[test]
     fn open_file_resolves_only_files_in_the_displayed_folder() {

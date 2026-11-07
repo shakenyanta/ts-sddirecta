@@ -14,13 +14,14 @@ function utility(path) {
 }
 
 // Exercise the actual view setup with IPC/lifecycle boundaries replaced; no WebView or SD access.
-function view(invoke, clock = performance, DateClass = Date) {
+function view(invoke, clock = performance, DateClass = Date, storage) {
   const source = readFileSync('src/pages/HomeView.vue', 'utf8').match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
     .replace(/^import .*;\r?$/gm, '');
   let mount, unmount, listener, timer, copied, unlistened = false;
   const eventListeners = new Map();
   const keyListeners = new Set();
   const bindings = {
+    localStorage: storage,
     performance: clock,
     Date: DateClass,
     ref: value => ({ value }),
@@ -40,6 +41,7 @@ function view(invoke, clock = performance, DateClass = Date) {
     clearInterval: () => { timer = undefined; },
     ...utility('src/utils/sdDirectCsv.ts'),
     ...utility('src/utils/executablePath.ts'),
+    ...utility('src/utils/folderTreeState.ts'),
     ...utility('src/utils/sdWrite.ts'),
     createLogScroller: getPanel => utility('src/utils/logScroll.ts').createLogScroller(getPanel, {
       request: () => 1, cancel: () => {}, reducedMotion: () => false,
@@ -47,7 +49,7 @@ function view(invoke, clock = performance, DateClass = Date) {
   };
   const api = new Function(...Object.keys(bindings), transpile(source) + `
     return { resize, sdHeightRatio, menuHeight, resizeOptions, baseWidthRatio, appendMessage, initializeSource, refreshMatchedFiles, sourceDirectory, displayedDirectory, openFolder, openGridFile,
-      selectFolder, selectedFolder, folderNodes, visibleFolders, toggleFolder, pathList,
+      selectFolder, selectedFolder, folderNodes, visibleFolders, toggleFolder, pathList, saveFolderState, restoreFolderState,
       sdDirectDictionary, sdloadingDictionary, sdAddressRange, requiredSdCapacity, matchedFiles, writeFiles, optionFiles, canSdWrite, allFileCount, initializing, messages, pathError,
       onSdWrite, onSdRead, onSdFfInitialize, onSdFormat, startSdFormat, formatPlan, formatLabel, formatSimpleTest, formatStep, formatLabelValid, writeStage, canSdRead, popupTitle, statusLabel, closeWriteDialog, copyWriteLog, openDiagnosticLog, failureDetails, writeDialogOpen, writeLog, writing, pendingPlan, progress, percent, currentRun, transientNotice, operationStatus, operationDetail };
   `)(...Object.values(bindings));
@@ -174,6 +176,253 @@ test('panel logs retain their local HH:MM timestamp and warning status', async (
 });
 
 const csv = 'A,FILE-AA.001,00000000,000001FF';
+
+function savedTree() {
+  return { version: 1, root: 'C:\\', selected: 'C:\\parent\\child', scrollTop: 17,
+    nodes: [
+      { path: 'C:\\', children: ['C:\\parent'], expanded: true },
+      { path: 'C:\\parent', children: ['C:\\parent\\child', 'C:\\parent\\closed', 'C:\\parent\\deleted'], expanded: true },
+      { path: 'C:\\parent\\child', children: [], expanded: false },
+      { path: 'C:\\parent\\closed', children: ['C:\\parent\\closed\\cached'], expanded: false },
+      { path: 'C:\\parent\\closed\\cached', children: [], expanded: false },
+      { path: 'C:\\parent\\deleted', children: [], expanded: true },
+    ].map(node => ({ ...node, childrenListed: true })), matches: [['c:\\parent\\closed', true], ['c:\\parent\\deleted', true]] };
+}
+
+function treeStorage(state = savedTree()) {
+  let raw = JSON.stringify(state);
+  return { getItem: () => raw, setItem: (_key, value) => { raw = value; } };
+}
+
+test('path-only ancestors retain identical rows and scroll after restart without listing siblings', async () => {
+  const storage = treeStorage(), listings = [];
+  const api = backend({
+    resolve_saved_folder: ({ directory }) => directory,
+    find_dictionary_files: () => ({ files: ['FILE-AA.001'], from_input: false }),
+    list_child_folders: ({ directory }) => { listings.push(directory); return ['parent', 'sibling']; },
+  });
+  const first = view(api, performance, Date, storage);
+  await first.initializeSource(['C:\\parent\\child']);
+  first.pathList.value = { scrollTop: 17 };
+  const rows = first.visibleFolders.value.map(({ node }) => node.path);
+  first.saveFolderState();
+  assert.ok(JSON.parse(storage.getItem()).nodes.every(node => node.childrenListed === false));
+  first.unmount();
+  for (let restart = 0; restart < 2; restart++) {
+    const ui = view(api, performance, Date, storage);
+    ui.pathList.value = { scrollTop: 0 };
+    await ui.mount();
+    assert.deepEqual(ui.visibleFolders.value.map(({ node }) => node.path), rows);
+    assert.deepEqual(listings, []);
+    assert.equal(ui.selectedFolder.value, 'C:\\parent\\child');
+    assert.equal(ui.pathList.value.scrollTop, 17);
+    assert.equal(ui.visibleFolders.value.find(({ node }) => node.name === 'child').hasMatches, true);
+    ui.unmount();
+  }
+  const ui = view(api, performance, Date, storage);
+  await ui.mount();
+  await ui.toggleFolder('C:\\');
+  await ui.toggleFolder('C:\\');
+  assert.deepEqual(listings, ['C:\\']);
+  assert.ok(ui.visibleFolders.value.some(({ node }) => node.name === 'sibling'));
+  ui.unmount();
+});
+
+test('listed descendants refresh through path-only ancestors, and failed refreshes remain eligible next restart', async () => {
+  const state = savedTree();
+  state.nodes[0].childrenListed = false;
+  const storage = treeStorage(state), listings = [];
+  const api = backend({
+    resolve_saved_folder: ({ directory }) => directory,
+    list_child_folders: ({ directory }) => {
+      listings.push(directory);
+      if (directory === 'C:\\parent') throw new Error('access denied');
+      return [];
+    },
+    find_dictionary_files: () => ({ files: [], from_input: false }),
+  });
+  for (let restart = 0; restart < 2; restart++) {
+    const ui = view(api, performance, Date, storage);
+    await ui.mount();
+    ui.saveFolderState();
+    assert.equal(JSON.parse(storage.getItem()).nodes.find(node => node.path === 'C:\\parent').childrenListed, true);
+    ui.unmount();
+  }
+  assert.equal(listings.filter(path => path === 'C:\\parent').length, 2);
+  assert.ok(!listings.includes('C:\\'));
+});
+
+test('older saved trees preserve their rows without inferring listing history', async () => {
+  const state = savedTree();
+  state.nodes.forEach(node => { delete node.childrenListed; });
+  let listings = 0;
+  const ui = view(backend({
+    resolve_saved_folder: ({ directory }) => directory,
+    list_child_folders: () => { listings++; return []; },
+    find_dictionary_files: () => ({ files: [], from_input: false }),
+  }), performance, Date, treeStorage(state));
+  await ui.mount();
+  assert.equal(listings, 0);
+  assert.ok(ui.visibleFolders.value.some(({ node }) => node.name === 'closed'));
+  assert.ok([...ui.folderNodes.value.values()].every(node => node.childrenListed === false));
+  ui.unmount();
+});
+
+test('a deleted selection under path-only ancestors is pruned without enumerating siblings', async () => {
+  const state = savedTree();
+  state.nodes.forEach(node => { node.childrenListed = false; });
+  let listings = 0;
+  const ui = view(backend({
+    resolve_saved_folder: () => 'C:\\parent',
+    list_child_folders: () => { listings++; return []; },
+    find_dictionary_files: () => ({ files: [], from_input: false }),
+  }), performance, Date, treeStorage(state));
+  await ui.mount();
+  assert.equal(ui.selectedFolder.value, 'C:\\parent');
+  assert.equal(listings, 0);
+  assert.ok(!ui.folderNodes.value.has('C:\\parent\\child'));
+  assert.ok(!ui.folderNodes.value.get('C:\\parent').children.includes('C:\\parent\\child'));
+  assert.ok(ui.folderNodes.value.has('C:\\parent\\closed'));
+  ui.unmount();
+});
+
+test('saved folder tree restores selection, scroll and markers, refreshes only open branches and persists changes', async () => {
+  const storage = treeStorage(), listings = [], matches = [];
+  const api = backend({
+    resolve_saved_folder: ({ directory }) => directory,
+    list_child_folders: ({ directory }) => {
+      listings.push(directory);
+      if (directory === 'C:\\') return ['parent'];
+      if (directory === 'C:\\parent') return ['child', 'closed', 'added'];
+      throw new Error('closed branches must not be enumerated');
+    },
+    find_dictionary_files: ({ directory }) => { matches.push(directory); return { files: ['FILE-AA.001'], from_input: false }; },
+  });
+  const ui = view(api, performance, Date, storage);
+  ui.pathList.value = { scrollTop: 0 };
+  await ui.mount();
+  assert.equal(ui.selectedFolder.value, 'C:\\parent\\child');
+  assert.equal(ui.pathList.value.scrollTop, 17);
+  assert.deepEqual(listings, ['C:\\', 'C:\\parent']);
+  assert.deepEqual(matches, ['C:\\parent\\child']);
+  assert.equal(ui.visibleFolders.value.find(row => row.node.name === 'closed').hasMatches, true);
+  assert.ok(ui.visibleFolders.value.some(row => row.node.name === 'added' && row.hasMatches === undefined));
+  assert.ok(!ui.visibleFolders.value.some(row => row.node.name === 'deleted'));
+  assert.ok(ui.folderNodes.value.has('C:\\parent\\closed\\cached'));
+  ui.saveFolderState();
+  const saved = utility('src/utils/folderTreeState.ts').parseFolderTreeState(storage.getItem());
+  assert.equal(saved.scrollTop, 17);
+  assert.ok(!saved.matches.some(([path]) => path.includes('deleted')));
+  ui.unmount();
+  const again = view(api, performance, Date, storage);
+  again.pathList.value = { scrollTop: 0 };
+  await again.mount();
+  assert.equal(again.selectedFolder.value, 'C:\\parent\\child');
+  assert.equal(again.pathList.value.scrollTop, 17);
+  again.unmount();
+});
+
+test('saved folder tree falls back to its parent on deletion but retains cached branches on access failure', async () => {
+  for (const inaccessible of [false, true]) {
+    const ui = view(backend({
+      resolve_saved_folder: () => { if (inaccessible) throw new Error('access denied'); return 'C:\\parent'; },
+      list_child_folders: ({ directory }) => {
+        if (inaccessible) throw new Error('access denied');
+        return directory === 'C:\\' ? ['parent'] : ['closed'];
+      },
+      find_dictionary_files: () => ({ files: [], from_input: false }),
+    }), performance, Date, treeStorage());
+    await ui.mount();
+    assert.equal(ui.selectedFolder.value, inaccessible ? 'C:\\parent\\child' : 'C:\\parent');
+    assert.equal(ui.folderNodes.value.has('C:\\parent\\child'), inaccessible);
+    if (inaccessible) assert.ok(panelContents(ui).some(message => typeof message === 'object' && /前回の階層を保持/.test(message.text)));
+    ui.unmount();
+  }
+});
+
+test('corrupt or unavailable folder storage falls back to normal startup without blocking use', async () => {
+  for (const storage of [
+    { getItem: () => '{broken', setItem: () => {} },
+    { getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('denied'); } },
+    treeStorage({ ...savedTree(), version: 99 }),
+  ]) {
+    const ui = view(backend(), performance, Date, storage);
+    await ui.mount();
+    assert.equal(ui.sourceDirectory.value, 'C:\\app');
+    assert.equal(ui.initializing.value, false);
+    ui.unmount();
+  }
+});
+
+test('a drop during saved-folder validation wins over restoration', async () => {
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  const ui = view(backend({ resolve_saved_folder: () => pending }), performance, Date, treeStorage());
+  const restoring = ui.restoreFolderState();
+  await ui.initializeSource(['C:\\drop']);
+  release('C:\\parent\\child');
+  await restoring;
+  assert.equal(ui.sourceDirectory.value, 'C:\\drop');
+  assert.equal(ui.selectedFolder.value, 'C:\\drop\\input');
+  ui.unmount();
+});
+
+test('saved selection without an existing ancestor uses the exe directory', async () => {
+  const ui = view(backend({ resolve_saved_folder: () => null }), performance, Date, treeStorage());
+  await ui.mount();
+  assert.equal(ui.sourceDirectory.value, 'C:\\app');
+  assert.equal(ui.initializing.value, false);
+  ui.unmount();
+});
+
+test('saved tree validation rejects cycles, orphan nodes, traversal and invalid marker data', () => {
+  const { parseFolderTreeState } = utility('src/utils/folderTreeState.ts');
+  assert.deepEqual(parseFolderTreeState(JSON.stringify(savedTree())), savedTree());
+  const mutations = [
+    state => { state.nodes[1].children.push('C:\\'); },
+    state => { state.nodes.push({ path: 'C:\\orphan', children: [], expanded: true }); },
+    state => { state.nodes[1].children.push('C:\\parent\\..'); },
+    state => { state.selected = 'C:\\missing'; },
+    state => { state.matches[0][1] = 'yes'; },
+    state => { state.scrollTop = -1; },
+    state => { state.nodes[0].childrenListed = 'yes'; },
+  ];
+  for (const mutate of mutations) {
+    const state = savedTree(); mutate(state);
+    assert.throws(() => parseFolderTreeState(JSON.stringify(state)));
+  }
+});
+
+test('folder match markers retain successful results across rebuilds and errors without extra scans', async () => {
+  let files = ['FILE-AA.001'], fail = false, scans = 0, hasCsv = true;
+  const ui = view(backend({
+    check_startup_csv: () => hasCsv,
+    find_dictionary_files: () => {
+      scans++;
+      if (fail) throw new Error('unavailable');
+      return { files, from_input: false };
+    },
+  }));
+  const status = name => ui.visibleFolders.value.find(({ node }) => node.name === name)?.hasMatches;
+  await ui.initializeSource(['C:\\parent\\child']);
+  assert.equal(status('child'), true);
+  assert.equal(status('parent'), undefined);
+  files = [];
+  await ui.refreshMatchedFiles();
+  assert.equal(status('child'), false);
+  files = ['FILE-AA.001'];
+  await ui.refreshMatchedFiles();
+  fail = true;
+  await ui.refreshMatchedFiles();
+  assert.equal(status('child'), true);
+  await ui.initializeSource(['c:/parent/child/']);
+  assert.equal(status('child'), true);
+  assert.equal(scans, 5);
+  hasCsv = false;
+  await ui.initializeSource(['C:\\parent\\child']);
+  assert.equal(status('child'), false);
+  assert.equal(scans, 5);
+});
 
 test('folder click lists immediate children, preserves open branches, and updates the filtered grid', async () => {
   const calls = [];

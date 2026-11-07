@@ -454,6 +454,12 @@ fn list_child_folders(directory: String) -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
+async fn resolve_saved_folder(directory: String) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || source_directory::saved_directory(directory))
+        .await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 fn check_startup_csv(directory: Option<String>) -> Result<bool, String> {
     startup_csv_source(directory).map(|_| true)
 }
@@ -638,6 +644,7 @@ pub fn run() {
             get_executable_directory,
             resolve_drop_directory,
             list_child_folders,
+            resolve_saved_folder,
             check_startup_csv,
             read_startup_csv,
             find_dictionary_files,

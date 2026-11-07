@@ -7,6 +7,7 @@ import SdMenu from '../components/SdMenu.vue';
 import OptionGrid from '../components/OptionGrid.vue';
 import { features } from '../editions';
 import { folderPathAt, splitFolderPath } from '../utils/executablePath';
+import { folderTreeStorageKey, parseFolderTreeState, type FolderTreeState } from '../utils/folderTreeState';
 import { createLogScroller } from '../utils/logScroll';
 import { parseSdDirectCsv, type AddressRange, type SdArea } from '../utils/sdDirectCsv';
 import { writePercent, writeStageLabel, sizeComment, formatByteCount, formatCardCapacity, explainSdFailure, type WritePlan, type WriteProgress, type OperationStatus } from '../utils/sdWrite';
@@ -134,19 +135,117 @@ interface FolderNode {
 	children: string[];
 	expanded: boolean;
 	loaded: boolean;
+	// Unlike loaded (this session), this survives restarts and listing failures.
+	childrenListed: boolean;
 	loading: boolean;
 }
 const folderNodes = ref(new Map<string, FolderNode>());
+// Keep the last successful result independently of tree rebuilds.
+const folderMatches = ref(new Map<string, boolean>());
+function folderMatchKey(path: string) {
+	return folderPathAt(path, splitFolderPath(path).length - 1).toLowerCase();
+}
 const treeRoot = ref('');
 const selectedFolder = ref('');
+let restoringFolders = false;
+let folderSaveTimer: ReturnType<typeof setTimeout> | undefined;
+let folderStorageWarning = false;
+
+function saveFolderState() {
+	clearTimeout(folderSaveTimer);
+	if (restoringFolders || initializing.value || !treeRoot.value || !selectedFolder.value || typeof localStorage === 'undefined') return;
+	const nodes: FolderTreeState['nodes'] = [];
+	const pending = [treeRoot.value];
+	while (pending.length) {
+		const node = folderNodes.value.get(pending.pop()!);
+		if (!node) continue;
+		nodes.push({ path: node.path, children: [...node.children], expanded: node.expanded, childrenListed: node.childrenListed });
+		pending.push(...node.children);
+	}
+	try {
+		localStorage.setItem(folderTreeStorageKey, JSON.stringify({ version: 1, root: treeRoot.value,
+			selected: selectedFolder.value, scrollTop: pathList.value?.scrollTop ?? 0,
+			nodes, matches: [...folderMatches.value] } satisfies FolderTreeState));
+	} catch (error) {
+		if (!folderStorageWarning) {
+			folderStorageWarning = true;
+			void appendMessage({ text: `フォルダー表示状態を保存できませんでした: ${String(error)}`, warning: true });
+		}
+	}
+}
+
+function scheduleFolderSave() {
+	if (typeof localStorage === 'undefined' || restoringFolders || disposed) return;
+	clearTimeout(folderSaveTimer);
+	folderSaveTimer = setTimeout(saveFolderState, 250);
+}
+
+async function restoreFolderState() {
+	if (typeof localStorage === 'undefined') return false;
+	let state: FolderTreeState;
+	try {
+		const raw = localStorage.getItem(folderTreeStorageKey);
+		if (!raw) return false;
+		state = parseFolderTreeState(raw);
+	} catch (error) {
+		await appendMessage({ text: `フォルダー表示状態を復元できませんでした。通常表示で起動します: ${String(error)}`, warning: true });
+		return false;
+	}
+	const current = generation;
+	const active = () => !disposed && current === generation;
+	restoringFolders = true;
+	initializing.value = true;
+	try {
+		let directory: string | null = state.selected;
+		try {
+			directory = await invoke<string | null>('resolve_saved_folder', { directory: state.selected });
+		} catch (error) {
+			if (!active()) return true;
+			await appendMessage({ text: `保存されたフォルダーを確認できませんでした。前回の階層を保持します: ${state.selected}: ${String(error)}`, warning: true });
+		}
+		if (!active()) return true;
+		folderMatches.value = new Map(state.matches);
+		if (!directory) return false;
+		folderNodes.value = new Map(state.nodes.map(node => [node.path, { ...node,
+			name: splitFolderPath(node.path).slice(-1)[0], loaded: false, loading: false }]));
+		treeRoot.value = state.root;
+		selectedFolder.value = directory;
+		if (!folderNodes.value.has(directory)) resetFolderTree(directory);
+		if (directory !== state.selected) {
+			const missing = folderPathAt(state.selected, splitFolderPath(directory).length);
+			const parent = folderNodes.value.get(directory);
+			if (parent) parent.children = parent.children.filter(path => folderMatchKey(path) !== folderMatchKey(missing));
+			removeCachedFolderBranch(missing);
+			await appendMessage(`保存された選択先がないため親フォルダーへ戻りました: ${directory}`);
+		}
+		// Path-only ancestors keep their cached child without enumerating siblings.
+		const pending = [treeRoot.value];
+		while (pending.length && active()) {
+			const node = folderNodes.value.get(pending.pop()!);
+			if (!node?.expanded) continue;
+			if (node.childrenListed) await loadChildFolders(node.path);
+			if (!active()) return true;
+			pending.push(...node.children.slice().reverse());
+		}
+		if (!active()) return true;
+		await initializeSource(undefined, directory, true);
+		await nextTick();
+		if (!disposed && generation === current + 1 && pathList.value) pathList.value.scrollTop = state.scrollTop;
+		return true;
+	} finally {
+		restoringFolders = false;
+		if (active()) initializing.value = false;
+		scheduleFolderSave();
+	}
+}
 const visibleFolders = computed(() => {
-	const rows: { node: FolderNode; depth: number }[] = [];
+	const rows: { node: FolderNode; depth: number; hasMatches: boolean | undefined }[] = [];
 	const pending = treeRoot.value ? [{ path: treeRoot.value, depth: 0 }] : [];
 	while (pending.length) {
 		const { path, depth } = pending.pop()!;
 		const node = folderNodes.value.get(path);
 		if (!node) continue;
-		rows.push({ node, depth });
+		rows.push({ node, depth, hasMatches: folderMatches.value.get(folderMatchKey(path)) });
 		if (node.expanded) {
 			for (let i = node.children.length - 1; i >= 0; i--) pending.push({ path: node.children[i], depth: depth + 1 });
 		}
@@ -160,11 +259,23 @@ function resetFolderTree(directory: string) {
 	parts.forEach((name, index) => {
 		const path = folderPathAt(directory, index);
 		nodes.set(path, { path, name, children: index + 1 < parts.length ? [folderPathAt(directory, index + 1)] : [],
-			expanded: index + 1 < parts.length, loaded: false, loading: false });
+			expanded: index + 1 < parts.length, loaded: false, childrenListed: false, loading: false });
 	});
 	folderNodes.value = nodes;
 	treeRoot.value = parts.length ? folderPathAt(directory, 0) : '';
 	selectedFolder.value = parts.length ? folderPathAt(directory, parts.length - 1) : '';
+}
+
+function removeCachedFolderBranch(path: string) {
+	const key = folderMatchKey(path);
+	const prefix = key.replace(/[\\/]+$/, '') + (path.startsWith('/') ? '/' : '\\');
+	for (const savedPath of folderNodes.value.keys()) {
+		const savedKey = folderMatchKey(savedPath);
+		if (savedKey === key || savedKey.startsWith(prefix)) folderNodes.value.delete(savedPath);
+	}
+	for (const savedKey of folderMatches.value.keys()) {
+		if (savedKey === key || savedKey.startsWith(prefix)) folderMatches.value.delete(savedKey);
+	}
 }
 
 async function loadChildFolders(path: string) {
@@ -178,25 +289,33 @@ async function loadChildFolders(path: string) {
 		const separator = path.startsWith('/') ? '/' : '\\';
 		const children = names.map(name => {
 			const child = path.replace(/[\\/]+$/, '') + separator + name;
-			if (!nodes.has(child)) nodes.set(child, { path: child, name, children: [], expanded: false, loaded: false, loading: false });
+			if (!nodes.has(child)) nodes.set(child, { path: child, name, children: [], expanded: false, loaded: false, childrenListed: false, loading: false });
 			return child;
 		});
+		// Only successful enumeration proves a cached child has disappeared.
+		for (const oldChild of node.children) {
+			if (children.includes(oldChild)) continue;
+			removeCachedFolderBranch(oldChild);
+		}
 		node.children = children;
 		node.loaded = true;
+		node.childrenListed = true;
 	} catch (error) {
 		if (!disposed && folderNodes.value === nodes) {
 			await appendMessage({ text: `子フォルダー一覧を取得できませんでした: ${path}: ${String(error)}`, warning: true });
 		}
 	} finally {
 		node.loading = false;
+		scheduleFolderSave();
 	}
 }
 
 async function toggleFolder(path: string) {
 	const node = folderNodes.value.get(path);
-	if (!node || closing.value) return;
+	if (!node || closing.value || restoringFolders) return;
 	node.expanded = !node.expanded;
 	if (node.expanded) await loadChildFolders(path);
+	scheduleFolderSave();
 }
 
 async function selectFolder(path: string) {
@@ -208,10 +327,12 @@ async function selectFolder(path: string) {
 	if (path === selectedFolder.value) { await children; return; }
 	selectedFolder.value = path;
 	await Promise.all([initializeSource(undefined, path, true), children]);
+	scheduleFolderSave();
 }
 
 onMounted(async () => {
 	window.addEventListener('keydown', onRefreshKey, true);
+	window.addEventListener('pagehide', saveFolderState);
 	try {
 		const unlisten = await listen<WriteProgress>('sd-progress', event => acceptProgress(event.payload));
 		if (disposed) { unlisten(); return; }
@@ -268,7 +389,7 @@ onMounted(async () => {
 	}
 	if (disposed) return;
 	// A drop received during startup takes priority over the exe directory.
-	if (generation === 0) await initializeSource();
+	if (generation === 0 && !await restoreFolderState() && !disposed && generation === 0) await initializeSource();
 });
 
 function onRefreshKey(event: KeyboardEvent) {
@@ -329,6 +450,7 @@ async function initializeSource(paths?: string[], refreshDirectory?: string, pre
 		}
 		if (!active()) return;
 		if (!exists) {
+			folderMatches.value.set(folderMatchKey(directory), false);
 			await appendMessage('sdDirectaxs.csv無し');
 			return;
 		}
@@ -360,11 +482,15 @@ async function initializeSource(paths?: string[], refreshDirectory?: string, pre
 				await nextTick();
 				if (active() && pathList.value) pathList.value.scrollTop = pathList.value.scrollHeight;
 			}
+			scheduleFolderSave();
 		}
 	}
 }
 
 onUnmounted(() => {
+	saveFolderState();
+	clearTimeout(folderSaveTimer);
+	window.removeEventListener('pagehide', saveFolderState);
     writeLogScroller.dispose();
 	disposed = true;
 	generation++;
@@ -400,12 +526,15 @@ async function refreshMatchedFiles(report = false) {
 			if (range) matchedDictionary.set(filename, { ...range });
 		}
 		sdloadingDictionary.value = matchedDictionary;
+		folderMatches.value.set(folderMatchKey(sourceDirectory.value), matchedDictionary.size > 0);
 		matchedFiles.value = result.files;
 		fileModifiedTimes.value = new Map(Object.entries(result.modified_times ?? {}));
 		fileIndividualInfos.value = new Map(Object.entries(result.individual_infos ?? {}));
 		fileUpdates.value = updates;
 		warningFiles.value = result.warning_files;
 		useInputDirectory.value = result.from_input;
+		if (matchedDictionary.size > 0) folderMatches.value.set(folderMatchKey(displayedDirectory.value), true);
+		scheduleFolderSave();
 		lastMatchError = '';
 		if (!report && !changed) return;
 		if (result.from_input && result.files.length) {
@@ -924,8 +1053,8 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 						</button>
 					</div>
 					<p v-if="pathError" class="path-message path-error" role="alert">{{ pathError }}</p>
-					<ol v-else-if="visibleFolders.length" ref="pathList" class="path-list" aria-label="対象フォルダーの階層">
-						<li v-for="{ node, depth } in visibleFolders" :key="node.path"
+					<ol v-else-if="visibleFolders.length" ref="pathList" class="path-list" aria-label="対象フォルダーの階層" @scroll.passive="scheduleFolderSave">
+						<li v-for="{ node, depth, hasMatches } in visibleFolders" :key="node.path"
 							class="path-row" :class="{ 'path-current': node.path === selectedFolder }"
 							:aria-current="node.path === selectedFolder ? 'location' : undefined" :aria-busy="node.loading">
 							<span class="path-guides" :style="{ width: `${depth * 14}px` }" aria-hidden="true"></span>
@@ -936,9 +1065,10 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 							</button>
 							<span v-else class="folder-toggle-spacer" aria-hidden="true"></span>
 							<svg class="folder-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4a1 1 0 0 1 1-1H6l1.5 2h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1Z"/></svg>
-							<button type="button" class="path-name" :title="`${node.path}\nクリックで選択・ダブルクリックでエクスプローラーで開く`"
+							<button type="button" class="path-name" :class="{ 'folder-has-matches': hasMatches === true }"
+								:title="`${node.path}\n${hasMatches === undefined ? '対象ファイルは未確認' : `最後の確認結果：対象ファイル${hasMatches ? 'あり' : 'なし'}`}\nクリックで選択・ダブルクリックでエクスプローラーで開く`"
 								@click="selectFolder(node.path)"
-								@dblclick.prevent="onFolderDoubleClick(node.path, $event)">{{ node.name }}</button>
+								@dblclick.prevent="onFolderDoubleClick(node.path, $event)"><span v-if="hasMatches" class="folder-match-dot" aria-label="対象ファイルあり（最後の確認結果）">● </span>{{ node.name }}</button>
 							<span v-if="node.loading" class="folder-loading" role="status">読込中…</span>
 						</li>
 					</ol>
@@ -1237,6 +1367,8 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 	white-space: nowrap;
 }
 .folder-loading { margin-left: 6px; color: #64748b; font-size: 10px; white-space: nowrap; }
+.path-name.folder-has-matches { font-weight: 700; }
+.folder-match-dot { color: #2879ce; font-size: 10px; }
 .path-name:focus-visible { outline: 2px solid #4285d4; }
 .path-current {
 	font-weight: 700;
