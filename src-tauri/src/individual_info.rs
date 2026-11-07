@@ -160,7 +160,7 @@ fn extract(stem: &str, bytes: &[u8]) -> String {
         "IM" => bytes
             .get(0xD7F0..0xD7FE)
             .map(|b| b.iter().map(|&b| char::from(b)).collect())
-            .unwrap_or_else(|| "登録番号なし".into()),
+            .unwrap_or_else(|| "登録番号なし(容量不足)".into()),
         "FILE-BA" => match bytes.get(0x5B..0x63) {
             Some(b">ABATUF<") => "営業ｶｰﾄﾞ",
             Some(b"]abatuf[") => "設定ｶｰﾄﾞ",
@@ -331,7 +331,7 @@ mod tests {
         let mut im = vec![0; 0xD7FE];
         im[0xD7F0..].copy_from_slice(b"12345678901234");
         assert_eq!(extract("IM", &im), "12345678901234");
-        assert_eq!(extract("IM", &[]), "登録番号なし");
+        assert_eq!(extract("IM", &[]), "登録番号なし(容量不足)");
         let mut main = vec![0; 0x1008];
         main[0x1002..0x1006].copy_from_slice(&[0x26, 1, 0x22, 0]);
         main[0x1006..].copy_from_slice(&[0xAB, 0xCD]);

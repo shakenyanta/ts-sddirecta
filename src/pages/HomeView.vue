@@ -974,7 +974,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 			</div>
 			<div v-if="features.optionPanel" id="resizer3" class="resizer resizer-horizontal" @pointerdown="resizeOptions"></div>
 			<section v-if="features.optionPanel" id="panel_option" class="panel_option" aria-label="オプション">
-				<OptionGrid :files="optionFiles" :disabled="initializing || writing || closing" @open-file="openGridFile" />
+				<OptionGrid :directory="displayedDirectory" :files="optionFiles" :disabled="initializing || writing || closing" @open-file="openGridFile" />
 			</section>
 		</div>
 	</div>

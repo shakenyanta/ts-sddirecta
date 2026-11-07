@@ -1,14 +1,58 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch, watchEffect } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, watchEffect } from 'vue';
+import { invoke } from '@tauri-apps/api/core';
 import { formatFileTimestamp } from '../utils/fileTimestamp';
 
 const props = defineProps<{ files: {
     filename: string; description: string; individualInfo: string; modifiedAt?: number | null;
     updateNo?: string; updateVer?: string; condition?: string; carType?: string;
-}[]; disabled?: boolean }>();
+}[]; directory: string; disabled?: boolean }>();
 const emit = defineEmits<{ openFile: [filename: string] }>();
 const selectedRow = ref<number | null>(null);
 watch(() => props.files, () => { selectedRow.value = null; });
+
+const imPreview = ref<{ x: number; y: number; error: string } | null>(null);
+const imCanvas = ref<HTMLCanvasElement | null>(null);
+let hoverTimer: ReturnType<typeof setTimeout> | undefined;
+let hoverRequest = 0;
+const isImFile = (filename: string) => /^IM(?:\.[^./\\:]+)?$/i.test(filename);
+
+function hideImPreview() {
+    clearTimeout(hoverTimer);
+    hoverRequest++;
+    imPreview.value = null;
+}
+
+function hoverCell(event: MouseEvent, column: string, filename: string) {
+    hideImPreview();
+    if (column !== '個別情報' || !isImFile(filename) || props.disabled || !props.directory) return;
+    const request = hoverRequest;
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    const x = Math.max(8, Math.min(rect.left, window.innerWidth - 402));
+    const y = rect.bottom + 208 <= window.innerHeight ? rect.bottom + 6 : Math.max(8, rect.top - 206);
+    hoverTimer = setTimeout(async () => {
+        try {
+            const bytes = await invoke<number[]>('read_im_preview', { directory: props.directory, filename });
+            if (request !== hoverRequest) return;
+            imPreview.value = { x, y, error: '' };
+            await nextTick();
+            if (request !== hoverRequest) return;
+            const context = imCanvas.value?.getContext('2d');
+            if (!context) throw new Error('IM画像を描画できませんでした');
+            const image = context.createImageData(384, 192);
+            for (let pixel = 0; pixel < 384 * 192; pixel++) {
+                const color = (bytes[pixel >> 3] & (0x80 >> (pixel % 8))) !== 0 ? 0 : 255;
+                image.data.set([color, color, color, 255], pixel * 4);
+            }
+            context.putImageData(image, 0, 0);
+        } catch (error) {
+            if (request === hoverRequest) imPreview.value = { x, y, error: String(error) };
+        }
+    }, 350);
+}
+
+watch(() => [props.files, props.directory, props.disabled], hideImPreview);
+onBeforeUnmount(hideImPreview);
 
 function selectFile(index: number) {
     if (!props.disabled) selectedRow.value = index;
@@ -92,7 +136,7 @@ const backgroundColumns = computed(() => columns.value
 
 <template>
     <div ref="grid" class="option-grid" :class="{ resizing }">
-        <div class="grid-scroll">
+        <div class="grid-scroll" @scroll="hideImPreview">
         <div class="grid-content" :style="contentStyle">
         <table aria-label="ファイル情報">
             <colgroup>
@@ -115,9 +159,11 @@ const backgroundColumns = computed(() => columns.value
                 <tr v-for="(file, index) in files" :key="index">
                     <td v-for="column in columns" :key="column.label"
                         :class="{ 'filename-cell': column.label === 'ファイル名', 'selected-cell': column.label === 'ファイル名' && selectedRow === index }"
+                        @mouseenter="hoverCell($event, column.label, file.filename)"
+                        @mouseleave="hideImPreview"
                         @click="column.label === 'ファイル名' && selectFile(index)"
                         @dblclick="column.label === 'ファイル名' && openFile(index)"
-                        :title="column.label === '個別情報' ? file.individualInfo || undefined : column.label === '説明' ? file.description || undefined : column.label === 'ファイル名' ? [file.filename, formatFileTimestamp(file.modifiedAt)].filter(Boolean).join(' ') : undefined">
+                        :title="column.label === '個別情報' ? (isImFile(file.filename) ? undefined : file.individualInfo || undefined) : column.label === '説明' ? file.description || undefined : column.label === 'ファイル名' ? [file.filename, formatFileTimestamp(file.modifiedAt)].filter(Boolean).join(' ') : undefined">
                         <template v-if="column.label === 'No'">{{ index + 1 }}</template>
                         <template v-else-if="column.label === 'ファイル名'">{{ file.filename }}</template>
                         <template v-else-if="column.label === '説明'">{{ file.description }}</template>
@@ -138,9 +184,30 @@ const backgroundColumns = computed(() => columns.value
         </div>
         </div>
     </div>
+    <Teleport to="body">
+        <div v-if="imPreview" class="im-preview" role="tooltip" :style="{ left: `${imPreview.x}px`, top: `${imPreview.y}px` }">
+            <span v-if="imPreview.error">{{ imPreview.error }}</span>
+            <canvas v-else ref="imCanvas" width="384" height="192" role="img" aria-label="IM社名の先頭ビットマップ"></canvas>
+        </div>
+    </Teleport>
 </template>
 
 <style scoped>
+.im-preview {
+    position: fixed;
+    z-index: 1000;
+    pointer-events: none;
+    padding: 5px;
+    max-width: calc(100vw - 16px);
+    background: white;
+    color: #334155;
+    border: 1px solid #cbd5e1;
+    border-radius: 4px;
+    box-shadow: 0 3px 12px #0003;
+    font-size: 12px;
+}
+.im-preview canvas { display: block; max-width: 100%; height: auto; }
+
 .option-grid {
     --grid-row-height: 18px;
     width: 100%;

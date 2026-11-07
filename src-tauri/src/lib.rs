@@ -186,6 +186,50 @@ async fn open_folder(directory: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn read_im_preview(directory: String, filename: String) -> Result<Vec<u8>, String> {
+    if edition::current().edition != edition::Edition::Pro {
+        return Err("IMプレビューはプロ版専用です".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = (|| {
+            if !std::path::Path::new(&filename).file_stem()
+                .is_some_and(|stem| stem.eq_ignore_ascii_case("IM")) {
+                return Err("IMファイルを指定してください".into());
+            }
+            let path = source_directory::file_to_open(directory.clone(), &filename)?;
+            let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+            read_im_bitmap(&mut file)
+        })();
+        if let Err(error) = &result {
+            diagnostics::record("WARN", &format!("IM preview failed: directory={directory:?} filename={filename:?} error={error}"));
+        }
+        result
+    }).await.map_err(|e| e.to_string())?
+}
+
+fn read_im_bitmap(reader: &mut impl std::io::Read) -> Result<Vec<u8>, String> {
+    let mut bytes = vec![0; 48 * 192];
+    reader.read_exact(&mut bytes)
+        .map_err(|e| format!("IM画像の先頭1枚（9216バイト）を読み込めませんでした: {e}"))?;
+    Ok(bytes)
+}
+
+#[cfg(test)]
+mod im_preview_tests {
+    use super::read_im_bitmap;
+
+    #[test]
+    fn reads_only_first_bitmap_and_rejects_short_files() {
+        let bytes = [vec![0x81; 9216], vec![0xff; 9216]].concat();
+        let mut reader = std::io::Cursor::new(bytes);
+        assert_eq!(read_im_bitmap(&mut reader).unwrap(), vec![0x81; 9216]);
+        assert_eq!(reader.position(), 9216);
+        assert!(read_im_bitmap(&mut &b""[..]).is_err());
+        assert!(read_im_bitmap(&mut &vec![0; 9215][..]).is_err());
+    }
+}
+
+#[tauri::command]
 async fn open_grid_file(directory: String, filename: String) -> Result<(), String> {
     if edition::current().edition != edition::Edition::Pro {
         return Err("ファイル一覧からの起動はプロ版専用です".into());
@@ -586,6 +630,7 @@ pub fn run() {
         })
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
+            read_im_preview,
             greet,
             get_edition,
             check_portable_update,
