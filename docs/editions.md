@@ -69,7 +69,7 @@ FILE-BCが1件だけ存在し、gridにも表示されている場合に限っ�
 
 | ファイル名（拡張子を除く） | 更新No |
 | --- | --- |
-| FILE-BM | 01（BM:パラメータ1）と02（BM:パラメータ2）の2行 |
+| FILE-BM | 01（パラメータ1）と02（パラメータ2）の2行 |
 | FILE-BO・FILE-BP・FILE-BQ・FILE-BR・FILE-BS・FILE-BU | 順に03・04・05・06・07・08 |
 | IM・FILE-BW・TS-MAIN | 順に09・10・11 |
 | TS-SUB21〜25・TS-DISP | 順に12〜16・17 |

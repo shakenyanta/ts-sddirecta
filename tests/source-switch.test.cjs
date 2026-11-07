@@ -1037,7 +1037,7 @@ test('grid expands each BM file without changing write count and clears updates 
   assert.equal(ui.writeFiles.value.length, 3);
   assert.equal(ui.optionFiles.value.length, 5);
   assert.deepEqual(ui.optionFiles.value.map(row => row.updateNo ?? ''), ['01', '02', '01', '02', '']);
-  assert.deepEqual(ui.optionFiles.value.slice(0, 2).map(row => row.description), ['BM:パラメータ1', 'BM:パラメータ2']);
+  assert.deepEqual(ui.optionFiles.value.slice(0, 2).map(row => row.description), ['パラメータ1', 'パラメータ2']);
   assert.deepEqual(ui.optionFiles.value.slice(0, 4).map(row => row.individualInfo),
     ['03 06 07 04 07 00 00 0D', '0A[CBフォーマット]', '00 01 02 03 04 05 06 07', '00[Nフォーマット]']);
   assert.equal(ui.optionFiles.value[1].updateVer, '230112_00');
@@ -1070,9 +1070,9 @@ test('grid renders update number, version, condition and car type in separate ce
   const script = compileScript(descriptor, { id: 'update-grid-test', inlineTemplate: true });
   const exports = {};
   new Function('require', 'exports', transpile(script.content))(name => name === '../utils/fileTimestamp' ? utility('src/utils/fileTimestamp.ts') : require(name), exports);
-  const html = (await renderToString(createSSRApp(exports.default, { files: [{ filename: 'FILE-BM.003', description: 'BM:パラメータ2', individualInfo: '', updateNo: '02', updateVer: '230112_00', condition: '00', carType: '01' }] }))).replace(/<!--[\s\S]*?-->/g, '');
+  const html = (await renderToString(createSSRApp(exports.default, { files: [{ filename: 'FILE-BM.003', description: 'パラメータ2', individualInfo: '', updateNo: '02', updateVer: '230112_00', condition: '00', carType: '01' }] }))).replace(/<!--[\s\S]*?-->/g, '');
   const cells = [...html.matchAll(/<td\b[^>]*>(.*?)<\/td>/g)].map(match => match[1]);
-  assert.deepEqual(cells, ['1', 'FILE-BM.003', 'BM:パラメータ2', '', '02', '230112_00', '00', '01']);
+  assert.deepEqual(cells, ['1', 'FILE-BM.003', 'パラメータ2', '', '02', '230112_00', '00', '01']);
 });
 
 test('CSV preserves every access flag and includes non-A areas in the bounds', () => {

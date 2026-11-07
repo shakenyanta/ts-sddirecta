@@ -95,8 +95,8 @@ const optionFiles = computed(() => writeFiles.value.flatMap(file => {
     return updates.map(update => ({ ...file,
         individualInfo: update.update_no === '02'
             ? fileIndividualInfos.value.get(file.filename)?.bm_parameter2 ?? '' : file.individualInfo,
-        description: update.update_no === '01' ? 'BM:パラメータ1'
-            : update.update_no === '02' ? 'BM:パラメータ2' : file.description,
+        description: update.update_no === '01' ? 'パラメータ1'
+            : update.update_no === '02' ? 'パラメータ2' : file.description,
         updateNo: update.update_no, updateVer: update.update_ver,
         condition: update.condition, carType: update.car_type,
     }));
