@@ -79,7 +79,7 @@ fn parse(bytes: &[u8], warnings: &mut Vec<String>) -> HashMap<String, UpdateInfo
         warnings.push("FILE-BCの末尾に32バイト未満の不完全なレコードがあります".into());
     }
     for (index, chunk) in bytes.chunks_exact(32).enumerate() {
-        if chunk.iter().all(|b| *b == 0xFF) {
+        if chunk[2..4] != *b"FU" {
             continue;
         }
         if !chunk[..2].iter().all(u8::is_ascii_digit) {
@@ -229,6 +229,7 @@ mod tests {
     fn record(no: &str, ver: &str, condition: &str, car: &str) -> Vec<u8> {
         let mut bytes = vec![b' '; 32];
         bytes[..2].copy_from_slice(no.as_bytes());
+        bytes[2..4].copy_from_slice(b"FU");
         bytes[4..12].copy_from_slice(ver.as_bytes());
         bytes[12..14].copy_from_slice(condition.as_bytes());
         bytes[24..26].copy_from_slice(car.as_bytes());
@@ -302,6 +303,27 @@ mod tests {
         for name in ["FILE-AA.001", "FILE-BA.001", "FILE-BC.001", "OTHER.001"] {
             assert!(result.files[name].is_empty());
         }
+    }
+
+    #[test]
+    fn records_without_fu_are_ignored_before_validation_and_duplicate_checks() {
+        let mut bytes = record("03", "26010100", "00", "01");
+        for no in ["33", "03", "??"] {
+            for marker in [*b"  ", *b"F ", *b" U", [0xFF; 2]] {
+                let mut invalid = record(no, "invalid!", "00", "01");
+                invalid[2..4].copy_from_slice(&marker);
+                invalid[12] = 0xFF;
+                invalid[24] = 0;
+                bytes.extend(invalid);
+            }
+        }
+        let mut warnings = Vec::new();
+        let records = parse(&bytes, &mut warnings);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records["03"].update_ver, "260101_00");
+        assert_eq!(records["03"].condition, "00");
+        assert_eq!(records["03"].car_type, "01");
     }
 
     #[test]

@@ -20,6 +20,26 @@ let textObserver: ResizeObserver | undefined;
 let textScrollMaximum = 0;
 const sdHeightRatio = ref(4 / 7);
 const baseWidthRatio = ref(1 / 3);
+const optionTabs = [
+    { id: 'files', label: 'ファイル情報' },
+    { id: 'history', label: '履歴' },
+] as const;
+const activeOptionTab = ref<typeof optionTabs[number]['id']>('files');
+
+function navigateOptionTab(event: KeyboardEvent, index: number) {
+    let nextIndex: number;
+    switch (event.key) {
+        case 'ArrowLeft': nextIndex = (index + optionTabs.length - 1) % optionTabs.length; break;
+        case 'ArrowRight': nextIndex = (index + 1) % optionTabs.length; break;
+        case 'Home': nextIndex = 0; break;
+        case 'End': nextIndex = optionTabs.length - 1; break;
+        default: return;
+    }
+    event.preventDefault();
+    activeOptionTab.value = optionTabs[nextIndex].id;
+    document.getElementById(`option-tab-${activeOptionTab.value}`)?.focus();
+}
+
 const sourceDirectory = ref('');
 const dragging = ref(false);
 const initializing = ref(false);
@@ -1104,8 +1124,20 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 				</div>
 			</div>
 			<div v-if="features.optionPanel" id="resizer3" class="resizer resizer-horizontal" @pointerdown="resizeOptions"></div>
-			<section v-if="features.optionPanel" id="panel_option" class="panel_option" aria-label="オプション">
-				<OptionGrid :directory="displayedDirectory" :files="optionFiles" :disabled="initializing || writing || closing" @open-file="openGridFile" />
+			<section v-if="features.optionPanel" id="panel_option" class="panel_option" aria-label="オプション"
+				:style="{ '--option-menu-height': `${Math.max(menuHeight, minimumMenuHeight)}px` }">
+				<div class="option-tabs" role="tablist" aria-label="表示内容">
+					<button v-for="(tab, index) in optionTabs" :id="`option-tab-${tab.id}`" :key="tab.id"
+						type="button" role="tab" :aria-selected="activeOptionTab === tab.id"
+						:aria-controls="`option-panel-${tab.id}`" :tabindex="activeOptionTab === tab.id ? 0 : -1"
+						@click="activeOptionTab = tab.id" @keydown="navigateOptionTab($event, index)">{{ tab.label }}</button>
+				</div>
+				<div v-show="activeOptionTab === 'files'" id="option-panel-files" class="option-tab-panel"
+					role="tabpanel" aria-labelledby="option-tab-files" tabindex="0">
+					<OptionGrid :directory="displayedDirectory" :files="optionFiles" :disabled="initializing || writing || closing" @open-file="openGridFile" />
+				</div>
+				<div v-show="activeOptionTab === 'history'" id="option-panel-history" class="option-tab-panel"
+					role="tabpanel" aria-labelledby="option-tab-history" tabindex="0"></div>
 			</section>
 		</div>
 	</div>
@@ -1236,11 +1268,44 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 	grid-template-rows: minmax(0, 1fr);
 }
 .panel_option {
+	--option-grid-header-height: 24px;
+	display: flex;
+	flex-direction: column;
 	min-width: 0;
 	min-height: 0;
-	overflow: auto;
-	scrollbar-width: thin;
+	overflow: hidden;
 	background: #fff;
+}
+.option-tabs {
+	display: flex;
+	flex-shrink: 0;
+	/* グリッドの上枠1pxとヘッダー下線を、resizer1の1pxに揃える。 */
+	height: calc(var(--option-menu-height) - var(--option-grid-header-height));
+	border-bottom: 1px solid #d7e5f5;
+	background: #f5f9fe;
+}
+.option-tabs button {
+	padding: 0 12px;
+	border: 0;
+	border-bottom: 2px solid transparent;
+	background: transparent;
+	color: #52647c;
+	font: 12px/18px 'Yu Gothic UI', Meiryo, sans-serif;
+	cursor: pointer;
+}
+.option-tabs button:hover { background: #eaf3ff; }
+.option-tabs button[aria-selected='true'] {
+	border-bottom-color: #2875d9;
+	background: #fff;
+	color: #255b9f;
+	font-weight: 600;
+}
+.option-tabs button:focus-visible { outline: 2px solid #2875d9; outline-offset: -3px; }
+.option-tab-panel {
+	flex: 1;
+	min-width: 0;
+	min-height: 0;
+	overflow: hidden;
 }
 .panel-base {
 	border: 0;

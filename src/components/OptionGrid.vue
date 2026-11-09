@@ -270,7 +270,7 @@ th {
     position: sticky;
     top: 0;
     z-index: 1;
-    height: 24px;
+    height: var(--option-grid-header-height, 24px);
     background: #edf4fd;
     color: #255b9f;
     border-bottom-color: #d7e5f5;
