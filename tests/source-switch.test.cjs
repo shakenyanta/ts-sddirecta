@@ -523,19 +523,22 @@ test('grid opens only listed files in the displayed folder and reports launch fa
 
 test('grid timestamps refresh without a filename change and clear on source or lookup failure', async () => {
   let timestamp = 1700000000000;
+  let size = 1234;
   let fail = false;
   const ui = view(backend({
     find_dictionary_files: () => {
       if (fail) throw new Error('lookup failed');
-      return { files: ['FILE-AA.001'], modified_times: { 'FILE-AA.001': timestamp }, from_input: true, input_exists: true };
+      return { files: ['FILE-AA.001'], file_metadata: { 'FILE-AA.001': { modified_at: timestamp, size } }, from_input: true, input_exists: true };
     },
     resolve_drop_directory: () => { throw new Error('source unavailable'); },
   }));
   await ui.initializeSource();
-  assert.deepEqual(ui.writeFiles.value, [{ filename: 'FILE-AA.001', description: '', individualInfo: '', modifiedAt: timestamp }]);
+  assert.deepEqual(ui.writeFiles.value, [{ filename: 'FILE-AA.001', description: '', individualInfo: '', modifiedAt: timestamp, size, csvSize: 512 }]);
   timestamp += 60000;
+  size = 0;
   await ui.refreshMatchedFiles();
   assert.equal(ui.writeFiles.value[0].modifiedAt, timestamp);
+  assert.equal(ui.writeFiles.value[0].size, 0);
   timestamp = null;
   await ui.refreshMatchedFiles();
   assert.equal(ui.writeFiles.value[0].modifiedAt, null);
@@ -908,8 +911,8 @@ test('embedded CSV is valid UTF-8 and preserves descriptions and added areas thr
   }));
   await ui.initializeSource();
   assert.deepEqual(ui.writeFiles.value, [
-    { filename: 'FILE-AA.001', description: 'ローディング回数制限', individualInfo: '', modifiedAt: null },
-    { filename: 'FILE-AB.014', description: 'デジタコ14日目', individualInfo: '', modifiedAt: null },
+    { filename: 'FILE-AA.001', description: 'ローディング回数制限', individualInfo: '', modifiedAt: null, size: null, csvSize: 1024 },
+    { filename: 'FILE-AB.014', description: 'デジタコ14日目', individualInfo: '', modifiedAt: null, size: null, csvSize: 358400 },
   ]);
 });
 
@@ -987,9 +990,9 @@ test('grid renders escaped descriptions, tooltips and more than 23 matching file
   const { descriptor } = parse(readFileSync('src/components/OptionGrid.vue', 'utf8'));
   const script = compileScript(descriptor, { id: 'grid-test', inlineTemplate: true });
   const exports = {};
-  new Function('require', 'exports', transpile(script.content))(name => name === '../utils/fileTimestamp' ? utility('src/utils/fileTimestamp.ts') : require(name), exports);
+  new Function('require', 'exports', transpile(script.content))(name => name === '../utils/fileTimestamp' ? utility('src/utils/fileTimestamp.ts') : name === '../utils/sdWrite' ? utility('src/utils/sdWrite.ts') : require(name), exports);
   const files = Array.from({ length: 24 }, (_, i) => ({
-    filename: `FILE-${i}.001`, individualInfo: i === 23 ? '260122_00 ABCD' : '', modifiedAt: null, description: i === 23 ? '日本語 <説明>' : '',
+    filename: `FILE-${i}.001`, individualInfo: i === 23 ? '260122_00 ABCD' : '', modifiedAt: null, size: i === 23 ? 1234 : i === 0 ? 0 : i === 2 ? 512 : i === 3 ? 1024 : null, csvSize: i === 23 || i === 3 ? 512 : i === 0 ? 0 : 512, description: i === 23 ? '日本語 <説明>' : '',
   }));
   const html = await renderToString(createSSRApp(exports.default, { files }));
   assert.deepEqual([...html.matchAll(/<th\b[^>]*>.*?<span>(.*?)<\/span>.*?<\/th>/g)].map(match => match[1]),
@@ -1003,7 +1006,11 @@ test('grid renders escaped descriptions, tooltips and more than 23 matching file
   assert.match(html, /title="260122_00 ABCD"/);
   assert.match(html.replace(/<!--[\s\S]*?-->/g, ''), />260122_00 ABCD<\/td>/);
   assert.match(html.replace(/<!--[\s\S]*?-->/g, ''), />日本語 &lt;説明&gt;<\/td>/);
-  assert.match(html, /FILE-23\.001/);
+  assert.match(html, /title="FILE-23\.001 1,234\(0x4d2\)バイト \[CSV: 512\(0x200\)バイト\]"/);
+  assert.match(html, /title="FILE-0\.001 0\(0x0\)バイト"/);
+  assert.match(html, /title="FILE-1\.001"/);
+  assert.match(html, /title="FILE-2\.001 512\(0x200\)バイト"/);
+  assert.match(html, /title="FILE-3\.001 1,024\(0x400\)バイト \[CSV: 512\(0x200\)バイト\]"/);
   assert.equal((html.match(/<tr>/g) || []).length, 25);
   // 少数・空の一覧でも、装飾のための空行をスクロール対象にしない。
   for (const count of [0, 3, 4]) {
@@ -1069,7 +1076,7 @@ test('grid renders update number, version, condition and car type in separate ce
   const { descriptor } = parse(readFileSync('src/components/OptionGrid.vue', 'utf8'));
   const script = compileScript(descriptor, { id: 'update-grid-test', inlineTemplate: true });
   const exports = {};
-  new Function('require', 'exports', transpile(script.content))(name => name === '../utils/fileTimestamp' ? utility('src/utils/fileTimestamp.ts') : require(name), exports);
+  new Function('require', 'exports', transpile(script.content))(name => name === '../utils/fileTimestamp' ? utility('src/utils/fileTimestamp.ts') : name === '../utils/sdWrite' ? utility('src/utils/sdWrite.ts') : require(name), exports);
   const html = (await renderToString(createSSRApp(exports.default, { files: [{ filename: 'FILE-BM.003', description: 'パラメータ2', individualInfo: '', updateNo: '02', updateVer: '230112_00', condition: '00', carType: '01' }] }))).replace(/<!--[\s\S]*?-->/g, '');
   const cells = [...html.matchAll(/<td\b[^>]*>(.*?)<\/td>/g)].map(match => match[1]);
   assert.deepEqual(cells, ['1', 'FILE-BM.003', 'パラメータ2', '', '02', '230112_00', '00', '01']);

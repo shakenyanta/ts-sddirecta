@@ -496,7 +496,7 @@ struct StartupCsv {
 #[derive(Serialize)]
 struct MatchedFiles {
     files: Vec<String>,
-    modified_times: std::collections::HashMap<String, Option<u64>>,
+    file_metadata: std::collections::HashMap<String, matching_files::FileMetadata>,
     individual_infos: std::collections::HashMap<String, individual_info::IndividualInfo>,
     file_updates: file_bc::FileUpdates,
     warning_files: Vec<String>,
@@ -518,12 +518,12 @@ fn find_dictionary_files(
     } else {
         directory
     };
-    let modified_times = files
+    let file_metadata = files
         .iter()
         .map(|filename| {
             (
                 filename.clone(),
-                matching_files::modified_time_ms(&matched_directory.join(filename)),
+                matching_files::file_metadata(&matched_directory.join(filename)),
             )
         })
         .collect();
@@ -533,7 +533,7 @@ fn find_dictionary_files(
     let file_updates = file_bc::for_files(&matched_directory, &files, edition::current().edition);
     Ok(MatchedFiles {
         files,
-        modified_times,
+        file_metadata,
         individual_infos,
         file_updates,
         warning_files,

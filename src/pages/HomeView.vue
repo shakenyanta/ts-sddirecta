@@ -84,7 +84,7 @@ const statusLabel = computed(() => operationKind.value === 'format' && writeStag
     ? 'FF初期化中' : writeStageLabel(writeStage.value));
 const writeFiles = computed(() => [...sdloadingDictionary.value]
     .filter(([, area]) => area.accessFlag !== 'E')
-    .map(([filename, area]) => ({ filename, description: area.description, individualInfo: fileIndividualInfos.value.get(filename)?.value ?? '', modifiedAt: fileModifiedTimes.value.get(filename) ?? null })));
+    .map(([filename, area]) => ({ filename, description: area.description, individualInfo: fileIndividualInfos.value.get(filename)?.value ?? '', modifiedAt: fileMetadata.value.get(filename)?.modified_at ?? null, size: fileMetadata.value.get(filename)?.size ?? null, csvSize: Number.parseInt(area.endAddress, 16) - Number.parseInt(area.startAddress, 16) + 1 })));
 const allFileCount = computed(() => writeFiles.value.length);
 interface UpdateInfo { update_no: string; update_ver: string; condition: string; car_type: string }
 interface FileUpdates { files: Record<string, UpdateInfo[]>; warnings: string[] }
@@ -118,7 +118,8 @@ const sdAddressRange = ref<AddressRange | null>(null);
 const requiredSdCapacity = computed(() => sdAddressRange.value ? Number(BigInt(sdAddressRange.value.endAddress) + 1n) : 0);
 const mapDetailsOpen = ref(false);
 const matchedFiles = ref<string[]>([]);
-const fileModifiedTimes = ref(new Map<string, number | null>());
+interface FileMetadata { modified_at: number | null; size: number | null }
+const fileMetadata = ref(new Map<string, FileMetadata>());
 interface FileIndividualInfo { value: string; bm_parameter2: string }
 const fileIndividualInfos = ref(new Map<string, FileIndividualInfo>());
 const warningFiles = ref<string[]>([]);
@@ -419,7 +420,7 @@ async function initializeSource(paths?: string[], refreshDirectory?: string, pre
 	sdloadingDictionary.value = new Map();
 	sdAddressRange.value = null;
 	matchedFiles.value = [];
-	fileModifiedTimes.value = new Map();
+	fileMetadata.value = new Map();
 	fileIndividualInfos.value = new Map();
 	fileUpdates.value = { files: {}, warnings: [] };
 	warningFiles.value = [];
@@ -511,7 +512,7 @@ async function refreshMatchedFiles(report = false) {
 	if (matchingGeneration === current || disposed || !ready) return;
 	matchingGeneration = current;
 	try {
-		const result = await invoke<{ files: string[]; modified_times: Record<string, number | null>; individual_infos: Record<string, FileIndividualInfo>; file_updates: FileUpdates; warning_files: string[]; from_input: boolean; input_exists: boolean }>('find_dictionary_files', {
+		const result = await invoke<{ files: string[]; file_metadata: Record<string, FileMetadata>; individual_infos: Record<string, FileIndividualInfo>; file_updates: FileUpdates; warning_files: string[]; from_input: boolean; input_exists: boolean }>('find_dictionary_files', {
 			filenames: [...sdDirectDictionary.value.keys()],
 			directory: sourceDirectory.value,
 		});
@@ -528,7 +529,7 @@ async function refreshMatchedFiles(report = false) {
 		sdloadingDictionary.value = matchedDictionary;
 		folderMatches.value.set(folderMatchKey(sourceDirectory.value), matchedDictionary.size > 0);
 		matchedFiles.value = result.files;
-		fileModifiedTimes.value = new Map(Object.entries(result.modified_times ?? {}));
+		fileMetadata.value = new Map(Object.entries(result.file_metadata ?? {}));
 		fileIndividualInfos.value = new Map(Object.entries(result.individual_infos ?? {}));
 		fileUpdates.value = updates;
 		warningFiles.value = result.warning_files;
@@ -561,7 +562,7 @@ async function refreshMatchedFiles(report = false) {
 	} catch (error) {
 		if (disposed || current !== generation) return;
 		matchedFiles.value = [];
-		fileModifiedTimes.value = new Map();
+		fileMetadata.value = new Map();
 		fileIndividualInfos.value = new Map();
 		fileUpdates.value = { files: {}, warnings: [] };
 		warningFiles.value = [];

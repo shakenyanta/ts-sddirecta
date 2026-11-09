@@ -1,28 +1,35 @@
 use std::{collections::HashSet, fs, io, path::Path};
 
-/// A failed timestamp lookup must not hide an otherwise valid write target.
-pub fn modified_time_ms(path: &Path) -> Option<u64> {
-    let result = fs::metadata(path)
-        .and_then(|metadata| metadata.modified())
-        .and_then(|modified| {
-            modified
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(io::Error::other)
-        })
+#[derive(Default, serde::Serialize)]
+pub struct FileMetadata {
+    pub modified_at: Option<u64>,
+    pub size: Option<u64>,
+}
+
+/// Metadata failures must not hide an otherwise valid write target.
+pub fn file_metadata(path: &Path) -> FileMetadata {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            crate::diagnostics::record("WARN", &format!(
+                "file metadata unavailable path={} error={error}", path.display()
+            ));
+            return FileMetadata::default();
+        }
+    };
+    let modified_at = metadata.modified()
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).map_err(io::Error::other))
         .and_then(|duration| u64::try_from(duration.as_millis()).map_err(io::Error::other));
-    match result {
+    let modified_at = match modified_at {
         Ok(timestamp) => Some(timestamp),
         Err(error) => {
-            crate::diagnostics::record(
-                "WARN",
-                &format!(
-                    "file modified time unavailable path={} error={error}",
-                    path.display()
-                ),
-            );
+            crate::diagnostics::record("WARN", &format!(
+                "file modified time unavailable path={} error={error}", path.display()
+            ));
             None
         }
-    }
+    };
+    FileMetadata { modified_at, size: Some(metadata.len()) }
 }
 
 fn matching_names(
@@ -145,8 +152,9 @@ mod tests {
         let source = Some(dir.0.to_str().unwrap().to_owned());
         let matched = crate::find_dictionary_files(keys(), source.clone()).unwrap();
         assert!(matched.from_input);
+        assert_eq!(matched.file_metadata["FILE-AA.001"].size, Some(5));
         assert_eq!(
-            matched.modified_times["FILE-AA.001"],
+            matched.file_metadata["FILE-AA.001"].modified_at,
             Some(1_700_000_000_000)
         );
 
@@ -163,10 +171,13 @@ mod tests {
         let matched = crate::find_dictionary_files(keys(), source).unwrap();
         assert!(!matched.from_input);
         assert_eq!(
-            matched.modified_times["FILE-AA.001"],
+            matched.file_metadata["FILE-AA.001"].modified_at,
             Some(1_700_000_060_000)
         );
-        assert_eq!(modified_time_ms(&dir.0.join("missing.001")), None);
+        assert_eq!(matched.file_metadata["FILE-AA.001"].size, Some(4));
+        let missing = file_metadata(&dir.0.join("missing.001"));
+        assert_eq!(missing.modified_at, None);
+        assert_eq!(missing.size, None);
     }
 
     #[test]
