@@ -40,7 +40,7 @@ PowerShellで、次の2行を実行します。`-Notes` は今回の変更内容
 
 ```powershell
 Set-Location 'C:\Users\SYSTEM-PC7\source\repos\electron3\ts-sddirecta'
-npm.cmd run release:prepare -- -Notes "アップデート動作確認用のリリースです。"
+■：npm.cmd run release:prepare -- -Notes "アップデート動作確認用のリリースです。"
 ```
 
 鍵のパスワードを求められたら入力し、**「配布ファイルの作成が完了しました」** と表示されるまで待ちます。
@@ -67,7 +67,7 @@ latest.json.sig
 次の1行を実行します。
 
 ```powershell
-npm.cmd run release:publish
+■：npm.cmd run release:publish
 ```
 
 `package.json` のバージョンを使い、配布先 `shakenyanta/ts-sddirecta-releases` へのタグ・タイトル設定、3ファイルの添付、最新版としての公開まで自動で行います。
