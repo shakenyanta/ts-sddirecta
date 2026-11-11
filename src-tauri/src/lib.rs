@@ -546,10 +546,18 @@ fn find_dictionary_files(
 async fn get_drives() -> Result<Vec<DriveInfo>, String> {
     tauri::async_runtime::spawn_blocking(|| {
         static LAST: Mutex<Option<String>> = Mutex::new(None);
+        // Initialize before recording/caching the first snapshot, not when the user opens it.
+        let log_ready = match diagnostics::path() {
+            Ok(_) => true,
+            Err(error) => {
+                eprintln!("drive diagnostic log initialization failed: {error}");
+                false
+            }
+        };
         let (result, notes) = diagnostics::quiet(list_drives);
         let snapshot = serde_json::to_string(&(&result, &notes)).unwrap_or_default();
         if let Ok(mut previous) = LAST.lock() {
-            if previous.as_ref() != Some(&snapshot) {
+            if log_ready && previous.as_ref() != Some(&snapshot) {
                 diagnostics::record("INFO", &format!("drive state changed {snapshot}"));
                 *previous = Some(snapshot);
             }

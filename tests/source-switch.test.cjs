@@ -14,16 +14,18 @@ function utility(path) {
 }
 
 // Exercise the actual view setup with IPC/lifecycle boundaries replaced; no WebView or SD access.
-function view(invoke, clock = performance, DateClass = Date, storage) {
+function view(invoke, clock = performance, DateClass = Date, storage, optionPanel = true, clipboardWrite) {
   const source = readFileSync('src/pages/HomeView.vue', 'utf8').match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
     .replace(/^import .*;\r?$/gm, '');
   let mount, unmount, listener, timer, copied, unlistened = false;
   const eventListeners = new Map();
   const keyListeners = new Set();
   const bindings = {
-    localStorage: storage,
+    localStorage: storage ?? { getItem: () => null, setItem: () => {} },
     performance: clock,
     Date: DateClass,
+    crypto: require('node:crypto').webcrypto,
+    features: { value: { optionPanel, mapDetails: optionPanel } },
     ref: value => ({ value }),
     computed: get => ({ get value() { return get(); } }),
     nextTick: async () => {},
@@ -31,7 +33,7 @@ function view(invoke, clock = performance, DateClass = Date, storage) {
     onUnmounted: fn => { unmount = fn; },
     getCurrentWebview: () => ({ onDragDropEvent: async fn => { listener = fn; return () => { unlistened = true; }; } }),
     invoke,
-    navigator: { clipboard: { writeText: async text => { copied = text; } } },
+    navigator: { clipboard: { writeText: clipboardWrite ?? (async text => { copied = text; }) } },
     listen: async (name, fn) => { eventListeners.set(name, fn); return () => eventListeners.delete(name); },
     window: {
       addEventListener: (name, fn) => { if (name === 'keydown') keyListeners.add(fn); },
@@ -42,6 +44,8 @@ function view(invoke, clock = performance, DateClass = Date, storage) {
     ...utility('src/utils/sdDirectCsv.ts'),
     ...utility('src/utils/executablePath.ts'),
     ...utility('src/utils/folderTreeState.ts'),
+    ...utility('src/utils/dropHistoryState.ts'),
+    ...utility('src/utils/fileTimestamp.ts'),
     ...utility('src/utils/sdWrite.ts'),
     createLogScroller: getPanel => utility('src/utils/logScroll.ts').createLogScroller(getPanel, {
       request: () => 1, cancel: () => {}, reducedMotion: () => false,
@@ -49,11 +53,13 @@ function view(invoke, clock = performance, DateClass = Date, storage) {
   };
   const api = new Function(...Object.keys(bindings), transpile(source) + `
     return { resize, sdHeightRatio, menuHeight, resizeOptions, baseWidthRatio, appendMessage, initializeSource, refreshMatchedFiles, sourceDirectory, displayedDirectory, openFolder, openGridFile,
-      selectFolder, selectedFolder, folderNodes, visibleFolders, toggleFolder, pathList, saveFolderState, restoreFolderState,
+      selectFolder, selectedFolder, folderNodes, visibleFolders, toggleFolder, pathList, saveFolderState, restoreFolderState, dropHistory, historyRows, historyGroups, historyStorageError,
+      selectHistory, reopenHistory, selectedHistoryId, historyBusy, activeOptionTab, copyHistoryPath, toggleHistoryFavorite, deleteHistory,
       sdDirectDictionary, sdloadingDictionary, sdAddressRange, requiredSdCapacity, matchedFiles, writeFiles, optionFiles, canSdWrite, allFileCount, initializing, messages, pathError,
       onSdWrite, onSdRead, onSdFfInitialize, onSdFormat, startSdFormat, formatPlan, formatLabel, formatSimpleTest, formatStep, formatLabelValid, writeStage, canSdRead, popupTitle, statusLabel, closeWriteDialog, copyWriteLog, openDiagnosticLog, failureDetails, writeDialogOpen, writeLog, writing, pendingPlan, progress, percent, currentRun, transientNotice, operationStatus, operationDetail };
   `)(...Object.values(bindings));
   return { ...api, mount: () => mount(), unmount: () => unmount(),
+    get dropReady() { return !!listener; },
     drop: paths => listener({ payload: { type: 'drop', paths } }),
     event: (name, payload) => eventListeners.get(name)?.({ payload }),
     key: (key, repeat = false) => {
@@ -191,7 +197,8 @@ function savedTree() {
 
 function treeStorage(state = savedTree()) {
   let raw = JSON.stringify(state);
-  return { getItem: () => raw, setItem: (_key, value) => { raw = value; } };
+  return { getItem: key => key === 'sddirecta-drop-history-v1' ? null : raw,
+    setItem: (key, value) => { if (key !== 'sddirecta-drop-history-v1') raw = value; } };
 }
 
 test('path-only ancestors retain identical rows and scroll after restart without listing siblings', async () => {
@@ -1122,6 +1129,537 @@ function backend(overrides = {}) {
     }
   };
 }
+
+test('drop history records each accepted operation in both editions with original paths and distinct IDs', async () => {
+  const timestamp = 1794375128000;
+  class FixedDate extends Date { static now() { return timestamp; } }
+  for (const optionPanel of [true, false]) {
+    const ui = view(backend(), performance, FixedDate, undefined, optionPanel);
+    await ui.mount();
+    assert.deepEqual(ui.dropHistory.value, []);
+    const paths = ['C:\\案件 A\\FILE-AA.001', 'C:\\案件 A\\FILE-BA.001'];
+    ui.drop(paths);
+    assert.deepEqual(ui.dropHistory.value[0].paths, paths);
+    paths[0] = 'C:\\changed';
+    assert.equal(ui.dropHistory.value[0].paths[0], 'C:\\案件 A\\FILE-AA.001');
+    ui.drop(['C:\\folder']);
+    ui.drop(['C:\\folder']);
+    assert.equal(ui.dropHistory.value.length, 3);
+    assert.equal(new Set(ui.dropHistory.value.map(entry => entry.id)).size, 3);
+    assert.ok(ui.dropHistory.value.every(entry => /^[0-9a-f-]{36}$/.test(entry.id) && entry.droppedAt === timestamp));
+    assert.deepEqual(ui.dropHistory.value.slice(1).map(entry => entry.paths), [['C:\\folder'], ['C:\\folder']]);
+    await until(() => !ui.initializing.value);
+    assert.equal(ui.sourceDirectory.value, 'C:\\folder');
+    ui.unmount();
+  }
+});
+
+test('history rows sort newest first and break timestamp ties by receipt order without mutating records', () => {
+  const ui = view(backend());
+  assert.deepEqual(ui.historyRows.value, []);
+  ui.dropHistory.value = [
+    { id: 'a', droppedAt: 2000, paths: ['C:\\first'] },
+    { id: 'b', droppedAt: 1000, paths: ['C:\\older'] },
+    { id: 'c', droppedAt: 2000, paths: ['C:\\latest', 'C:\\second'] },
+  ];
+  assert.deepEqual(ui.historyRows.value.map(entry => entry.id), ['c', 'a', 'b']);
+  assert.deepEqual(ui.dropHistory.value.map(entry => entry.id), ['a', 'b', 'c']);
+  assert.deepEqual(ui.historyRows.value[0].paths, ['C:\\latest', 'C:\\second']);
+});
+
+test('drop history retains accepted operations when path resolution or CSV loading fails', async () => {
+  for (const command of ['resolve_drop_directory', 'read_startup_csv']) {
+    const ui = view(backend({ [command]: () => { throw new Error('unavailable'); } }));
+    await ui.mount();
+    ui.drop(['C:\\missing']);
+    await until(() => !ui.initializing.value);
+    assert.equal(ui.dropHistory.value.length, 1);
+    assert.deepEqual(ui.dropHistory.value[0].paths, ['C:\\missing']);
+    assert.ok(ui.messages.value.some(message => message.text.includes('unavailable')));
+    ui.unmount();
+  }
+});
+
+test('drop history excludes startup restoration, refresh and folder selection', async () => {
+  const ui = view(backend({ resolve_saved_folder: ({ directory }) => directory }), performance, Date, treeStorage());
+  await ui.mount();
+  assert.equal(ui.selectedFolder.value, 'C:\\parent\\child');
+  assert.deepEqual(ui.dropHistory.value, []);
+  ui.drop(['C:\\selected']);
+  await until(() => !ui.initializing.value);
+  const recorded = structuredClone(ui.dropHistory.value);
+  ui.key('F5');
+  await until(() => !ui.initializing.value);
+  await ui.selectFolder('C:\\selected');
+  assert.deepEqual(ui.dropHistory.value, recorded);
+  ui.unmount();
+});
+
+test('drop history excludes drops blocked by SD work, shutdown or a disposed view', async () => {
+  const ui = view(backend());
+  await ui.mount();
+  ui.writing.value = true;
+  ui.drop(['C:\\blocked-write']);
+  ui.writing.value = false;
+  assert.deepEqual(ui.dropHistory.value, []);
+  assert.equal(ui.sourceDirectory.value, 'C:\\app');
+  ui.event('sd-shutdown-started', 'waiting');
+  ui.drop(['C:\\blocked-shutdown']);
+  assert.deepEqual(ui.dropHistory.value, []);
+  assert.equal(ui.sourceDirectory.value, 'C:\\app');
+  ui.unmount();
+  ui.drop(['C:\\disposed']);
+  assert.deepEqual(ui.dropHistory.value, []);
+});
+
+test('history replay uses all original paths and current file information without modifying saved history', async () => {
+  const storage = historyStorage();
+  const resolvedPaths = [];
+  let updated = false;
+  const ui = view(backend({
+    resolve_drop_directory: ({ paths }) => { resolvedPaths.push(paths); return 'C:\\案件 A'; },
+    find_dictionary_files: () => ({ files: ['FILE-AA.001'], from_input: true, input_exists: true,
+      file_metadata: { 'FILE-AA.001': { size: updated ? 20 : 10, modified_at: updated ? 2000 : 1000 } },
+      individual_infos: { 'FILE-AA.001': { value: updated ? 'new' : 'old' } } }),
+  }), performance, Date, storage);
+  await ui.mount();
+  const paths = ['C:\\案件 A\\FILE-AA.001', 'C:\\案件 A\\FILE-BA.001'];
+  ui.drop(paths);
+  await until(() => !ui.initializing.value);
+  const entry = structuredClone(ui.dropHistory.value[0]);
+  const saved = storage.getItem('sddirecta-drop-history-v1');
+  ui.activeOptionTab.value = 'history';
+  ui.selectHistory(entry.id);
+  assert.equal(ui.selectedHistoryId.value, entry.id);
+  assert.equal(resolvedPaths.length, 1);
+  assert.equal(ui.activeOptionTab.value, 'history');
+  updated = true;
+  await ui.reopenHistory(entry.id);
+  assert.equal(ui.activeOptionTab.value, 'files');
+  assert.equal(ui.sourceDirectory.value, 'C:\\案件 A');
+  assert.equal(ui.displayedDirectory.value, 'C:\\案件 A\\input');
+  assert.deepEqual(resolvedPaths, [paths, paths]);
+  assert.equal(ui.writeFiles.value[0].size, 20);
+  assert.equal(ui.writeFiles.value[0].modifiedAt, 2000);
+  assert.equal(ui.writeFiles.value[0].individualInfo, 'new');
+  assert.deepEqual(ui.dropHistory.value, [entry]);
+  assert.equal(storage.getItem('sddirecta-drop-history-v1'), saved);
+  assert.ok(panelContents(ui).includes('履歴から再読込'));
+  assert.ok(!panelContents(ui).includes('ドラッグ＆ドロップ'));
+  ui.unmount();
+});
+
+test('history replay retains records and reports unavailable paths, CSV and matching failures', async () => {
+  for (const overrides of [
+    { resolve_drop_directory: () => { throw new Error('path missing'); } },
+    { resolve_drop_directory: () => { throw new Error('network unavailable or access denied'); } },
+    { check_startup_csv: () => false },
+    { read_startup_csv: () => { throw new Error('CSV unavailable'); } },
+    { find_dictionary_files: () => { throw new Error('matching failed'); } },
+    { find_dictionary_files: () => ({ files: [], from_input: false }) },
+  ]) {
+    const storage = historyStorage();
+    const entry = { id: '00000000-0000-4000-8000-000000000001', droppedAt: 1000, paths: ['C:\\missing'] };
+    storage.setItem('sddirecta-drop-history-v1', JSON.stringify({ version: 1, entries: [entry] }));
+    const ui = view(backend(overrides), performance, Date, storage);
+    await ui.mount();
+    const saved = storage.getItem('sddirecta-drop-history-v1');
+    await ui.reopenHistory(entry.id);
+    assert.deepEqual(ui.dropHistory.value, [entry]);
+    assert.equal(storage.getItem('sddirecta-drop-history-v1'), saved);
+    assert.equal(ui.canSdWrite.value, false);
+    assert.equal(ui.initializing.value, false);
+    assert.match(ui.messages.value.map(message => message.text).join('\n'),
+      /path missing|network unavailable|sdDirectaxs.csv無し|CSV unavailable|matching failed|書き込み対象ファイルはありません/);
+    ui.unmount();
+  }
+});
+
+test('history selection and replay respect loading, SD work, shutdown, missing rows and disposal', async () => {
+  let calls = 0;
+  const ui = view(backend({ resolve_drop_directory: () => { calls++; return 'C:\\folder'; } }));
+  await ui.mount();
+  const entry = { id: 'history-row', droppedAt: 1000, paths: ['C:\\folder'] };
+  ui.dropHistory.value = [entry];
+  ui.activeOptionTab.value = 'history';
+  for (const busy of [ui.initializing, ui.writing]) {
+    busy.value = true;
+    assert.equal(ui.historyBusy.value, true);
+    ui.selectHistory(entry.id);
+    await ui.reopenHistory(entry.id);
+    assert.equal(ui.selectedHistoryId.value, null);
+    assert.equal(ui.activeOptionTab.value, 'history');
+    busy.value = false;
+  }
+  await ui.reopenHistory('removed-row');
+  ui.event('sd-shutdown-started', 'waiting');
+  await ui.reopenHistory(entry.id);
+  ui.unmount();
+  await ui.reopenHistory(entry.id);
+  assert.equal(calls, 0);
+  assert.equal(ui.sourceDirectory.value, 'C:\\app');
+});
+
+test('a new drop takes priority over an older history replay still resolving its paths', async () => {
+  let release;
+  const waiting = new Promise(resolve => { release = resolve; });
+  const ui = view(backend({ resolve_drop_directory: async ({ paths }) => {
+    if (paths[0] === 'C:\\old') { await waiting; return 'C:\\old'; }
+    return paths[0];
+  } }));
+  await ui.mount();
+  const entry = { id: 'old-history-row', droppedAt: 1000, paths: ['C:\\old'] };
+  ui.dropHistory.value = [entry];
+  const replay = ui.reopenHistory(entry.id);
+  assert.equal(ui.initializing.value, true);
+  ui.drop(['C:\\new']);
+  await until(() => !ui.initializing.value);
+  release();
+  await replay;
+  assert.equal(ui.sourceDirectory.value, 'C:\\new');
+  assert.deepEqual(ui.dropHistory.value[0], entry);
+  assert.equal(ui.dropHistory.value.length, 2);
+  ui.unmount();
+});
+
+test('history copy uses the full individual path without replaying or changing saved history, even during SD work', async () => {
+  const storage = historyStorage();
+  let resolutions = 0;
+  const ui = view(backend({ resolve_drop_directory: () => { resolutions++; return 'C:\\案件 A'; } }), performance, Date, storage);
+  await ui.mount();
+  const paths = ['C:\\' + '長い案件名 '.repeat(40) + '\\FILE-AA.001', '\\\\server\\share\\案件 B\\FILE-BA.001'];
+  ui.drop(paths);
+  await until(() => !ui.initializing.value);
+  ui.activeOptionTab.value = 'history';
+  const entries = structuredClone(ui.dropHistory.value);
+  const saved = storage.getItem('sddirecta-drop-history-v1');
+  const source = ui.sourceDirectory.value;
+  for (const index of [0, 1]) {
+    ui.writing.value = true;
+    await ui.copyHistoryPath(entries[0].id, index);
+    assert.equal(ui.copied, paths[index]);
+    assert.equal(ui.transientNotice.value, 'フルパスをコピーしました');
+    ui.writing.value = false;
+  }
+  assert.equal(resolutions, 1);
+  assert.equal(ui.activeOptionTab.value, 'history');
+  assert.equal(ui.selectedHistoryId.value, null);
+  assert.equal(ui.sourceDirectory.value, source);
+  assert.deepEqual(ui.dropHistory.value, entries);
+  assert.equal(storage.getItem('sddirecta-drop-history-v1'), saved);
+  ui.unmount();
+});
+
+test('history copy reports clipboard failures without changing the current source or history', async () => {
+  const ui = view(backend(), performance, Date, undefined, true, async () => { throw new Error('Clipboard denied'); });
+  await ui.mount();
+  ui.dropHistory.value = [{ id: 'copy-row', droppedAt: 1000, paths: ['C:\\file'] }];
+  await ui.copyHistoryPath('copy-row', 0);
+  assert.equal(ui.transientNotice.value, 'フルパスをコピーできませんでした');
+  assert.ok(ui.messages.value.some(message => message.warning && message.text.includes('Clipboard denied')));
+  assert.equal(ui.sourceDirectory.value, 'C:\\app');
+  assert.equal(ui.dropHistory.value.length, 1);
+  ui.unmount();
+});
+
+test('history copy ignores missing paths and callbacks after disposal', async () => {
+  let writes = 0, release;
+  const waiting = new Promise(resolve => { release = resolve; });
+  const ui = view(backend(), performance, Date, undefined, true, async () => { writes++; await waiting; });
+  await ui.mount();
+  ui.dropHistory.value = [{ id: 'copy-row', droppedAt: 1000, paths: ['C:\\file'] }];
+  await ui.copyHistoryPath('missing-row', 0);
+  await ui.copyHistoryPath('copy-row', 1);
+  assert.equal(writes, 0);
+  const copying = ui.copyHistoryPath('copy-row', 0);
+  ui.unmount();
+  release();
+  await copying;
+  await ui.copyHistoryPath('copy-row', 0);
+  assert.equal(writes, 1);
+  assert.equal(ui.transientNotice.value, '');
+});
+
+test('favorite toggles only the chosen history ID and survives restarts and edition changes', async () => {
+  const storage = historyStorage();
+  const ui = view(backend(), performance, Date, storage);
+  await ui.mount();
+  ui.drop(['C:\\same']);
+  ui.drop(['C:\\same']);
+  await until(() => !ui.initializing.value);
+  const before = structuredClone(ui.dropHistory.value);
+  const order = ui.historyRows.value.map(entry => entry.id);
+  ui.activeOptionTab.value = 'history';
+  ui.writing.value = true;
+  ui.toggleHistoryFavorite(before[0].id);
+  ui.writing.value = false;
+  assert.deepEqual(ui.dropHistory.value, [{ ...before[0], favorite: true }, before[1]]);
+  assert.deepEqual(ui.historyRows.value.map(entry => entry.id), order);
+  assert.equal(ui.activeOptionTab.value, 'history');
+  assert.equal(ui.selectedHistoryId.value, null);
+  const entries = structuredClone(ui.dropHistory.value);
+  ui.unmount();
+  const next = view(backend(), performance, Date, storage, false);
+  await next.mount();
+  assert.deepEqual(next.dropHistory.value, entries);
+  next.toggleHistoryFavorite(before[0].id);
+  assert.equal(next.dropHistory.value[0].favorite, false);
+  assert.deepEqual(JSON.parse(storage.getItem('sddirecta-drop-history-v1')).entries,
+    [{ ...before[0], favorite: false }, before[1]]);
+  next.unmount();
+  const last = view(backend(), performance, Date, storage);
+  await last.mount();
+  assert.equal(last.dropHistory.value[0].favorite, false);
+  last.unmount();
+});
+
+test('favorite save failures retain prior data and retry all changes without altering source or timestamps', async () => {
+  const storage = historyStorage();
+  const write = storage.setItem;
+  let fail = false;
+  storage.setItem = (key, value) => {
+    if (key === 'sddirecta-drop-history-v1' && fail) throw Error('quota');
+    write(key, value);
+  };
+  const ui = view(backend(), performance, Date, storage);
+  await ui.mount();
+  ui.drop(['C:\\folder']);
+  await until(() => !ui.initializing.value);
+  const entry = structuredClone(ui.dropHistory.value[0]);
+  const saved = storage.getItem('sddirecta-drop-history-v1');
+  fail = true;
+  ui.toggleHistoryFavorite(entry.id);
+  assert.equal(ui.dropHistory.value[0].favorite, true);
+  assert.equal(storage.getItem('sddirecta-drop-history-v1'), saved);
+  assert.match(ui.historyStorageError.value, /今回の変更/);
+  assert.equal(ui.sourceDirectory.value, 'C:\\folder');
+  fail = false;
+  ui.toggleHistoryFavorite(entry.id);
+  assert.equal(ui.historyStorageError.value, '');
+  assert.deepEqual(JSON.parse(storage.getItem('sddirecta-drop-history-v1')).entries, [{ ...entry, favorite: false }]);
+  ui.event('sd-shutdown-started', 'waiting');
+  ui.toggleHistoryFavorite(entry.id);
+  assert.equal(ui.dropHistory.value[0].favorite, false);
+  ui.unmount();
+  ui.toggleHistoryFavorite(entry.id);
+  ui.toggleHistoryFavorite('missing');
+  assert.equal(ui.dropHistory.value[0].favorite, false);
+});
+
+test('history groups partition one collection without duplicates and move favorites in timestamp order', () => {
+  const ui = view(backend());
+  assert.deepEqual(ui.historyGroups.value.map(group => group.entries), [[], []]);
+  const entries = [
+    { id: 'older', droppedAt: 1000, paths: ['C:\\older'], favorite: true },
+    { id: 'newer', droppedAt: 2000, paths: ['C:\\newer'] },
+    { id: 'latest', droppedAt: 2000, paths: ['C:\\latest'], favorite: true },
+  ];
+  ui.dropHistory.value = entries;
+  const ids = () => ui.historyGroups.value.map(group => group.entries.map(entry => entry.id));
+  assert.deepEqual(ids(), [['latest', 'older'], ['newer']]);
+  ui.toggleHistoryFavorite('newer');
+  assert.deepEqual(ids(), [['latest', 'newer', 'older'], []]);
+  ui.toggleHistoryFavorite('latest');
+  assert.deepEqual(ids(), [['newer', 'older'], ['latest']]);
+  assert.equal(new Set(ids().flat()).size, entries.length);
+  assert.deepEqual(entries.map(entry => entry.id), ['older', 'newer', 'latest']);
+  assert.equal(ui.historyGroups.value[0].entries[1], entries[0]);
+  ui.unmount();
+});
+
+test('favorites and normal history both replay original paths without changing their groups', async () => {
+  const ui = view(backend());
+  await ui.mount();
+  ui.dropHistory.value = [
+    { id: 'favorite', droppedAt: 1000, paths: ['C:\\favorite'], favorite: true },
+    { id: 'normal', droppedAt: 2000, paths: ['C:\\normal'] },
+  ];
+  for (const group of ui.historyGroups.value) {
+    await ui.reopenHistory(group.entries[0].id);
+    assert.equal(ui.sourceDirectory.value, group.entries[0].paths[0]);
+  }
+  assert.deepEqual(ui.historyGroups.value.map(group => group.entries.map(entry => entry.id)), [['favorite'], ['normal']]);
+  ui.unmount();
+});
+
+test('history deletion removes only the chosen ID, preserves favorites and current file information, and persists across restart', async () => {
+  const storage = historyStorage();
+  const ui = view(backend(), performance, Date, storage);
+  await ui.mount();
+  for (let i = 0; i < 3; i++) ui.drop(['C:\\same']);
+  await until(() => !ui.initializing.value);
+  const [protectedEntry, retainedEntry, removedEntry] = structuredClone(ui.dropHistory.value);
+  ui.toggleHistoryFavorite(protectedEntry.id);
+  const before = storage.getItem('sddirecta-drop-history-v1');
+  ui.deleteHistory(protectedEntry.id);
+  ui.deleteHistory('missing');
+  assert.equal(storage.getItem('sddirecta-drop-history-v1'), before);
+  ui.selectHistory(removedEntry.id);
+  ui.activeOptionTab.value = 'history';
+  const source = ui.sourceDirectory.value, files = ui.writeFiles.value, matched = ui.matchedFiles.value;
+  ui.writing.value = true;
+  ui.deleteHistory(removedEntry.id);
+  ui.writing.value = false;
+  const expected = [{ ...protectedEntry, favorite: true }, retainedEntry];
+  assert.deepEqual(ui.dropHistory.value, expected);
+  assert.equal(ui.selectedHistoryId.value, null);
+  assert.equal(ui.activeOptionTab.value, 'history');
+  assert.equal(ui.sourceDirectory.value, source);
+  assert.deepEqual(ui.writeFiles.value, files);
+  assert.deepEqual(ui.matchedFiles.value, matched);
+  assert.deepEqual(JSON.parse(storage.getItem('sddirecta-drop-history-v1')).entries, expected);
+  ui.unmount();
+  const next = view(backend(), performance, Date, storage, false);
+  await next.mount();
+  assert.deepEqual(next.dropHistory.value, expected);
+  next.toggleHistoryFavorite(protectedEntry.id);
+  next.deleteHistory(protectedEntry.id);
+  next.deleteHistory(retainedEntry.id);
+  assert.deepEqual(next.dropHistory.value, []);
+  next.unmount();
+  const last = view(backend(), performance, Date, storage);
+  await last.mount();
+  assert.deepEqual(last.dropHistory.value, []);
+  last.unmount();
+});
+
+test('history deletion keeps earlier saved data on failure and retries without disturbing another selected row', async () => {
+  const storage = historyStorage();
+  const write = storage.setItem;
+  let fail = false;
+  storage.setItem = (key, value) => {
+    if (key === 'sddirecta-drop-history-v1' && fail) throw Error('storage denied');
+    write(key, value);
+  };
+  const ui = view(backend(), performance, Date, storage);
+  await ui.mount();
+  ui.drop(['C:\\first']);
+  ui.drop(['C:\\second']);
+  await until(() => !ui.initializing.value);
+  const [first, second] = ui.dropHistory.value;
+  ui.selectHistory(second.id);
+  const saved = storage.getItem('sddirecta-drop-history-v1');
+  fail = true;
+  ui.deleteHistory(first.id);
+  assert.equal(ui.selectedHistoryId.value, second.id);
+  assert.equal(storage.getItem('sddirecta-drop-history-v1'), saved);
+  assert.match(ui.historyStorageError.value, /保存できません/);
+  assert.deepEqual(ui.dropHistory.value.map(entry => entry.id), [second.id]);
+  fail = false;
+  ui.toggleHistoryFavorite(second.id);
+  assert.equal(ui.historyStorageError.value, '');
+  assert.equal(JSON.parse(storage.getItem('sddirecta-drop-history-v1')).entries.length, 1);
+  ui.unmount();
+});
+
+test('history deletion is refused during shutdown and after view disposal', async () => {
+  const ui = view(backend());
+  await ui.mount();
+  ui.dropHistory.value = [{ id: 'row', droppedAt: 1000, paths: ['C:\\file'] }];
+  ui.event('sd-shutdown-started', 'waiting');
+  ui.deleteHistory('row');
+  assert.equal(ui.dropHistory.value.length, 1);
+  ui.unmount();
+  ui.deleteHistory('row');
+  assert.equal(ui.dropHistory.value.length, 1);
+});
+
+function historyStorage() {
+  const values = new Map();
+  return { values, getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) };
+}
+
+test('history survives restart and edition changes with IDs, timestamps, paths and ordering intact', async () => {
+  const storage = historyStorage();
+  const key = 'sddirecta-drop-history-v1';
+  const first = view(backend(), performance, Date, storage, false);
+  await first.mount();
+  assert.equal(storage.values.has(key), false);
+  first.drop(['C:\\案件 A\\FILE-AA.001', 'C:\\案件 A\\FILE-BA.001']);
+  first.drop(['C:\\folder']);
+  first.drop(['C:\\folder']);
+  const entries = structuredClone(first.dropHistory.value);
+  // Saved immediately, even while the last source is still loading.
+  assert.deepEqual(JSON.parse(storage.getItem(key)), { version: 1, entries });
+  await until(() => !first.initializing.value);
+  first.unmount();
+  for (const optionPanel of [true, false]) {
+    const next = view(backend(), performance, Date, storage, optionPanel);
+    await next.mount();
+    assert.deepEqual(next.dropHistory.value, entries);
+    assert.deepEqual(next.historyRows.value.map(entry => entry.id), [...entries].reverse().map(entry => entry.id));
+    next.unmount();
+  }
+});
+
+test('history is restored before a drop received during startup and never overwrites that new drop', async () => {
+  const storage = historyStorage();
+  const old = { id: '00000000-0000-4000-8000-000000000001', droppedAt: 1000, paths: ['C:\\old'] };
+  storage.setItem('sddirecta-drop-history-v1', JSON.stringify({ version: 1, entries: [old] }));
+  let release;
+  const waiting = new Promise(resolve => { release = resolve; });
+  const ui = view(backend({ resolve_drop_directory: async ({ paths }) => { await waiting; return paths[0]; } }), performance, Date, storage);
+  const mounting = ui.mount();
+  await until(() => ui.dropReady);
+  assert.equal(ui.dropHistory.value.length, 1);
+  ui.drop(['C:\\new']);
+  assert.deepEqual(ui.dropHistory.value.map(entry => entry.paths), [['C:\\old'], ['C:\\new']]);
+  assert.equal(JSON.parse(storage.getItem('sddirecta-drop-history-v1')).entries.length, 2);
+  release();
+  await mounting;
+  await until(() => !ui.initializing.value);
+  assert.equal(ui.sourceDirectory.value, 'C:\\new');
+  ui.unmount();
+});
+
+test('invalid or unreadable saved history is preserved while current drops still load', async () => {
+  for (const raw of ['{broken', JSON.stringify({ version: 2, entries: [] }), 'read-failure']) {
+    const storage = historyStorage();
+    const key = 'sddirecta-drop-history-v1';
+    storage.setItem(key, raw);
+    const originalGet = storage.getItem;
+    if (raw === 'read-failure') storage.getItem = name => {
+      if (name === key) throw new Error('Access denied');
+      return originalGet(name);
+    };
+    const ui = view(backend(), performance, Date, storage);
+    await ui.mount();
+    assert.match(ui.historyStorageError.value, /元データを保護/);
+    ui.drop(['C:\\new']);
+    await until(() => !ui.initializing.value);
+    assert.equal(ui.sourceDirectory.value, 'C:\\new');
+    assert.equal(ui.dropHistory.value.length, 1);
+    assert.equal(storage.values.get(key), raw);
+    ui.unmount();
+  }
+});
+
+test('history save failure preserves earlier data and retries the complete history on the next drop', async () => {
+  const storage = historyStorage();
+  const key = 'sddirecta-drop-history-v1';
+  const write = storage.setItem;
+  let fail = false;
+  storage.setItem = (name, value) => {
+    if (name === key && fail) throw new Error('QuotaExceededError');
+    write(name, value);
+  };
+  const ui = view(backend(), performance, Date, storage);
+  await ui.mount();
+  ui.drop(['C:\\saved']);
+  const saved = storage.getItem(key);
+  fail = true;
+  ui.drop(['C:\\not-saved-yet']);
+  assert.equal(storage.getItem(key), saved);
+  assert.match(ui.historyStorageError.value, /保存できません/);
+  await until(() => !ui.initializing.value);
+  assert.equal(ui.sourceDirectory.value, 'C:\\not-saved-yet');
+  fail = false;
+  ui.drop(['C:\\retry']);
+  assert.equal(ui.historyStorageError.value, '');
+  assert.equal(JSON.parse(storage.getItem(key)).entries.length, 3);
+  await until(() => !ui.initializing.value);
+  ui.unmount();
+});
 
 test('all-area read works without PC matches, shows export progress and locks changes until completion', async () => {
   let args, release;

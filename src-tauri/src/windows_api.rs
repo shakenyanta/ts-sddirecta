@@ -38,7 +38,8 @@ extern "system" {
 pub fn get_disk_extents(drive_path: &str) -> Result<u32, io::Error> {
     crate::diagnostics::step(format!("get_disk_extents path={drive_path}"), || {
         let volume = DiskHandle::open(drive_path, 0, FILE_ATTRIBUTE_NORMAL)?;
-        volume_extent(volume.0).map(|extent| extent.disk)
+        crate::diagnostics::poll_note(format!("volume extents query path={drive_path}"));
+        volume_mapping(volume.0).map(|extent| extent.disk)
     })
 }
 
@@ -49,23 +50,45 @@ struct VolumeExtent {
     length: u64,
 }
 
-fn parse_volume_extent(bytes: &[u8]) -> io::Result<VolumeExtent> {
-    let invalid = || {
+// Disk identity is usable even when Windows reports an empty volume range.
+// Capacity and I/O routing are checked separately before device access.
+fn parse_volume_mapping(bytes: &[u8]) -> io::Result<VolumeExtent> {
+    let expected = std::mem::size_of::<VOLUME_DISK_EXTENTS>();
+    // Decode only the count when a complete structure was not returned.
+    let count = bytes.get(..4).map(|b| u32::from_ne_bytes(b.try_into().unwrap()));
+    crate::diagnostics::poll_note(format!(
+        "volume extents response returned_bytes={} expected_struct_bytes={expected} extent_count={count:?}",
+        bytes.len()
+    ));
+    let invalid = |reason: &str| {
+        crate::diagnostics::poll_note(format!("volume extents rejected reason={reason}"));
         io::Error::new(
             io::ErrorKind::InvalidData,
             "単一ディスクの有効なボリューム範囲を確認できません",
         )
     };
-    if bytes.len() < std::mem::size_of::<VOLUME_DISK_EXTENTS>() {
-        return Err(invalid());
+    if bytes.len() < expected {
+        return Err(invalid("response_shorter_than_struct"));
     }
     let extents = unsafe { std::ptr::read_unaligned(bytes.as_ptr().cast::<VOLUME_DISK_EXTENTS>()) };
-    if extents.NumberOfDiskExtents != 1 {
-        return Err(invalid());
-    }
     let extent = extents.Extents[0];
-    if extent.StartingOffset < 0 || extent.ExtentLength <= 0 {
-        return Err(invalid());
+    crate::diagnostics::poll_note(format!(
+        "volume extents first disk_number={} starting_offset={} extent_length={} extent_count={}",
+        extent.DiskNumber, extent.StartingOffset, extent.ExtentLength, extents.NumberOfDiskExtents
+    ));
+    if extents.NumberOfDiskExtents != 1 {
+        return Err(invalid("extent_count_not_one"));
+    }
+    if extent.StartingOffset < 0 {
+        return Err(invalid("negative_starting_offset"));
+    }
+    if extent.ExtentLength < 0 {
+        return Err(invalid("negative_extent_length"));
+    }
+    if extent.ExtentLength == 0 {
+        crate::diagnostics::poll_note(
+            "volume mapping accepted with zero extent length; disk identity only, capacity requires physical query".into()
+        );
     }
     Ok(VolumeExtent {
         disk: extent.DiskNumber,
@@ -74,7 +97,7 @@ fn parse_volume_extent(bytes: &[u8]) -> io::Result<VolumeExtent> {
     })
 }
 
-fn volume_extent(handle: HANDLE) -> io::Result<VolumeExtent> {
+fn volume_mapping(handle: HANDLE) -> io::Result<VolumeExtent> {
     crate::diagnostics::step("IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS", || {
         let mut bytes = [0_u8; 256];
         let mut returned = 0;
@@ -91,26 +114,43 @@ fn volume_extent(handle: HANDLE) -> io::Result<VolumeExtent> {
             )
         };
         if result == 0 {
-            return Err(io::Error::last_os_error());
+            let error = io::Error::last_os_error();
+            crate::diagnostics::poll_note(format!(
+                "volume extents ioctl failed returned_bytes={returned} buffer_bytes={} win32_error={:?} error={error}",
+                bytes.len(), error.raw_os_error()
+            ));
+            return Err(error);
         }
+        crate::diagnostics::poll_note(format!(
+            "volume extents ioctl ok returned_bytes={returned} buffer_bytes={}", bytes.len()
+        ));
         let bytes = bytes.get(..returned as usize).ok_or_else(|| {
+            crate::diagnostics::poll_note("volume extents rejected reason=returned_bytes_exceed_buffer".into());
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 "ボリューム範囲の応答長が不正です",
             )
         })?;
-        parse_volume_extent(bytes)
+        parse_volume_mapping(bytes)
     })
 }
 
 fn whole_device_volume(extent: &VolumeExtent, disk: u32, capacity: u64) -> Result<bool, String> {
     if extent.disk != disk
+        || capacity == 0
+        || (extent.length == 0 && extent.offset != 0)
         || extent
             .offset
             .checked_add(extent.length)
             .is_none_or(|end| end > capacity)
     {
         return Err("SDボリュームと物理ディスクの対応範囲が一致しません".into());
+    }
+    if extent.length == 0 {
+        crate::diagnostics::record("INFO", &format!(
+            "SD write zero volume extent disk={disk} physical_capacity={capacity} io_route=physical_disk; volume range is not used as capacity"
+        ));
+        return Ok(false);
     }
     Ok(extent.offset == 0 && extent.length == capacity)
 }
@@ -708,6 +748,78 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn volume_extent_diagnostics_identify_each_rejection_and_keep_numeric_fields() {
+        use windows_sys::Win32::System::Ioctl::DISK_EXTENT;
+        let entry = std::mem::offset_of!(VOLUME_DISK_EXTENTS, Extents);
+        let offset = entry + std::mem::offset_of!(DISK_EXTENT, StartingOffset);
+        let length = entry + std::mem::offset_of!(DISK_EXTENT, ExtentLength);
+        for (count, start, size, short, reason) in [
+            (1_u32, 0_i64, 4096_i64, true, "response_shorter_than_struct"),
+            (0, 0, 0, false, "extent_count_not_one"),
+            (2, 0, 4096, false, "extent_count_not_one"),
+            (1, -1, 4096, false, "negative_starting_offset"),
+            (1, 0, -1, false, "negative_extent_length"),
+        ] {
+            let mut bytes = vec![0_u8; std::mem::size_of::<VOLUME_DISK_EXTENTS>()];
+            bytes[..4].copy_from_slice(&count.to_ne_bytes());
+            bytes[entry..entry + 4].copy_from_slice(&7_u32.to_ne_bytes());
+            bytes[offset..offset + 8].copy_from_slice(&start.to_ne_bytes());
+            bytes[length..length + 8].copy_from_slice(&size.to_ne_bytes());
+            if short {
+                bytes.truncate(4);
+            }
+            let (result, notes) = crate::diagnostics::quiet(|| parse_volume_mapping(&bytes));
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+            assert!(notes.iter().any(|n| n.contains(&format!("reason={reason}"))));
+            assert!(notes[0].contains(&format!("extent_count=Some({count})")));
+            if !short {
+                assert!(notes.iter().any(|n| n.contains(&format!(
+                    "disk_number=7 starting_offset={start} extent_length={size}"
+                ))));
+            }
+        }
+        let (result, notes) = crate::diagnostics::quiet(|| parse_volume_mapping(&[]));
+        assert!(result.is_err());
+        assert!(notes[0].contains("returned_bytes=0"));
+        assert!(notes[0].contains("extent_count=None"));
+    }
+
+    #[test]
+    fn zero_length_volume_maps_to_disk_and_uses_locked_physical_io_with_capacity_checks() {
+        use windows_sys::Win32::System::Ioctl::{DISK_EXTENT, FSCTL_DISMOUNT_VOLUME};
+        // Reproduce G: from the diagnostic log: one disk, offset=0, length=0.
+        let mut bytes = vec![0_u8; std::mem::size_of::<VOLUME_DISK_EXTENTS>()];
+        let entry = std::mem::offset_of!(VOLUME_DISK_EXTENTS, Extents);
+        bytes[..4].copy_from_slice(&1_u32.to_ne_bytes());
+        bytes[entry..entry + 4].copy_from_slice(&1_u32.to_ne_bytes());
+        let (mapping, notes) = crate::diagnostics::quiet(|| parse_volume_mapping(&bytes));
+        let mapping = mapping.unwrap();
+        assert_eq!(mapping, VolumeExtent { disk: 1, offset: 0, length: 0 });
+        assert!(notes.iter().any(|n| n.contains("disk identity only")));
+        let capacity = 7_969_177_600;
+        let use_volume_io = whole_device_volume(&mapping, 1, capacity).unwrap();
+        assert!(!use_volume_io);
+        assert!(whole_device_volume(&mapping, 2, capacity).is_err());
+        assert!(whole_device_volume(&mapping, 1, 0).is_err());
+        assert!(whole_device_volume(&VolumeExtent { offset: 512, ..mapping }, 1, capacity).is_err());
+        assert!(validate_io_range(capacity - 512, 512, capacity).is_ok());
+        assert!(validate_io_range(capacity, 512, capacity).is_err());
+        let mut calls = Vec::new();
+        let unknown_filesystem = Err(io::Error::from_raw_os_error(87));
+        prepare_write_volume(extended_dasd_required(use_volume_io, &unknown_filesystem), |_, code| {
+            calls.push(code);
+            Ok(())
+        }).unwrap();
+        assert_eq!(calls, vec![FSCTL_LOCK_VOLUME, FSCTL_DISMOUNT_VOLUME]);
+        // A non-empty ordinary partition still takes the physical route.
+        let offset = entry + std::mem::offset_of!(DISK_EXTENT, StartingOffset);
+        let length = entry + std::mem::offset_of!(DISK_EXTENT, ExtentLength);
+        bytes[offset..offset + 8].copy_from_slice(&512_i64.to_ne_bytes());
+        bytes[length..length + 8].copy_from_slice(&4096_i64.to_ne_bytes());
+        assert!(!whole_device_volume(&parse_volume_mapping(&bytes).unwrap(), 1, capacity).unwrap());
+    }
+
+    #[test]
     fn volume_extent_rejects_short_multiple_and_negative_responses() {
         use windows_sys::Win32::System::Ioctl::DISK_EXTENT;
         let mut bytes = vec![0_u8; std::mem::size_of::<VOLUME_DISK_EXTENTS>()];
@@ -717,19 +829,19 @@ mod diagnostic_tests {
         bytes[entry..entry + 4].copy_from_slice(&7_u32.to_ne_bytes());
         bytes[length..length + 8].copy_from_slice(&4096_i64.to_ne_bytes());
         assert_eq!(
-            parse_volume_extent(&bytes).unwrap(),
+            parse_volume_mapping(&bytes).unwrap(),
             VolumeExtent {
                 disk: 7,
                 offset: 0,
                 length: 4096
             }
         );
-        assert!(parse_volume_extent(&bytes[..bytes.len() - 1]).is_err());
+        assert!(parse_volume_mapping(&bytes[..bytes.len() - 1]).is_err());
         bytes[0..4].copy_from_slice(&2_u32.to_ne_bytes());
-        assert!(parse_volume_extent(&bytes).is_err());
+        assert!(parse_volume_mapping(&bytes).is_err());
         bytes[0..4].copy_from_slice(&1_u32.to_ne_bytes());
         bytes[length..length + 8].copy_from_slice(&(-1_i64).to_ne_bytes());
-        assert!(parse_volume_extent(&bytes).is_err());
+        assert!(parse_volume_mapping(&bytes).is_err());
     }
 
     #[test]
@@ -967,7 +1079,7 @@ impl BatchDisk {
                 )
                 .map_err(|e| format!("SDボリュームを開けません: {e}"))?;
                 let use_volume_io = if read_only { false } else {
-                    let extent = volume_extent(volume.0).map_err(|e| e.to_string())?;
+                    let extent = volume_mapping(volume.0).map_err(|e| e.to_string())?;
                     let whole_device = whole_device_volume(&extent, disk, expected_capacity)?;
                     crate::diagnostics::record("INFO", &format!("SD write extent disk={} offset={} length={} io_route={}", extent.disk, extent.offset, extent.length,
                         if whole_device { "locked_whole_device_volume" } else { "physical_disk" }));

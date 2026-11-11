@@ -1,5 +1,5 @@
 // Render the built app in Chromium with mocked IPC. Never access an SD card.
-// Usage: node scripts/verify-panel-scroll.mjs [path-to-chrome-or-edge] [--ff] [--write] [--update] [--format]
+// Usage: node scripts/verify-panel-scroll.mjs [path-to-chrome-or-edge] [--ff] [--write] [--update] [--format] [--history]
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { readFile, mkdtemp } from 'node:fs/promises';
@@ -13,12 +13,23 @@ const verifyWrite = process.argv.includes('--write');
 const verifyUpdate = process.argv.includes('--update');
 const verifyFormat = process.argv.includes('--format');
 const verifyUnassigned = process.argv.includes('--unassigned');
+const verifyHistory = process.argv.includes('--history');
 const root = resolve('dist');
 const csv = await readFile('config/sdDirectaxs.csv', 'utf8');
 const bootstrap = `
 localStorage.setItem('sddirecta-selected-drive', 'H:');
 const callbacks = new Map(); const listeners = new Map(); let next = 1;
 let updateChecks = 0; let updateInstalls = 0;
+const historyResolutions = [];
+let historyResolveDelay = 0;
+const copiedHistoryPaths = [];
+let historyClipboardFails = false;
+if (${verifyHistory}) Object.defineProperty(navigator, 'clipboard', { value: {
+  async writeText(text) {
+    if (historyClipboardFails) throw Error('Mock clipboard denied');
+    copiedHistoryPaths.push(text);
+  }
+}, configurable: true });
 window.__TAURI_INTERNALS__ = {
   metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main' } },
   transformCallback(fn) { const id = next++; callbacks.set(id, fn); return id; },
@@ -58,6 +69,11 @@ window.__TAURI_INTERNALS__ = {
         index: 2, completed: 2, processed_bytes: 99840, elapsed_ms: 600 }), 600));
     }
     if (command === 'get_executable_directory') return ${JSON.stringify('C:\\source\\repos\\electron3\\ts-sddirecta\\src-tauri\\target\\debug')};
+    if (command === 'resolve_drop_directory') {
+      historyResolutions.push([...args.paths]);
+      if (historyResolveDelay) await new Promise(resolve => setTimeout(resolve, historyResolveDelay));
+      return args.paths[0];
+    }
     if (command === 'sd_admin_status') return 'ready';
     if (command === 'get_drives') return [{ drive: 'E:', type: 'Removable', size: 0 }, ${verifyUnassigned
       ? "{ drive: 'PhysicalDrive1', label: '?:', type: 'Removable', size: 497549312 }"
@@ -70,12 +86,185 @@ window.__TAURI_INTERNALS__ = {
   }
 };
 window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
+if (${verifyHistory}) window.addEventListener('unhandledrejection', event => {
+  document.body.dataset.panelAudit = JSON.stringify([{ error: String(event.reason?.stack || event.reason) }]);
+});
 const delay = ms => new Promise(r => setTimeout(r, ms));
 const render = () => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
 window.addEventListener('load', async () => {
   await delay(600);
   const panel = document.querySelector('.text-messages');
   const results = [];
+  if (${verifyHistory}) {
+    const historyTab = document.getElementById('option-tab-history');
+    historyTab.click(); await render();
+    const historyPanel = document.getElementById('option-panel-history');
+    const table = historyPanel.querySelector('.history-recent table');
+    const allRows = () => [...historyPanel.querySelectorAll('tbody tr')];
+    const deletedAudit = sessionStorage.getItem('history-delete-audit');
+    if (deletedAudit) {
+      const audit = JSON.parse(deletedAudit);
+      audit.results[0].history.deletionRestored = allRows().length === 65
+        && localStorage.getItem('sddirecta-drop-history-v1') === audit.saved
+        && historyPanel.querySelectorAll('.history-favorites tbody tr').length === 1;
+      document.body.dataset.panelAudit = JSON.stringify(audit.results);
+      return;
+    }
+    const previousAudit = sessionStorage.getItem('history-reload-audit');
+    if (previousAudit) {
+      const audit = JSON.parse(previousAudit);
+      const saved = localStorage.getItem('sddirecta-drop-history-v1');
+      const rows = allRows().map(row => ({
+        time: row.querySelector('time').textContent,
+        paths: [...row.querySelectorAll('.history-path')].map(path => path.title),
+      }));
+      audit.results[0].history.restored = JSON.stringify(rows) === JSON.stringify(audit.rows);
+      audit.results[0].history.savedUnchanged = saved === audit.saved;
+      audit.results[0].history.warningAbsent = !document.querySelector('.panel_footer [role="alert"]');
+      const h = audit.results[0].history;
+      h.favoriteRestored = historyPanel.querySelector('.history-favorites .history-favorite').getAttribute('aria-pressed') === 'true';
+      const originalPaths = JSON.parse(saved).entries[0].paths;
+      const copyButtons = [...historyPanel.querySelectorAll('.history-favorites .history-copy')];
+      copyButtons[0].click(); await render();
+      copyButtons[1].click(); await render();
+      copyButtons[1].dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+      h.individualPathCopy = JSON.stringify(copiedHistoryPaths) === JSON.stringify(originalPaths);
+      h.copyWithoutReplay = historyResolutions.length === 0 && historyTab.getAttribute('aria-selected') === 'true'
+        && localStorage.getItem('sddirecta-drop-history-v1') === saved;
+      h.copyNotice = document.querySelector('.panel_footer').textContent.includes('フルパスをコピーしました');
+      historyClipboardFails = true;
+      copyButtons[0].click(); await render();
+      h.copyFailureShown = document.querySelector('.panel_footer').textContent.includes('フルパスをコピーできませんでした')
+        && panel.textContent.includes('Mock clipboard denied');
+      historyClipboardFails = false;
+      const target = [...historyPanel.querySelectorAll('.history-favorites .history-path')].at(-1);
+      target.click(); await render();
+      h.singleSelectOnly = historyResolutions.length === 0 && target.closest('tr').classList.contains('history-selected')
+        && historyTab.getAttribute('aria-selected') === 'true';
+      historyResolveDelay = 100;
+      target.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+      await render();
+      h.busyDisabled = [...historyPanel.querySelectorAll('.history-path')].every(button => button.disabled);
+      await delay(150); await render();
+      h.doubleClickReplay = historyResolutions.length === 1
+        && document.getElementById('option-tab-files').getAttribute('aria-selected') === 'true'
+        && document.querySelector('.copy-path').title === originalPaths[0];
+      historyTab.click(); await render(); target.focus();
+      target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', repeat: true, bubbles: true }));
+      h.repeatIgnored = historyResolutions.length === 1;
+      target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      await delay(150); await render();
+      h.enterReplay = historyResolutions.length === 2
+        && document.getElementById('option-tab-files').getAttribute('aria-selected') === 'true';
+      h.allPathsReplayed = historyResolutions.every(paths => JSON.stringify(paths) === JSON.stringify(originalPaths));
+      h.replayUnchanged = localStorage.getItem('sddirecta-drop-history-v1') === saved
+        && allRows().length === audit.rows.length;
+      h.historyLog = panel.textContent.includes('履歴から再読込') && !panel.textContent.includes('ドラッグ＆ドロップ');
+      historyTab.click(); await render();
+      const upper = historyPanel.querySelector('.history-favorites');
+      const lowerList = historyPanel.querySelector('.history-recent .history-list');
+      const upperTop = upper.getBoundingClientRect().top;
+      lowerList.scrollTop = lowerList.scrollHeight; await render();
+      h.favoritesPinned = Math.abs(upper.getBoundingClientRect().top - upperTop) < 1;
+      for (const button of [...table.querySelectorAll('.history-favorite')]) button.click();
+      await render();
+      document.getElementById('panel_option').style.height = '230px'; await render();
+      const upperList = upper.querySelector('.history-list');
+      upperList.scrollTop = upperList.scrollHeight; await render();
+      h.allFavorites = upper.querySelectorAll('tbody tr').length === 66
+        && table.querySelectorAll('tbody tr').length === 0 && !!historyPanel.querySelector('.history-recent [role="status"]');
+      h.favoriteScrolls = upperList.scrollHeight > upperList.clientHeight && upperList.scrollTop > 0;
+      h.lowerUsable = lowerList.clientHeight >= 24 && upper.getBoundingClientRect().height <= 161
+        && upper.getBoundingClientRect().height <= historyPanel.getBoundingClientRect().height * .4 + 1;
+      h.favoriteOrder = upper.querySelector('tbody .history-path').title === 'C:/案件 64';
+      for (const button of [...upper.querySelectorAll('.history-favorite')]) button.click();
+      await render();
+      h.allNormal = upper.querySelectorAll('tbody tr').length === 0 && table.querySelectorAll('tbody tr').length === 66
+        && !!upper.querySelector('[role="status"]');
+      table.querySelector('.history-favorite').click(); await render();
+      const protectedDelete = upper.querySelector('.history-delete');
+      const protectedSaved = localStorage.getItem('sddirecta-drop-history-v1');
+      protectedDelete.click(); await render();
+      h.favoriteDeleteProtected = protectedDelete.disabled && allRows().length === 66
+        && localStorage.getItem('sddirecta-drop-history-v1') === protectedSaved;
+      const currentSource = document.querySelector('.copy-path').title;
+      const currentFiles = document.getElementById('option-panel-files').textContent;
+      const resolutionsBeforeDelete = historyResolutions.length;
+      [...table.querySelectorAll('.history-delete')].at(-1).click(); await render();
+      h.singleDelete = allRows().length === 65 && table.querySelectorAll('tbody tr').length === 64;
+      h.deletePreservesView = document.querySelector('.copy-path').title === currentSource
+        && document.getElementById('option-panel-files').textContent === currentFiles
+        && historyTab.getAttribute('aria-selected') === 'true' && historyResolutions.length === resolutionsBeforeDelete;
+      sessionStorage.setItem('history-delete-audit', JSON.stringify({ results: audit.results,
+        saved: localStorage.getItem('sddirecta-drop-history-v1') }));
+      location.reload();
+      return;
+    }
+    const headings = [...table.querySelectorAll('th')].map(cell => cell.textContent);
+    const emptyVisible = historyPanel.querySelectorAll('[role="status"]').length === 2;
+    const paths = [
+      'C:/' + '日本語の長いフォルダー名/'.repeat(15) + 'FILE-AA.001',
+      'D:/案件 A/FILE-BA.001',
+    ];
+    const drop = values => listeners.get('tauri://drag-drop')({ payload: { paths: values, position: { x: 0, y: 0 } } });
+    const originalNow = Date.now;
+    const timestamp = new Date(2026, 10, 11, 14, 32, 8).getTime();
+    Date.now = () => timestamp;
+    drop(paths); await delay(50); historyTab.click(); await render();
+    const singleRow = table.querySelectorAll('tbody tr').length === 1;
+    const time = table.querySelector('time').textContent;
+    const originalPaths = [...table.querySelectorAll('.history-path')].map(path => path.title);
+    const multiplePaths = JSON.stringify(originalPaths) === JSON.stringify(paths);
+    const emptyHidden = !historyPanel.querySelector('.history-recent [role="status"]');
+    for (let i = 0; i < 65; i++) drop(['C:/案件 ' + i]);
+    Date.now = originalNow;
+    await delay(100); historyTab.click(); await render();
+    const newestFirst = table.querySelector('tbody .history-path').title === 'C:/案件 64';
+    const rowCount = table.querySelectorAll('tbody tr').length;
+    const scroller = historyPanel.querySelector('.history-recent .history-list');
+    scroller.scrollTop = scroller.scrollHeight; await render();
+    const headerFixed = Math.abs(table.querySelector('th').getBoundingClientRect().top - scroller.getBoundingClientRect().top) < 2;
+    const scrolls = scroller.scrollHeight > scroller.clientHeight && scroller.scrollTop > 0;
+    document.getElementById('panel_option').style.width = '400px'; await render();
+    const prefix = table.querySelector('.history-path-prefix');
+    const longPath = prefix.parentElement;
+    const suffix = longPath.querySelector('.history-path-suffix');
+    const middleClipped = prefix.scrollWidth > prefix.clientWidth && getComputedStyle(prefix).textOverflow === 'ellipsis';
+    const tailVisible = suffix.textContent.endsWith('FILE-AA.001');
+    const fits = longPath.getBoundingClientRect().right <= scroller.getBoundingClientRect().right + 1;
+    document.getElementById('panel_option').style.width = '280px'; await render();
+    scroller.scrollLeft = scroller.scrollWidth; await render();
+    const horizontalScrolls = scroller.scrollWidth > scroller.clientWidth && scroller.scrollLeft > 0;
+    historyTab.click(); document.getElementById('option-tab-files').click(); historyTab.click(); await render();
+    results.push({ history: { headings, emptyVisible, emptyHidden, singleRow, time, multiplePaths,
+      newestFirst, rowCount, headerFixed, scrolls, middleClipped, tailVisible, fits, horizontalScrolls,
+      retained: table.querySelectorAll('tbody tr').length === rowCount } });
+    const h = results[0].history;
+    let favorite = [...table.querySelectorAll('.history-favorite')].at(-1);
+    const resolutionCount = historyResolutions.length;
+    favorite.click(); await render();
+    favorite = historyPanel.querySelector('.history-favorites .history-favorite');
+    h.favoriteRegistered = favorite.textContent === '★' && favorite.getAttribute('aria-pressed') === 'true';
+    favorite.click(); await render();
+    favorite = [...table.querySelectorAll('.history-favorite')].at(-1);
+    h.favoriteRemoved = favorite.textContent === '☆' && favorite.getAttribute('aria-pressed') === 'false';
+    favorite.click(); await render();
+    h.favoriteIsolated = historyResolutions.length === resolutionCount
+      && historyTab.getAttribute('aria-selected') === 'true'
+      && table.querySelector('tbody .history-path').title === 'C:/案件 64'
+      && JSON.parse(localStorage.getItem('sddirecta-drop-history-v1')).entries.filter(entry => entry.favorite).length === 1;
+    h.groupsSeparated = historyPanel.querySelectorAll('.history-favorites tbody tr').length === 1
+      && table.querySelectorAll('tbody tr').length === 65 && allRows().length === 66;
+    sessionStorage.setItem('history-reload-audit', JSON.stringify({ results,
+      saved: localStorage.getItem('sddirecta-drop-history-v1'),
+      rows: allRows().map(row => ({
+        time: row.querySelector('time').textContent,
+        paths: [...row.querySelectorAll('.history-path')].map(path => path.title),
+      })),
+    }));
+    location.reload();
+    return;
+  }
   const folderPanel = document.querySelector('.panel_sd');
   const folderList = folderPanel.querySelector('.path-list');
   const folderRows = () => folderList.querySelectorAll('.path-row');
@@ -282,6 +471,22 @@ try {
   const results = JSON.parse(encoded);
   console.log(JSON.stringify(results, null, 2));
   for (const result of results) {
+    assert.equal(result.error, undefined, result.error);
+    if (result.history) {
+      const h = result.history;
+      assert.deepEqual(h.headings, ['', '日時', 'フルパス', '削除']);
+      assert.equal(h.time, '2026/11/11 14:32:08');
+      assert.equal(h.rowCount, 66);
+      for (const key of ['emptyVisible', 'emptyHidden', 'singleRow', 'multiplePaths', 'newestFirst',
+        'headerFixed', 'scrolls', 'middleClipped', 'tailVisible', 'fits', 'horizontalScrolls', 'retained',
+        'restored', 'savedUnchanged', 'warningAbsent', 'singleSelectOnly', 'busyDisabled', 'doubleClickReplay',
+        'repeatIgnored', 'enterReplay', 'allPathsReplayed', 'replayUnchanged', 'historyLog',
+        'individualPathCopy', 'copyWithoutReplay', 'copyNotice', 'copyFailureShown',
+        'favoriteRegistered', 'favoriteRemoved', 'favoriteIsolated', 'favoriteRestored', 'groupsSeparated',
+        'favoritesPinned', 'allFavorites', 'favoriteScrolls', 'lowerUsable', 'favoriteOrder', 'allNormal',
+        'favoriteDeleteProtected', 'singleDelete', 'deletePreservesView', 'deletionRestored']) assert.equal(h[key], true, key);
+      continue;
+    }
     if (result.format) {
       const f = result.format;
       assert.ok(f.belowFf && f.enabledWithoutFiles && f.confirmed && f.warning && f.busy && f.indeterminate && f.fits, JSON.stringify(f));

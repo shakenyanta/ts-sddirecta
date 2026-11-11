@@ -8,7 +8,9 @@ import OptionGrid from '../components/OptionGrid.vue';
 import { features } from '../editions';
 import { folderPathAt, splitFolderPath } from '../utils/executablePath';
 import { folderTreeStorageKey, parseFolderTreeState, type FolderTreeState } from '../utils/folderTreeState';
+import { dropHistoryStorageKey, parseDropHistoryState, type DropHistoryEntry, type DropHistoryState } from '../utils/dropHistoryState';
 import { createLogScroller } from '../utils/logScroll';
+import { formatFileTimestamp } from '../utils/fileTimestamp';
 import { parseSdDirectCsv, type AddressRange, type SdArea } from '../utils/sdDirectCsv';
 import { writePercent, writeStageLabel, sizeComment, formatByteCount, formatCardCapacity, explainSdFailure, type WritePlan, type WriteProgress, type OperationStatus } from '../utils/sdWrite';
 
@@ -25,6 +27,87 @@ const optionTabs = [
     { id: 'history', label: '履歴' },
 ] as const;
 const activeOptionTab = ref<typeof optionTabs[number]['id']>('files');
+
+const dropHistory = ref<DropHistoryEntry[]>([]);
+const historyRows = computed(() => [...dropHistory.value].reverse()
+	.sort((left, right) => right.droppedAt - left.droppedAt));
+const historyGroups = computed(() => [
+	{ id: 'favorites', label: 'お気に入り', entries: historyRows.value.filter(entry => entry.favorite) },
+	{ id: 'recent', label: '履歴', entries: historyRows.value.filter(entry => !entry.favorite) },
+]);
+const selectedHistoryId = ref<string | null>(null);
+const historyBusy = computed(() => initializing.value || writing.value || closing.value);
+const historyStorageError = ref('');
+let historyStorageBlocked = false;
+
+function restoreDropHistory() {
+	try {
+		const raw = localStorage.getItem(dropHistoryStorageKey);
+		if (raw !== null) dropHistory.value = parseDropHistoryState(raw).entries;
+	} catch (error) {
+		// Preserve unreadable data for recovery; new entries stay in memory this session.
+		historyStorageBlocked = true;
+		historyStorageError.value = `履歴を復元できませんでした。元データを保護するため、今回の履歴は保存しません: ${String(error)}`;
+		void appendMessage({ text: historyStorageError.value, warning: true });
+	}
+}
+
+function saveDropHistory() {
+	if (historyStorageBlocked) return;
+	try {
+		localStorage.setItem(dropHistoryStorageKey, JSON.stringify({ version: 1, entries: dropHistory.value } satisfies DropHistoryState));
+		historyStorageError.value = '';
+	} catch (error) {
+		const message = `履歴を保存できませんでした。今回の変更は再起動後に残らない可能性があります: ${String(error)}`;
+		if (historyStorageError.value !== message) void appendMessage({ text: message, warning: true });
+		historyStorageError.value = message;
+	}
+}
+
+function toggleHistoryFavorite(id: string) {
+	if (disposed || closing.value) return;
+	const entry = dropHistory.value.find(entry => entry.id === id);
+	if (!entry) return;
+	entry.favorite = !entry.favorite;
+	saveDropHistory();
+}
+
+function deleteHistory(id: string) {
+	if (disposed || closing.value) return;
+	const index = dropHistory.value.findIndex(entry => entry.id === id);
+	if (index < 0 || dropHistory.value[index].favorite) return;
+	dropHistory.value.splice(index, 1);
+	if (selectedHistoryId.value === id) selectedHistoryId.value = null;
+	saveDropHistory();
+}
+
+function selectHistory(id: string) {
+	if (disposed || historyBusy.value) return;
+	selectedHistoryId.value = id;
+}
+
+async function reopenHistory(id: string) {
+	if (disposed || historyBusy.value) return;
+	const entry = dropHistory.value.find(entry => entry.id === id);
+	if (!entry) return;
+	selectedHistoryId.value = id;
+	activeOptionTab.value = 'files';
+	await initializeSource([...entry.paths], undefined, false, 'history');
+}
+
+async function copyHistoryPath(id: string, index: number) {
+	if (disposed) return;
+	const path = dropHistory.value.find(entry => entry.id === id)?.paths[index];
+	if (path === undefined) return;
+	try {
+		await navigator.clipboard.writeText(path);
+		if (!disposed) showNotice('フルパスをコピーしました');
+	} catch (error) {
+		if (disposed) return;
+		showNotice('フルパスをコピーできませんでした');
+		await appendMessage({ text: `フルパスをコピーできませんでした: ${String(error)}`, warning: true });
+	}
+}
 
 function navigateOptionTab(event: KeyboardEvent, index: number) {
     let nextIndex: number;
@@ -353,6 +436,8 @@ async function selectFolder(path: string) {
 }
 
 onMounted(async () => {
+	// Synchronous restore completes before registering drops, avoiding startup races.
+	restoreDropHistory();
 	window.addEventListener('keydown', onRefreshKey, true);
 	window.addEventListener('pagehide', saveFolderState);
 	try {
@@ -396,6 +481,7 @@ onMounted(async () => {
     }
 	try {
 		const unlisten = await getCurrentWebview().onDragDropEvent(event => {
+			if (disposed) return;
 			if (writing.value || closing.value) {
 				dragging.value = false;
 				if (event.payload.type !== 'leave') showNotice(closing.value ? '終了処理中のため変更できません' : 'SD処理中のため変更できません');
@@ -403,8 +489,15 @@ onMounted(async () => {
 			}
 			dragging.value = event.payload.type === 'enter' || event.payload.type === 'over';
 			if (event.payload.type === 'drop') {
+				// Record accepted operations before loading; failures remain in history.
+				dropHistory.value.push({
+					id: crypto.randomUUID(),
+					droppedAt: Date.now(),
+					paths: [...event.payload.paths],
+				});
 				activeOptionTab.value = 'files';
 				void initializeSource(event.payload.paths);
+				saveDropHistory();
 			}
 		});
 		if (disposed) { unlisten(); return; }
@@ -429,7 +522,7 @@ function onRefreshKey(event: KeyboardEvent) {
 	void initializeSource(undefined, sourceDirectory.value || undefined);
 }
 
-async function initializeSource(paths?: string[], refreshDirectory?: string, preserveTree = false) {
+async function initializeSource(paths?: string[], refreshDirectory?: string, preserveTree = false, pathSource: 'drop' | 'history' = 'drop') {
 	if (closing.value) return;
 	if (writing.value) { showNotice('SD処理中のため変更できません'); return; }
 	if (paths) messages.value = [];
@@ -461,7 +554,7 @@ async function initializeSource(paths?: string[], refreshDirectory?: string, pre
 		if (!preserveTree) resetFolderTree(directory);
 		if (preserveTree) await appendMessage(`フォルダー選択：${directory.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || directory}`);
 		else if (refreshDirectory) await appendMessage('F5：表示を更新');
-		else if (paths) await appendMessage('ドラッグ＆ドロップ');
+		else if (paths) await appendMessage(pathSource === 'history' ? '履歴から再読込' : 'ドラッグ＆ドロップ');
 		await nextTick();
 		if (!active()) return;
 		if (!preserveTree && pathList.value) pathList.value.scrollTop = pathList.value.scrollHeight;
@@ -1125,6 +1218,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 				<div id="panel_footer" class="panel_footer" :class="{ 'drop-unavailable': initializing || writing || closing }" role="status">
 					<div class="drop-hint"><svg v-if="!initializing && !writing && !closing" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 21H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h9l5 5v5M14 3v6h5M18 15v8m-4-4h8"/></svg><span>{{ closing ? '終了処理中：SD操作プロセスの終了を確認しています' : writing ? 'SD処理中：ドライブ・対象フォルダーの変更と再読込はできません' : dragging ? 'ドロップして対象フォルダーを変更' : initializing ? '対象フォルダーを読込中…' : 'ファイル・フォルダーをドロップ' }}</span></div>
 					<div v-if="transientNotice" class="path-error">{{ transientNotice }}</div>
+						<div v-if="historyStorageError" class="path-error" role="alert">{{ historyStorageError }}</div>
 				</div>
 			</div>
 			<div v-if="features.optionPanel" id="resizer3" class="resizer resizer-horizontal" @pointerdown="resizeOptions"></div>
@@ -1140,8 +1234,53 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 					role="tabpanel" aria-labelledby="option-tab-files" tabindex="0">
 					<OptionGrid :directory="displayedDirectory" :files="optionFiles" :disabled="initializing || writing || closing" @open-file="openGridFile" />
 				</div>
-				<div v-show="activeOptionTab === 'history'" id="option-panel-history" class="option-tab-panel"
-					role="tabpanel" aria-labelledby="option-tab-history" tabindex="0"></div>
+				<div v-show="activeOptionTab === 'history'" id="option-panel-history" class="option-tab-panel history-panel"
+					role="tabpanel" aria-labelledby="option-tab-history" tabindex="0">
+					<p id="history-hint" class="history-hint">パスをダブルクリック、または選択してEnterで再読込します。</p>
+					<section v-for="group in historyGroups" :key="group.id" class="history-section" :class="`history-${group.id}`"
+						:aria-label="group.label">
+					<div class="history-list">
+						<table class="history-table" :aria-label="group.label">
+							<colgroup><col class="history-favorite-column"><col class="history-date-column"><col><col class="history-delete-column"></colgroup>
+							<thead><tr><th scope="col" class="history-favorite-cell" aria-label="お気に入り"></th><th scope="col">日時</th><th scope="col">フルパス</th><th scope="col">削除</th></tr></thead>
+							<tbody>
+								<tr v-for="entry in group.entries" :key="entry.id" :class="{ 'history-selected': selectedHistoryId === entry.id }"
+									@click="selectHistory(entry.id)">
+									<td class="history-favorite-cell">
+										<button type="button" class="history-favorite" :class="{ 'is-favorite': entry.favorite }"
+											:aria-pressed="!!entry.favorite" :aria-label="entry.favorite ? 'お気に入りを解除' : 'お気に入りに登録'"
+											:title="entry.favorite ? 'お気に入りを解除' : 'お気に入りに登録'" :disabled="closing"
+											@click.stop="toggleHistoryFavorite(entry.id)" @dblclick.stop.prevent @keydown.enter.stop>{{ entry.favorite ? '★' : '☆' }}</button>
+									</td>
+									<td class="history-date"><time :datetime="new Date(entry.droppedAt).toISOString()">{{ formatFileTimestamp(entry.droppedAt) }}</time></td>
+									<td>
+										<div v-for="(path, index) in entry.paths" :key="index" class="history-path-row">
+										<button type="button" class="history-path" :title="path" :aria-label="path"
+											aria-describedby="history-hint" :disabled="historyBusy" @focus="selectHistory(entry.id)"
+											@dblclick.prevent="reopenHistory(entry.id)" @keydown.enter.prevent="!$event.repeat && reopenHistory(entry.id)">
+											<span v-if="path.length > 24" class="history-path-prefix" aria-hidden="true">{{ path.slice(0, -24) }}</span>
+											<span class="history-path-suffix" :class="{ 'has-prefix': path.length > 24 }" aria-hidden="true"><span>{{ path.slice(-24) }}</span></span>
+										</button>
+										<button type="button" class="history-copy" title="フルパスをコピー" :aria-label="`${path} をコピー`"
+											@click.stop="copyHistoryPath(entry.id, index)" @dblclick.stop.prevent @keydown.enter.stop>
+											<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="2" width="8" height="10" rx="1.5"/><path d="M10 14H4a1 1 0 0 1-1-1V5"/></svg>
+										</button>
+										</div>
+									</td>
+									<td class="history-delete-cell">
+										<button type="button" class="history-delete" aria-label="この履歴を削除"
+											:title="entry.favorite ? 'お気に入りを解除すると削除できます' : 'この履歴を削除（元のファイルは削除しません）'"
+											:disabled="!!entry.favorite || closing" @click.stop="deleteHistory(entry.id)" @dblclick.stop.prevent @keydown.enter.stop>
+											<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M6 4V2h4v2M4 4l.7 10h6.6L12 4M6.5 6v6M9.5 6v6"/></svg>
+										</button>
+									</td>
+								</tr>
+							</tbody>
+						</table>
+						<p v-if="!group.entries.length" class="history-empty" role="status">{{ group.id === 'favorites' ? 'お気に入りはありません。☆で登録できます。' : '通常の履歴はありません。ファイル・フォルダーをドロップすると記録されます。' }}</p>
+					</div>
+					</section>
+				</div>
 			</section>
 		</div>
 	</div>
@@ -1311,6 +1450,80 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 	min-height: 0;
 	overflow: hidden;
 }
+.history-panel { display: flex; flex-direction: column; }
+.history-section { display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
+.history-favorites { flex: 0 1 auto; max-height: min(160px, 40%); border-bottom: 1px solid #d7e5f5; }
+.history-recent { flex: 1; }
+.history-section > .history-list { height: auto; }
+.history-hint { flex-shrink: 0; margin: 0; padding: 3px 6px; color: #52647c; font: 11px/18px 'Yu Gothic UI', Meiryo, sans-serif; }
+.history-list {
+	height: 100%;
+	flex: 1;
+	min-height: 0;
+	overflow: auto;
+	color: #26364d;
+	font: 11px/18px 'Yu Gothic UI', Meiryo, sans-serif;
+}
+.history-table {
+	width: 100%;
+	min-width: 400px;
+	table-layout: fixed;
+	border-collapse: separate;
+	border-spacing: 0;
+}
+.history-date-column { width: 136px; }
+.history-favorite-column { width: 24px; }
+.history-delete-column { width: 36px; }
+.history-table .history-delete-cell { padding: 0; text-align: center; }
+.history-delete { width: 22px; height: 18px; padding: 2px 4px; border: 0; border-radius: 2px; background: transparent; color: #a74444; cursor: pointer; }
+.history-delete:hover:not(:disabled) { background: #fde5e5; }
+.history-delete:focus-visible { outline: 2px solid #2875d9; outline-offset: -2px; }
+.history-delete:disabled { opacity: .4; cursor: default; }
+.history-delete svg { display: block; width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.2; }
+.history-table .history-favorite-cell { padding: 0; text-align: center; }
+.history-favorite { width: 24px; height: 18px; padding: 0; border: 0; border-radius: 2px; background: transparent; color: #52647c; font: 15px/18px sans-serif; cursor: pointer; }
+.history-favorite.is-favorite { color: #986600; }
+.history-favorite:hover { background: #cce0fa; }
+.history-favorite:focus-visible { outline: 2px solid #2875d9; outline-offset: -2px; }
+.history-favorite:disabled { opacity: .5; cursor: default; }
+.history-table th, .history-table td {
+	padding: 0 6px;
+	border-right: 1px solid #edf1f6;
+	border-bottom: 1px solid #e8edf4;
+	text-align: left;
+	vertical-align: top;
+}
+.history-table th {
+	position: sticky;
+	top: 0;
+	z-index: 1;
+	height: var(--option-grid-header-height, 24px);
+	vertical-align: middle;
+	background: #edf4fd;
+	border-bottom-color: #d7e5f5;
+}
+.history-table th:last-child, .history-table td:last-child { border-right: 0; }
+.history-table tbody tr:nth-child(even) { background: #f5f9fe; }
+.history-table tbody tr:hover { background: #eaf3ff; }
+.history-table tbody tr.history-selected { background: #dbeafe; }
+.history-date { white-space: nowrap; }
+.history-path-row { display: flex; gap: 4px; min-width: 0; }
+.history-path {
+	display: flex; flex: 1; width: 100%; min-width: 0; padding: 0; border: 0;
+	background: transparent; color: inherit; font: inherit; text-align: left; white-space: pre;
+	cursor: pointer;
+}
+.history-path:disabled { cursor: default; }
+.history-path:focus-visible { outline: 2px solid #2875d9; outline-offset: -2px; }
+.history-copy { flex: 0 0 18px; width: 18px; height: 18px; padding: 2px; border: 0; border-radius: 2px; background: transparent; color: #52647c; cursor: pointer; }
+.history-copy:hover { background: #cce0fa; }
+.history-copy:focus-visible { outline: 2px solid #2875d9; outline-offset: -2px; }
+.history-copy svg { display: block; width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.2; }
+.history-path-prefix { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.history-path-suffix { display: flex; justify-content: flex-end; min-width: 0; max-width: 100%; overflow: hidden; }
+.history-path-suffix.has-prefix { flex-shrink: 0; max-width: 70%; }
+.history-path-suffix > span { flex-shrink: 0; }
+.history-empty { margin: 12px; color: #52647c; }
 .panel-base {
 	border: 0;
 	min-width: 0;

@@ -156,6 +156,15 @@ pub fn quiet<T>(action: impl FnOnce() -> T) -> (T, Vec<String>) {
     (result, POLL_NOTES.with(|n| n.take()))
 }
 
+/// Keep metadata with the polling snapshot so unchanged polls do not flood the log.
+pub fn poll_note(message: String) {
+    if QUIET.with(|q| *q.borrow()) {
+        POLL_NOTES.with(|n| n.borrow_mut().push(message));
+    } else {
+        record("INFO", &message);
+    }
+}
+
 pub fn operation_label(name: &str) -> String {
     if let Some(rest) = name.strip_prefix("CreateFileW path=") {
         let path = rest.split(" access=").next().unwrap_or(rest);
@@ -466,6 +475,16 @@ mod tests {
         let (result, notes) = quiet(|| step("poll metadata", || Err::<(), _>("not ready")));
         assert_eq!(result, Err("not ready"));
         assert_eq!(notes, vec!["poll metadata error=not ready"]);
+    }
+
+    #[test]
+    fn quiet_poll_notes_are_stable_and_do_not_leak_into_next_poll() {
+        let inspect = || poll_note("drive=G: mapping=failed win32_error=Some(87)".into());
+        let (_, first) = quiet(inspect);
+        let (_, second) = quiet(inspect);
+        assert_eq!(first, vec!["drive=G: mapping=failed win32_error=Some(87)"]);
+        assert_eq!(first, second);
+        assert!(quiet(|| ()).1.is_empty());
     }
 
     #[test]
