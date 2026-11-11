@@ -343,6 +343,7 @@ async function selectFolder(path: string) {
 	if (initializing.value || writing.value || closing.value || disposed) return;
 	const node = folderNodes.value.get(path);
 	if (!node) return;
+	activeOptionTab.value = 'files';
 	node.expanded = true;
 	const children = loadChildFolders(path);
 	if (path === selectedFolder.value) { await children; return; }
@@ -401,7 +402,10 @@ onMounted(async () => {
 				return;
 			}
 			dragging.value = event.payload.type === 'enter' || event.payload.type === 'over';
-			if (event.payload.type === 'drop') void initializeSource(event.payload.paths);
+			if (event.payload.type === 'drop') {
+				activeOptionTab.value = 'files';
+				void initializeSource(event.payload.paths);
+			}
 		});
 		if (disposed) { unlisten(); return; }
 		unlistenDrop = unlisten;
