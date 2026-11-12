@@ -36,18 +36,22 @@ extern "system" {
 }
 
 pub fn get_disk_extents(drive_path: &str) -> Result<u32, io::Error> {
+    get_volume_mapping(drive_path).map(|extent| extent.disk)
+}
+
+pub(crate) fn get_volume_mapping(drive_path: &str) -> Result<VolumeExtent, io::Error> {
     crate::diagnostics::step(format!("get_disk_extents path={drive_path}"), || {
         let volume = DiskHandle::open(drive_path, 0, FILE_ATTRIBUTE_NORMAL)?;
         crate::diagnostics::poll_note(format!("volume extents query path={drive_path}"));
-        volume_mapping(volume.0).map(|extent| extent.disk)
+        volume_mapping(volume.0)
     })
 }
 
 #[derive(Debug, PartialEq)]
-struct VolumeExtent {
-    disk: u32,
+pub(crate) struct VolumeExtent {
+    pub(crate) disk: u32,
     offset: u64,
-    length: u64,
+    pub(crate) length: u64,
 }
 
 // Disk identity is usable even when Windows reports an empty volume range.

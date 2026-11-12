@@ -55,6 +55,7 @@ function view(invoke, clock = performance, DateClass = Date, storage, optionPane
     return { resize, sdHeightRatio, menuHeight, resizeOptions, baseWidthRatio, appendMessage, initializeSource, refreshMatchedFiles, sourceDirectory, displayedDirectory, openFolder, openGridFile,
       selectFolder, selectedFolder, folderNodes, visibleFolders, toggleFolder, pathList, saveFolderState, restoreFolderState, dropHistory, historyRows, historyGroups, historyStorageError,
       selectHistory, reopenHistory, selectedHistoryId, historyBusy, activeOptionTab, copyHistoryPath, toggleHistoryFavorite, deleteHistory,
+      historyClearDialog, requestHistoryClear, cancelHistoryClear, confirmHistoryClear,
       sdDirectDictionary, sdloadingDictionary, sdAddressRange, requiredSdCapacity, matchedFiles, writeFiles, optionFiles, canSdWrite, allFileCount, initializing, messages, pathError,
       onSdWrite, onSdRead, onSdFfInitialize, onSdFormat, startSdFormat, formatPlan, formatLabel, formatSimpleTest, formatStep, formatLabelValid, writeStage, canSdRead, popupTitle, statusLabel, closeWriteDialog, copyWriteLog, openDiagnosticLog, failureDetails, writeDialogOpen, writeLog, writing, pendingPlan, progress, percent, currentRun, transientNotice, operationStatus, operationDetail };
   `)(...Object.values(bindings));
@@ -1562,6 +1563,130 @@ test('history deletion is refused during shutdown and after view disposal', asyn
   ui.unmount();
   ui.deleteHistory('row');
   assert.equal(ui.dropHistory.value.length, 1);
+});
+
+function mockHistoryClearDialog(ui) {
+  const dialog = { open: false, opens: 0,
+    showModal() { this.open = true; this.opens++; }, close() { this.open = false; } };
+  ui.historyClearDialog.value = dialog;
+  return dialog;
+}
+
+test('history clear confirms deletion of ordinary entries, preserves favorites and current view, and persists across restart', async () => {
+  const storage = historyStorage();
+  const ui = view(backend(), performance, Date, storage);
+  const dialog = mockHistoryClearDialog(ui);
+  await ui.mount();
+  for (let i = 0; i < 3; i++) ui.drop(['C:\\same']);
+  await until(() => !ui.initializing.value);
+  const [favorite, ordinary] = ui.dropHistory.value;
+  ui.toggleHistoryFavorite(favorite.id);
+  ui.selectHistory(ordinary.id);
+  ui.activeOptionTab.value = 'history';
+  const before = structuredClone(ui.dropHistory.value);
+  const saved = storage.getItem('sddirecta-drop-history-v1');
+  const source = ui.sourceDirectory.value, files = ui.writeFiles.value;
+  ui.requestHistoryClear();
+  ui.requestHistoryClear();
+  assert.equal(dialog.opens, 1);
+  assert.deepEqual(ui.dropHistory.value, before);
+  ui.cancelHistoryClear();
+  ui.confirmHistoryClear();
+  assert.equal(storage.getItem('sddirecta-drop-history-v1'), saved);
+  ui.writing.value = true;
+  ui.requestHistoryClear();
+  ui.confirmHistoryClear();
+  ui.writing.value = false;
+  assert.equal(dialog.open, false);
+  assert.deepEqual(ui.dropHistory.value, [before[0]]);
+  assert.equal(ui.selectedHistoryId.value, null);
+  assert.equal(ui.activeOptionTab.value, 'history');
+  assert.equal(ui.sourceDirectory.value, source);
+  assert.deepEqual(ui.writeFiles.value, files);
+  ui.unmount();
+  const next = view(backend(), performance, Date, storage, false);
+  await next.mount();
+  assert.deepEqual(next.dropHistory.value, [before[0]]);
+  next.unmount();
+});
+
+test('history clear keeps new drops and newly protected rows received while confirmation is open', async () => {
+  const ui = view(backend());
+  const dialog = mockHistoryClearDialog(ui);
+  await ui.mount();
+  ui.drop(['C:\\first']);
+  ui.drop(['C:\\second']);
+  await until(() => !ui.initializing.value);
+  const [first] = ui.dropHistory.value;
+  ui.requestHistoryClear();
+  ui.toggleHistoryFavorite(first.id);
+  ui.selectHistory(first.id);
+  ui.drop(['C:\\new']);
+  await until(() => !ui.initializing.value);
+  ui.confirmHistoryClear();
+  assert.equal(dialog.open, false);
+  assert.deepEqual(ui.dropHistory.value.map(entry => entry.paths[0]), ['C:\\first', 'C:\\new']);
+  assert.equal(ui.selectedHistoryId.value, first.id);
+  assert.equal(ui.sourceDirectory.value, 'C:\\new');
+  ui.unmount();
+});
+
+test('history clear skips empty or favorite-only lists and refuses shutdown and disposal', async () => {
+  const ui = view(backend());
+  const dialog = mockHistoryClearDialog(ui);
+  await ui.mount();
+  ui.requestHistoryClear();
+  assert.equal(dialog.opens, 0);
+  ui.drop(['C:\\favorite']);
+  await until(() => !ui.initializing.value);
+  const id = ui.dropHistory.value[0].id;
+  ui.toggleHistoryFavorite(id);
+  ui.requestHistoryClear();
+  assert.equal(dialog.opens, 0);
+  ui.toggleHistoryFavorite(id);
+  ui.requestHistoryClear();
+  ui.event('sd-shutdown-started', 'waiting');
+  ui.confirmHistoryClear();
+  assert.equal(dialog.open, false);
+  ui.requestHistoryClear();
+  ui.unmount();
+  ui.requestHistoryClear();
+  ui.confirmHistoryClear();
+  assert.equal(ui.dropHistory.value.length, 1);
+});
+
+test('history clear preserves previous storage on failure and can save an empty history on retry', async () => {
+  const storage = historyStorage();
+  const write = storage.setItem;
+  let fail = false;
+  storage.setItem = (key, value) => {
+    if (key === 'sddirecta-drop-history-v1' && fail) throw Error('quota');
+    write(key, value);
+  };
+  const ui = view(backend(), performance, Date, storage);
+  mockHistoryClearDialog(ui);
+  await ui.mount();
+  ui.drop(['C:\\ordinary']);
+  await until(() => !ui.initializing.value);
+  const saved = storage.getItem('sddirecta-drop-history-v1');
+  ui.requestHistoryClear();
+  fail = true;
+  ui.confirmHistoryClear();
+  assert.deepEqual(ui.dropHistory.value, []);
+  assert.equal(storage.getItem('sddirecta-drop-history-v1'), saved);
+  assert.match(ui.historyStorageError.value, /保存できません/);
+  fail = false;
+  ui.drop(['C:\\retry']);
+  await until(() => !ui.initializing.value);
+  ui.requestHistoryClear();
+  ui.confirmHistoryClear();
+  assert.deepEqual(JSON.parse(storage.getItem('sddirecta-drop-history-v1')).entries, []);
+  assert.equal(ui.historyStorageError.value, '');
+  ui.unmount();
+  const next = view(backend(), performance, Date, storage);
+  await next.mount();
+  assert.deepEqual(next.dropHistory.value, []);
+  next.unmount();
 });
 
 function historyStorage() {

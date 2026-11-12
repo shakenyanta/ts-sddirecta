@@ -10,6 +10,8 @@ pub struct DriveInfo {
     pub size: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 fn merge(mut logical: Vec<(DriveInfo, Option<u32>)>, physical: Vec<(u32, u64)>) -> Vec<DriveInfo> {
@@ -32,6 +34,7 @@ fn merge(mut logical: Vec<(DriveInfo, Option<u32>)>, physical: Vec<(u32, u64)>) 
                     kind: "Removable".into(),
                     size: capacity as i64,
                     label: Some("?:".into()),
+                    warning: None,
                 },
                 Some(disk),
             ));
@@ -62,14 +65,21 @@ pub fn list_drives() -> Result<Vec<DriveInfo>, String> {
         if kind != 2 && kind != 3 {
             continue;
         }
-        let disk = match windows_api::get_disk_extents(&format!("\\\\.\\{drive}")) {
-            Ok(0xff) => {
+        let mut warning = None;
+        let disk = match windows_api::get_volume_mapping(&format!("\\\\.\\{drive}")) {
+            Ok(mapping) if mapping.disk == 0xff => {
                 crate::diagnostics::poll_note(format!(
                     "SD detection drive={drive} drive_type={kind} mapping=rejected reason=disk_number_255"
                 ));
                 None
             }
-            Ok(disk) => {
+            Ok(mapping) => {
+                let disk = mapping.disk;
+                if mapping.length == 0 {
+                    warning = Some(format!(
+                        "注意：{drive}（物理ディスク{disk}）でWindowsがボリューム長0を返しました。これはSDの実容量0を意味しません。容量は物理ディスクから別途確認します。"
+                    ));
+                }
                 crate::diagnostics::poll_note(format!(
                     "SD detection drive={drive} drive_type={kind} physical=PhysicalDrive{disk} mapping=ok"
                 ));
@@ -101,6 +111,7 @@ pub fn list_drives() -> Result<Vec<DriveInfo>, String> {
                 kind: if kind == 2 { "Removable" } else { "Fixed" }.into(),
                 size: size as i64,
                 label: None,
+                warning,
             },
             disk,
         ));
@@ -125,6 +136,7 @@ mod tests {
                     kind: "Removable".into(),
                     size: 0,
                     label: None,
+                    warning: Some("ボリューム長0の注意".into()),
                 },
                 Some(1),
             )],
@@ -133,7 +145,9 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].drive, "H:");
         assert_eq!(out[0].size, 497549312);
+        assert_eq!(out[0].warning.as_deref(), Some("ボリューム長0の注意"));
         assert_eq!(out[1].drive, "PhysicalDrive2");
+        assert!(out[1].warning.is_none());
         assert_eq!(out[1].label.as_deref(), Some("?:"));
         let empty = merge(vec![], vec![(1, 497549312)]);
         assert_eq!(empty[0].drive, "PhysicalDrive1");

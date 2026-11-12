@@ -101,13 +101,46 @@ window.addEventListener('load', async () => {
     const historyPanel = document.getElementById('option-panel-history');
     const table = historyPanel.querySelector('.history-recent table');
     const allRows = () => [...historyPanel.querySelectorAll('tbody tr')];
+    const clearedAudit = sessionStorage.getItem('history-clear-audit');
+    if (clearedAudit) {
+      const audit = JSON.parse(clearedAudit);
+      audit.results[0].history.clearRestored = allRows().length === 1
+        && historyPanel.querySelectorAll('.history-favorites tbody tr').length === 1
+        && historyPanel.querySelector('.history-clear').disabled
+        && localStorage.getItem('sddirecta-drop-history-v1') === audit.saved;
+      document.body.dataset.panelAudit = JSON.stringify(audit.results);
+      return;
+    }
     const deletedAudit = sessionStorage.getItem('history-delete-audit');
     if (deletedAudit) {
       const audit = JSON.parse(deletedAudit);
       audit.results[0].history.deletionRestored = allRows().length === 65
         && localStorage.getItem('sddirecta-drop-history-v1') === audit.saved
         && historyPanel.querySelectorAll('.history-favorites tbody tr').length === 1;
-      document.body.dataset.panelAudit = JSON.stringify(audit.results);
+      const h = audit.results[0].history;
+      const saved = localStorage.getItem('sddirecta-drop-history-v1');
+      const clear = historyPanel.querySelector('.history-clear');
+      clear.click(); await render();
+      const dialog = document.querySelector('.history-clear-dialog');
+      h.clearConfirmation = dialog.open && dialog.textContent.includes('保護されていない履歴をすべて削除しますか？')
+        && dialog.textContent.includes('元のファイルやフォルダーは削除されません');
+      h.clearCancelFocused = document.activeElement.textContent === 'キャンセル';
+      dialog.querySelector('button[autofocus]').click(); await render();
+      h.clearCancelled = !dialog.open && allRows().length === 65 && localStorage.getItem('sddirecta-drop-history-v1') === saved;
+      clear.click(); await render();
+      dialog.dispatchEvent(new Event('cancel', { cancelable: true })); await render();
+      h.clearEscCancelled = !dialog.open && allRows().length === 65;
+      const source = document.querySelector('.copy-path').title;
+      const files = document.getElementById('option-panel-files').textContent;
+      clear.click(); await render();
+      dialog.querySelector('.history-clear-confirm').click(); await render();
+      h.clearConfirmed = !dialog.open && allRows().length === 1 && table.querySelectorAll('tbody tr').length === 0;
+      h.clearPreservesView = document.querySelector('.copy-path').title === source
+        && document.getElementById('option-panel-files').textContent === files && historyResolutions.length === 0;
+      h.clearFavoritesOnlyDisabled = clear.disabled;
+      sessionStorage.setItem('history-clear-audit', JSON.stringify({ results: audit.results,
+        saved: localStorage.getItem('sddirecta-drop-history-v1') }));
+      location.reload();
       return;
     }
     const previousAudit = sessionStorage.getItem('history-reload-audit');
@@ -202,6 +235,7 @@ window.addEventListener('load', async () => {
     }
     const headings = [...table.querySelectorAll('th')].map(cell => cell.textContent);
     const emptyVisible = historyPanel.querySelectorAll('[role="status"]').length === 2;
+    const clearEmptyDisabled = historyPanel.querySelector('.history-clear').disabled;
     const paths = [
       'C:/' + '日本語の長いフォルダー名/'.repeat(15) + 'FILE-AA.001',
       'D:/案件 A/FILE-BA.001',
@@ -236,7 +270,7 @@ window.addEventListener('load', async () => {
     scroller.scrollLeft = scroller.scrollWidth; await render();
     const horizontalScrolls = scroller.scrollWidth > scroller.clientWidth && scroller.scrollLeft > 0;
     historyTab.click(); document.getElementById('option-tab-files').click(); historyTab.click(); await render();
-    results.push({ history: { headings, emptyVisible, emptyHidden, singleRow, time, multiplePaths,
+    results.push({ history: { headings, emptyVisible, clearEmptyDisabled, emptyHidden, singleRow, time, multiplePaths,
       newestFirst, rowCount, headerFixed, scrolls, middleClipped, tailVisible, fits, horizontalScrolls,
       retained: table.querySelectorAll('tbody tr').length === rowCount } });
     const h = results[0].history;
@@ -484,7 +518,9 @@ try {
         'individualPathCopy', 'copyWithoutReplay', 'copyNotice', 'copyFailureShown',
         'favoriteRegistered', 'favoriteRemoved', 'favoriteIsolated', 'favoriteRestored', 'groupsSeparated',
         'favoritesPinned', 'allFavorites', 'favoriteScrolls', 'lowerUsable', 'favoriteOrder', 'allNormal',
-        'favoriteDeleteProtected', 'singleDelete', 'deletePreservesView', 'deletionRestored']) assert.equal(h[key], true, key);
+        'favoriteDeleteProtected', 'singleDelete', 'deletePreservesView', 'deletionRestored',
+        'clearEmptyDisabled', 'clearConfirmation', 'clearCancelFocused', 'clearCancelled', 'clearEscCancelled',
+        'clearConfirmed', 'clearPreservesView', 'clearFavoritesOnlyDisabled', 'clearRestored']) assert.equal(h[key], true, key);
       continue;
     }
     if (result.format) {

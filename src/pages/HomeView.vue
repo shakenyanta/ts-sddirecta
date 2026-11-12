@@ -39,6 +39,34 @@ const selectedHistoryId = ref<string | null>(null);
 const historyBusy = computed(() => initializing.value || writing.value || closing.value);
 const historyStorageError = ref('');
 let historyStorageBlocked = false;
+const historyClearDialog = ref<HTMLDialogElement | null>(null);
+let historyClearIds = new Set<string>();
+
+function requestHistoryClear() {
+	const dialog = historyClearDialog.value;
+	if (disposed || closing.value || !dialog || dialog.open) return;
+	const ids = historyGroups.value[1].entries.map(entry => entry.id);
+	if (!ids.length) return;
+	historyClearIds = new Set(ids);
+	dialog.showModal();
+}
+
+function cancelHistoryClear() {
+	historyClearIds.clear();
+	historyClearDialog.value?.close();
+}
+
+function confirmHistoryClear() {
+	if (!historyClearDialog.value?.open) return;
+	if (disposed || closing.value) { cancelHistoryClear(); return; }
+	// Protect new drops and entries made favorite while confirmation is open.
+	const remaining = dropHistory.value.filter(entry => entry.favorite || !historyClearIds.has(entry.id));
+	cancelHistoryClear();
+	if (remaining.length === dropHistory.value.length) return;
+	dropHistory.value = remaining;
+	if (!remaining.some(entry => entry.id === selectedHistoryId.value)) selectedHistoryId.value = null;
+	saveDropHistory();
+}
 
 function restoreDropHistory() {
 	try {
@@ -606,6 +634,7 @@ async function initializeSource(paths?: string[], refreshDirectory?: string, pre
 }
 
 onUnmounted(() => {
+	cancelHistoryClear();
 	saveFolderState();
 	clearTimeout(folderSaveTimer);
 	window.removeEventListener('pagehide', saveFolderState);
@@ -1158,7 +1187,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 				<div id="panel_menu" class="panel_menu">
 					<div ref="menuContent" class="menu-content">
 						<SdMenu ref="sdMenu" :required-capacity="requiredSdCapacity" :can-write="canSdWrite" :can-read="canSdRead" :can-initialize="canSdRead" :busy="initializing || writing || closing || writeDialogOpen" :write-label="closing ? '終了待ち…' : writing ? `${statusLabel}…` : 'SD書込'"
-							@write="onSdWrite" @read="onSdRead" @initialize="onSdFfInitialize" @format="onSdFormat" @action="logButtonPress" @error="appendMessage" />
+							@write="onSdWrite" @read="onSdRead" @initialize="onSdFfInitialize" @format="onSdFormat" @action="logButtonPress" @error="appendMessage" @warning="text => appendMessage({ text, warning: true })" />
 					</div>
 				</div>
 				<div id="resizer1" class="resizer" @pointerdown="resize($event, 1)"></div>
@@ -1236,7 +1265,10 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 				</div>
 				<div v-show="activeOptionTab === 'history'" id="option-panel-history" class="option-tab-panel history-panel"
 					role="tabpanel" aria-labelledby="option-tab-history" tabindex="0">
-					<p id="history-hint" class="history-hint">パスをダブルクリック、または選択してEnterで再読込します。</p>
+					<div class="history-toolbar">
+						<p id="history-hint" class="history-hint">パスをダブルクリック、または選択してEnterで再読込します。</p>
+						<button type="button" class="history-clear" :disabled="closing || !historyGroups[1].entries.length" @click="requestHistoryClear">履歴をクリア</button>
+					</div>
 					<section v-for="group in historyGroups" :key="group.id" class="history-section" :class="`history-${group.id}`"
 						:aria-label="group.label">
 					<div class="history-list">
@@ -1284,6 +1316,16 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 			</section>
 		</div>
 	</div>
+	<dialog v-if="features.optionPanel" ref="historyClearDialog" class="history-clear-dialog" aria-labelledby="history-clear-title"
+		aria-describedby="history-clear-description" @cancel.prevent="cancelHistoryClear">
+		<h2 id="history-clear-title">履歴をクリア</h2>
+		<p>保護されていない履歴をすべて削除しますか？</p>
+		<p id="history-clear-description">お気に入りは残ります。元のファイルやフォルダーは削除されません。</p>
+		<div class="history-clear-actions">
+			<button type="button" autofocus @click="cancelHistoryClear">キャンセル</button>
+			<button type="button" class="history-clear-confirm" :disabled="closing" @click="confirmHistoryClear">削除する</button>
+		</div>
+	</dialog>
 	<dialog ref="writeDialog" class="write-dialog" aria-labelledby="write-title" @cancel.prevent="closeWriteDialog">
         <div class="write-dialog-content">
             <div class="write-header">
@@ -1451,6 +1493,17 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 	overflow: hidden;
 }
 .history-panel { display: flex; flex-direction: column; }
+.history-toolbar { display: flex; align-items: center; flex-shrink: 0; gap: 6px; padding-right: 6px; }
+.history-toolbar .history-hint { flex: 1; min-width: 0; }
+.history-clear { flex-shrink: 0; padding: 2px 6px; border: 1px solid #d7e5f5; border-radius: 3px; background: #fff; color: #52647c; font: 11px/18px 'Yu Gothic UI', Meiryo, sans-serif; cursor: pointer; }
+.history-clear:disabled { opacity: .5; cursor: default; }
+.history-clear-dialog { max-width: min(440px, calc(100vw - 32px)); padding: 16px; border: 1px solid #d7e5f5; border-radius: 7px; color: #26364d; font: 12px/1.6 'Yu Gothic UI', Meiryo, sans-serif; }
+.history-clear-dialog::backdrop { background: #0005; }
+.history-clear-dialog h2 { margin: 0 0 10px; font-size: 15px; }
+.history-clear-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.history-clear-actions button { padding: 4px 12px; border: 1px solid #d7e5f5; border-radius: 4px; background: #fff; font: inherit; cursor: pointer; }
+.history-clear-actions .history-clear-confirm { color: #a74444; border-color: #e5c4c4; }
+.history-clear:focus-visible, .history-clear-actions button:focus-visible { outline: 2px solid #2875d9; outline-offset: 1px; }
 .history-section { display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
 .history-favorites { flex: 0 1 auto; max-height: min(160px, 40%); border-bottom: 1px solid #d7e5f5; }
 .history-recent { flex: 1; }

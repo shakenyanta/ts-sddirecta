@@ -5,7 +5,7 @@ import { getName, getVersion } from '@tauri-apps/api/app';
 import { editionLabel } from '../editions';
 
 const props = defineProps<{ canWrite: boolean; canRead?: boolean; canInitialize?: boolean; busy?: boolean; writeLabel?: string; requiredCapacity?: number }>();
-const emit = defineEmits<{ write: [drive: string]; read: [drive: string]; initialize: [drive: string]; format: [drive: string]; action: [label: string]; error: [message: string] }>();
+const emit = defineEmits<{ write: [drive: string]; read: [drive: string]; initialize: [drive: string]; format: [drive: string]; action: [label: string]; error: [message: string]; warning: [message: string] }>();
 const actionsOpen = ref(false);
 const actionsContainer = ref<HTMLElement | null>(null);
 const actionsButton = ref<HTMLButtonElement | null>(null);
@@ -85,7 +85,7 @@ function onActionsFocusout(event: FocusEvent) {
 	if (!actionsContainer.value?.contains(event.relatedTarget as Node | null)) actionsOpen.value = false;
 }
 
-interface DriveInfo { drive: string; type: string; size: number; label?: string }
+interface DriveInfo { drive: string; type: string; size: number; label?: string; warning?: string }
 const drives = ref<DriveInfo[]>([]);
 const displayedDrives = computed(() => drives.value.map(drive => {
     const required = props.requiredCapacity ?? 0;
@@ -147,7 +147,13 @@ async function refreshDrives(preferredDrive?: string) {
 	try {
 		const result = await invoke<DriveInfo[]>('get_drives');
 		if (disposed || props.busy) return;
-		drives.value = result.filter(drive => drive.type === 'Removable');
+		const nextDrives = result.filter(drive => drive.type === 'Removable');
+		for (const drive of nextDrives) {
+			if (drive.size > 0 && drive.warning && !drives.value.some(previous => previous.size > 0 && previous.drive === drive.drive && previous.warning === drive.warning)) {
+				emit('warning', drive.warning);
+			}
+		}
+		drives.value = nextDrives;
 		if (preferredDrive && drives.value.some(drive => drive.drive === preferredDrive)) selectedDrive.value = preferredDrive;
 		backendStatus.value = 'running';
 		if (!drives.value.some(drive => drive.drive === selectedDrive.value)) {

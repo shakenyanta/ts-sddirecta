@@ -37,6 +37,56 @@ function menu(invoke) {
 
 const update = { status: 'available', current_version: '0.1.0', version: '0.2.0', notes: 'Changes' };
 
+test('SD detection warnings appear once per continuous state and return after recovery or removal', async () => {
+  const warning = '注意：G:でWindowsがボリューム長0を返しました。';
+  const card = { drive: 'G:', type: 'Removable', size: 7969177600, warning };
+  let drives = [card];
+  const ui = menu(command => command === 'get_drives' ? drives : undefined);
+  const warnings = () => ui.actions.filter(([event]) => event === 'warning');
+  await ui.refreshDrives();
+  assert.deepEqual(warnings(), [['warning', warning]]);
+  assert.equal(ui.canRequestWrite.value, true);
+  await ui.refreshDrives();
+  drives = [card, { drive: 'H:', type: 'Removable', size: 1024 }];
+  await ui.refreshDrives();
+  assert.equal(warnings().length, 1);
+  drives = [{ ...card, warning: undefined }];
+  await ui.refreshDrives();
+  drives = [card];
+  await ui.refreshDrives();
+  assert.equal(warnings().length, 2);
+  drives = [];
+  await ui.refreshDrives();
+  drives = [card, { drive: 'C:', type: 'Fixed', size: 1024, warning: '対象外' }];
+  await ui.refreshDrives();
+  assert.deepEqual(warnings(), Array.from({ length: 3 }, () => ['warning', warning]));
+  ui.props.busy = true;
+  await ui.refreshDrives();
+  assert.equal(warnings().length, 3);
+});
+
+test('empty SD readers do not warn, and insertion after a zero-capacity result warns once', async () => {
+  const card = { drive: 'G:', type: 'Removable', size: 0, warning: 'ボリューム長0の注意' };
+  let drives = [card];
+  const ui = menu(command => command === 'get_drives' ? drives : undefined);
+  const warnings = () => ui.actions.filter(([event]) => event === 'warning');
+  await ui.refreshDrives();
+  await ui.refreshDrives();
+  assert.deepEqual(warnings(), []);
+  assert.equal(ui.canRequestWrite.value, false);
+  drives = [{ ...card, size: 7969177600 }];
+  await ui.refreshDrives();
+  await ui.refreshDrives();
+  assert.deepEqual(warnings(), [['warning', card.warning]]);
+  assert.equal(ui.canRequestWrite.value, true);
+  drives = [card];
+  await ui.refreshDrives();
+  assert.equal(warnings().length, 1);
+  drives = [{ ...card, size: 7969177600 }];
+  await ui.refreshDrives();
+  assert.equal(warnings().length, 2);
+});
+
 test('capacity warning follows the CSV requirement and actual media capacity without blocking writes', async () => {
   let size = 128450560;
   const ui = menu(command => command === 'get_drives' ? [
