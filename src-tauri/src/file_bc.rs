@@ -79,7 +79,7 @@ fn parse(bytes: &[u8], warnings: &mut Vec<String>) -> HashMap<String, UpdateInfo
         warnings.push("FILE-BCの末尾に32バイト未満の不完全なレコードがあります".into());
     }
     for (index, chunk) in bytes.chunks_exact(32).enumerate() {
-        if chunk[2..4] != *b"FU" {
+        if chunk[..2] == [0xFF; 2] || chunk[2..4] != *b"FU" {
             continue;
         }
         if !chunk[..2].iter().all(u8::is_ascii_digit) {
@@ -171,6 +171,7 @@ pub fn for_files(
     }
     let mut records = HashMap::new();
     let mut parsed = false;
+    let mut has_unused_records = false;
     if bc.len() == 1 {
         let name = &bc[0];
         if !files.contains(name) {
@@ -180,6 +181,10 @@ pub fn for_files(
         } else {
             match fs::read(directory.join(name)) {
                 Ok(bytes) => {
+                    // Unused slots carry no update number. Do not infer corruption
+                    // from missing update numbers when the file has unused slots.
+                    has_unused_records = bytes.chunks_exact(32)
+                        .any(|chunk| chunk[..2] == [0xFF; 2]);
                     records = parse(&bytes, &mut result.warnings);
                     parsed = true;
                 }
@@ -195,7 +200,7 @@ pub fn for_files(
             .iter()
             .map(|no| {
                 records.get(*no).cloned().unwrap_or_else(|| {
-                    if parsed && missing.insert(*no) {
+                    if parsed && !has_unused_records && missing.insert(*no) {
                         result
                             .warnings
                             .push(format!("FILE-BCに更新No={no}の有効なレコードがありません"));
@@ -303,6 +308,48 @@ mod tests {
         for name in ["FILE-AA.001", "FILE-BA.001", "FILE-BC.001", "OTHER.001"] {
             assert!(result.files[name].is_empty());
         }
+    }
+
+    #[test]
+    fn unused_record_headers_suppress_missing_update_warnings_but_keep_invalid_data_warnings() {
+        let dir = setup();
+        for marker in [*b"FU", [0xFF; 2], *b"??"] {
+            let mut unused = vec![0; 32];
+            unused[..2].copy_from_slice(&[0xFF; 2]);
+            unused[2..4].copy_from_slice(&marker);
+            let mut bytes = record("03", "26010100", "00", "01");
+            bytes.extend(unused);
+            fs::write(dir.path().join("FILE-BC.001"), &bytes).unwrap();
+            let result = load(dir.path(), &["FILE-BC.001", "FILE-BO.001", "FILE-BS.001"]);
+            assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+            assert_eq!(result.files["FILE-BO.001"][0].update_ver, "260101_00");
+            let missing = &result.files["FILE-BS.001"][0];
+            assert_eq!(missing.update_no, "07");
+            assert!(missing.update_ver.is_empty());
+            assert!(missing.condition.is_empty());
+            assert!(missing.car_type.is_empty());
+
+            bytes.extend(record("03", "26010200", "00", "01"));
+            bytes.extend(record("04", "invalid!", "00", "01"));
+            bytes.extend(record("??", "26010100", "00", "01"));
+            bytes.push(0);
+            fs::write(dir.path().join("FILE-BC.001"), bytes).unwrap();
+            let result = load(dir.path(), &["FILE-BC.001", "FILE-BO.001", "FILE-BS.001"]);
+            for warning in ["重複", "更新Verが不正", "更新Noが不正", "不完全"] {
+                assert!(result.warnings.iter().any(|w| w.contains(warning)), "{warning}");
+            }
+            assert!(!result.warnings.iter().any(|w| w.contains("有効なレコードがありません")));
+        }
+        fs::write(dir.path().join("FILE-BC.001"), [0xFF; 64]).unwrap();
+        let result = load(dir.path(), &["FILE-BC.001", "FILE-BS.001"]);
+        assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+
+        // A partial FF tail is not a complete unused record.
+        let mut bytes = record("03", "26010100", "00", "01");
+        bytes.extend([0xFF; 31]);
+        fs::write(dir.path().join("FILE-BC.001"), bytes).unwrap();
+        let result = load(dir.path(), &["FILE-BC.001", "FILE-BS.001"]);
+        assert!(result.warnings.iter().any(|w| w.contains("更新No=07の有効なレコードがありません")));
     }
 
     #[test]

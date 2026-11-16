@@ -56,6 +56,7 @@ function view(invoke, clock = performance, DateClass = Date, storage, optionPane
       selectFolder, selectedFolder, folderNodes, visibleFolders, toggleFolder, pathList, saveFolderState, restoreFolderState, dropHistory, historyRows, historyGroups, historyStorageError,
       selectHistory, reopenHistory, selectedHistoryId, historyBusy, activeOptionTab, copyHistoryPath, toggleHistoryFavorite, deleteHistory,
       historyClearDialog, requestHistoryClear, cancelHistoryClear, confirmHistoryClear,
+      selectOptionTab, refreshOutputFiles, outputFiles, outputDirectory, outputError, outputLoading,
       sdDirectDictionary, sdloadingDictionary, sdAddressRange, requiredSdCapacity, matchedFiles, writeFiles, optionFiles, canSdWrite, allFileCount, initializing, messages, pathError,
       onSdWrite, onSdRead, onSdFfInitialize, onSdFormat, startSdFormat, formatPlan, formatLabel, formatSimpleTest, formatStep, formatLabelValid, writeStage, canSdRead, popupTitle, statusLabel, closeWriteDialog, copyWriteLog, openDiagnosticLog, failureDetails, writeDialogOpen, writeLog, writing, pendingPlan, progress, percent, currentRun, transientNotice, operationStatus, operationDetail };
   `)(...Object.values(bindings));
@@ -88,6 +89,107 @@ test('card capacity requirement uses the inclusive CSV end address and clears wi
 function panelContents(ui) {
   return ui.messages.value.map(({ text, warning }) => warning ? { text, warning } : text);
 }
+
+function outputMatch(files = ['FILE-BM.001']) {
+  return { files, file_metadata: { 'FILE-BM.001': { size: 512, modified_at: 2000 } },
+    individual_infos: { 'FILE-BM.001': { value: 'first', bm_parameter2: 'second' } },
+    file_updates: { files: { 'FILE-BM.001': [
+      { update_no: '01', update_ver: '123456_78', condition: '00', car_type: '01' },
+      { update_no: '02', update_ver: '234567_89', condition: '01', car_type: '02' },
+    ] }, warnings: [] }, warning_files: [], from_input: false, input_exists: false };
+}
+
+test('output tab uses exe/output and current CSV without replacing source or write targets', async () => {
+  const calls = [];
+  const ui = view(async (command, args) => {
+    calls.push([command, args]);
+    if (command === 'get_executable_directory') return 'C:\\app\\';
+    if (command === 'find_output_files') return outputMatch();
+    if (command === 'open_grid_file') return;
+    throw new Error(command);
+  });
+  ui.sourceDirectory.value = 'D:\\selected';
+  ui.sdDirectDictionary.value = utility('src/utils/sdDirectCsv.ts').parseSdDirectCsv('R,FILE-BM.001,0,1FF\nE').dictionary;
+  await ui.selectOptionTab('output');
+  assert.equal(ui.outputDirectory.value, 'C:\\app\\output');
+  assert.deepEqual(calls[1], ['find_output_files', { filenames: ['FILE-BM.001'] }]);
+  assert.deepEqual(ui.outputFiles.value.map(row => [row.individualInfo, row.updateNo, row.size, row.csvSize]),
+    [['first', '01', 512, 512], ['second', '02', 512, 512]]);
+  assert.equal(ui.sourceDirectory.value, 'D:\\selected');
+  assert.equal(ui.writeFiles.value.length, 0);
+  await ui.openGridFile('FILE-BM.001', true);
+  assert.deepEqual(calls.at(-1), ['open_grid_file', { directory: 'C:\\app\\output', filename: 'FILE-BM.001' }]);
+  await ui.openGridFile('unlisted', true);
+  assert.equal(calls.length, 3);
+});
+
+test('output reload clears missing files and errors, and only the latest request is displayed', async () => {
+  const pending = [];
+  const ui = view(async command => {
+    if (command === 'get_executable_directory') return 'C:\\app';
+    if (command === 'find_output_files') return new Promise((resolve, reject) => pending.push({ resolve, reject }));
+    throw new Error(command);
+  });
+  ui.sdDirectDictionary.value = utility('src/utils/sdDirectCsv.ts').parseSdDirectCsv('A,FILE-BM.001,0,1FF\nE').dictionary;
+  const first = ui.selectOptionTab('output');
+  await Promise.resolve(); await Promise.resolve();
+  const second = ui.selectOptionTab('output');
+  await Promise.resolve(); await Promise.resolve();
+  pending[1].resolve(outputMatch()); await second;
+  pending[0].resolve(outputMatch([])); await first;
+  assert.equal(ui.outputFiles.value.length, 2);
+  const failed = ui.refreshOutputFiles();
+  assert.equal(ui.outputFiles.value.length, 0);
+  await Promise.resolve(); await Promise.resolve();
+  pending[2].reject(new Error('access denied')); await failed;
+  assert.match(ui.outputError.value, /access denied/);
+  assert.equal(ui.outputLoading.value, false);
+  const missing = ui.refreshOutputFiles();
+  await Promise.resolve(); await Promise.resolve();
+  pending[3].resolve(outputMatch([])); await missing;
+  assert.equal(ui.outputError.value, '');
+  assert.equal(ui.outputFiles.value.length, 0);
+});
+
+test('lite, SD activity and disposed views do not read output', async () => {
+  const ui = view(async command => { throw new Error(`Unexpected: ${command}`); }, undefined, undefined, undefined, false);
+  await ui.selectOptionTab('output');
+  assert.equal(ui.outputError.value, '');
+  const pro = view(async command => { throw new Error(`Unexpected: ${command}`); });
+  pro.writing.value = true;
+  await pro.refreshOutputFiles();
+  assert.equal(pro.outputError.value, '');
+  pro.writing.value = false;
+  pro.unmount();
+  await pro.refreshOutputFiles();
+  assert.equal(pro.outputError.value, '');
+});
+
+test('output refreshes after F5 and successful or partially failed SD reads', async () => {
+  for (const fail of [false, true]) {
+    let scans = 0;
+    const ui = view(backend({
+      read_startup_csv: () => 'A,FILE-BM.001,0,1FF\nE',
+      find_output_files: () => { scans++; return outputMatch(); },
+      run_sd_read: args => {
+        if (fail) throw new Error('partial read');
+        return { run_id: args.runId, filename: '', index: 1, total: 1, completed: 1,
+          stage: 'done', processed_bytes: 512, total_bytes: 512, elapsed_ms: 10, file_ms: 10, error: null };
+      },
+    }));
+    await ui.mount();
+    await ui.selectOptionTab('output');
+    assert.equal(scans, 1);
+    ui.key('F5');
+    await until(() => scans === 2 && !ui.outputLoading.value);
+    assert.equal(ui.outputFiles.value.length, 2);
+    await ui.onSdRead('E:');
+    assert.equal(scans, 3);
+    assert.equal(ui.writeStage.value, fail ? 'failed' : 'done');
+    assert.equal(ui.outputFiles.value.length, 2);
+    ui.unmount();
+  }
+});
 
 test('option divider adjusts the width ratio, keeps both panels visible and stops on capture loss', () => {
   const ui = view(async () => {});
@@ -973,7 +1075,7 @@ test('grid filename selection persists on open, resets on refresh and respects b
     defineProps: () => props,
     defineEmits: () => (...args) => events.push(args),
     onMounted: () => {},
-    watch: (_get, fn) => { refresh = fn; },
+    watch: (get, fn) => { if (get() === props.files) refresh = fn; },
   };
   const grid = new Function(...Object.keys(bindings), transpile(source) + '\nreturn { selectFile, openFile, selectedRow };')(...Object.values(bindings));
   grid.selectFile(1);

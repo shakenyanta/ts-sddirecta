@@ -518,6 +518,27 @@ fn find_dictionary_files(
     } else {
         directory
     };
+    Ok(collect_matched_files(&matched_directory, files, warning_files, from_input, input_exists))
+}
+
+#[tauri::command(async)]
+fn find_output_files(filenames: Vec<String>) -> Result<MatchedFiles, String> {
+    if edition::current().edition != edition::Edition::Pro {
+        return Err("outputタブはプロ版専用です".into());
+    }
+    let directory = sd_read_batch::output_directory()?;
+    let (files, warnings) = matching_files::find_direct_matches(&directory, filenames)
+        .map_err(|e| format!("outputを確認できません: {e}"))?;
+    Ok(collect_matched_files(&directory, files, warnings, false, false))
+}
+
+fn collect_matched_files(
+    matched_directory: &std::path::Path,
+    files: Vec<String>,
+    warning_files: Vec<String>,
+    from_input: bool,
+    input_exists: bool,
+) -> MatchedFiles {
     let file_metadata = files
         .iter()
         .map(|filename| {
@@ -528,10 +549,10 @@ fn find_dictionary_files(
         })
         .collect();
     let individual_infos = individual_info::for_files(
-        &matched_directory, &files, edition::current().edition,
+        matched_directory, &files, edition::current().edition,
     );
-    let file_updates = file_bc::for_files(&matched_directory, &files, edition::current().edition);
-    Ok(MatchedFiles {
+    let file_updates = file_bc::for_files(matched_directory, &files, edition::current().edition);
+    MatchedFiles {
         files,
         file_metadata,
         individual_infos,
@@ -539,7 +560,7 @@ fn find_dictionary_files(
         warning_files,
         from_input,
         input_exists,
-    })
+    }
 }
 
 #[tauri::command]
@@ -656,6 +677,7 @@ pub fn run() {
             check_startup_csv,
             read_startup_csv,
             find_dictionary_files,
+            find_output_files,
             get_drives,
             sd_admin_status,
             open_folder,

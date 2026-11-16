@@ -25,6 +25,7 @@ const baseWidthRatio = ref(1 / 3);
 const optionTabs = [
     { id: 'files', label: 'ファイル情報' },
     { id: 'history', label: '履歴' },
+    { id: 'output', label: 'output' },
 ] as const;
 const activeOptionTab = ref<typeof optionTabs[number]['id']>('files');
 
@@ -147,7 +148,7 @@ function navigateOptionTab(event: KeyboardEvent, index: number) {
         default: return;
     }
     event.preventDefault();
-    activeOptionTab.value = optionTabs[nextIndex].id;
+    void selectOptionTab(optionTabs[nextIndex].id);
     document.getElementById(`option-tab-${activeOptionTab.value}`)?.focus();
 }
 
@@ -220,18 +221,21 @@ const allFileCount = computed(() => writeFiles.value.length);
 interface UpdateInfo { update_no: string; update_ver: string; condition: string; car_type: string }
 interface FileUpdates { files: Record<string, UpdateInfo[]>; warnings: string[] }
 const fileUpdates = ref<FileUpdates>({ files: {}, warnings: [] });
-const optionFiles = computed(() => writeFiles.value.flatMap(file => {
-    const updates = fileUpdates.value.files[file.filename];
-    if (!updates?.length) return [file];
-    return updates.map(update => ({ ...file,
-        individualInfo: update.update_no === '02'
-            ? fileIndividualInfos.value.get(file.filename)?.bm_parameter2 ?? '' : file.individualInfo,
-        description: update.update_no === '01' ? 'パラメータ1'
-            : update.update_no === '02' ? 'パラメータ2' : file.description,
-        updateNo: update.update_no, updateVer: update.update_ver,
-        condition: update.condition, carType: update.car_type,
-    }));
-}));
+function expandOptionFiles(files: typeof writeFiles.value, infos: Map<string, FileIndividualInfo>, updatesByFile: FileUpdates) {
+    return files.flatMap(file => {
+        const updates = updatesByFile.files[file.filename];
+        if (!updates?.length) return [file];
+        return updates.map(update => ({ ...file,
+            individualInfo: update.update_no === '02'
+                ? infos.get(file.filename)?.bm_parameter2 ?? '' : file.individualInfo,
+            description: update.update_no === '01' ? 'パラメータ1'
+                : update.update_no === '02' ? 'パラメータ2' : file.description,
+            updateNo: update.update_no, updateVer: update.update_ver,
+            condition: update.condition, carType: update.car_type,
+        }));
+    });
+}
+const optionFiles = computed(() => expandOptionFiles(writeFiles.value, fileIndividualInfos.value, fileUpdates.value));
 let unlistenDrop: UnlistenFn | undefined;
 let generation = 0;
 let ready = false;
@@ -254,6 +258,67 @@ const fileMetadata = ref(new Map<string, FileMetadata>());
 interface FileIndividualInfo { value: string; bm_parameter2: string }
 const fileIndividualInfos = ref(new Map<string, FileIndividualInfo>());
 const warningFiles = ref<string[]>([]);
+
+interface MatchedFileResult {
+    files: string[];
+    file_metadata: Record<string, FileMetadata>;
+    individual_infos: Record<string, FileIndividualInfo>;
+    file_updates: FileUpdates;
+    warning_files: string[];
+    from_input: boolean;
+    input_exists: boolean;
+}
+const outputResult = ref<MatchedFileResult | null>(null);
+const outputDirectory = ref('');
+const outputLoading = ref(false);
+const outputError = ref('');
+let outputRequest = 0;
+const outputFiles = computed(() => {
+    const result = outputResult.value;
+    if (!result) return [];
+    const files = result.files.flatMap(filename => {
+        const area = sdDirectDictionary.value.get(filename);
+        if (!area || area.accessFlag === 'E') return [];
+        return [{ filename, description: area.description,
+            individualInfo: result.individual_infos[filename]?.value ?? '',
+            modifiedAt: result.file_metadata[filename]?.modified_at ?? null,
+            size: result.file_metadata[filename]?.size ?? null,
+            csvSize: Number.parseInt(area.endAddress, 16) - Number.parseInt(area.startAddress, 16) + 1 }];
+    });
+    return expandOptionFiles(files, new Map(Object.entries(result.individual_infos)), result.file_updates);
+});
+
+async function selectOptionTab(id: typeof optionTabs[number]['id']) {
+    activeOptionTab.value = id;
+    if (id === 'output') await refreshOutputFiles();
+}
+
+async function refreshOutputFiles() {
+    if (!features.value.optionPanel || disposed || initializing.value || writing.value || closing.value) return;
+    const request = ++outputRequest;
+    const current = generation;
+    const active = () => !disposed && request === outputRequest && current === generation;
+    outputResult.value = null;
+    outputError.value = '';
+    outputLoading.value = true;
+    try {
+        const directory = await invoke<string>('get_executable_directory');
+        if (!active()) return;
+        outputDirectory.value = `${directory.replace(/[\\/]+$/, '')}\\output`;
+        const result = await invoke<MatchedFileResult>('find_output_files', { filenames: [...sdDirectDictionary.value.keys()] });
+        if (!active()) return;
+        outputResult.value = result;
+        const warnings = [...result.warning_files.map(name => `拡張子エラー：${name}`), ...result.file_updates.warnings];
+        if (warnings.length) await appendMessage(...warnings.map(text => ({ text: `output：${text}`, warning: true as const })));
+    } catch (error) {
+        if (!active()) return;
+        outputError.value = `output読込失敗: ${String(error)}`;
+        await appendMessage({ text: outputError.value, warning: true });
+    } finally {
+        if (request === outputRequest) outputLoading.value = false;
+    }
+}
+
 const canSdWrite = computed(() => !initializing.value && !writing.value && !closing.value && allFileCount.value > 0);
 const canSdRead = computed(() => !initializing.value && !writing.value && !closing.value && sdDirectDictionary.value.size > 0);
 let matchingGeneration: number | undefined;
@@ -557,6 +622,10 @@ async function initializeSource(paths?: string[], refreshDirectory?: string, pre
 	const current = ++generation;
 	const active = () => !disposed && current === generation;
 	initializing.value = true;
+	outputRequest++;
+	outputLoading.value = false;
+	outputResult.value = null;
+	outputError.value = '';
 	if (!preserveTree) {
 		resetFolderTree('');
 	}
@@ -624,6 +693,7 @@ async function initializeSource(paths?: string[], refreshDirectory?: string, pre
 		if (active()) {
 			if (!preserveTree && displayedDirectory.value) resetFolderTree(displayedDirectory.value);
 			initializing.value = false;
+			if (activeOptionTab.value === 'output') await refreshOutputFiles();
 			if (!preserveTree) {
 				await nextTick();
 				if (active() && pathList.value) pathList.value.scrollTop = pathList.value.scrollHeight;
@@ -658,7 +728,7 @@ async function refreshMatchedFiles(report = false) {
 	if (matchingGeneration === current || disposed || !ready) return;
 	matchingGeneration = current;
 	try {
-		const result = await invoke<{ files: string[]; file_metadata: Record<string, FileMetadata>; individual_infos: Record<string, FileIndividualInfo>; file_updates: FileUpdates; warning_files: string[]; from_input: boolean; input_exists: boolean }>('find_dictionary_files', {
+		const result = await invoke<MatchedFileResult>('find_dictionary_files', {
 			filenames: [...sdDirectDictionary.value.keys()],
 			directory: sourceDirectory.value,
 		});
@@ -862,6 +932,7 @@ async function onSdRead(drive: string) {
         writing.value = false;
         operationStatus.value = null;
         transientNotice.value = '';
+        if (activeOptionTab.value === 'output') await refreshOutputFiles();
     }
 }
 
@@ -1096,11 +1167,12 @@ function onFolderDoubleClick(path: string, event: MouseEvent) {
 }
 
 const openingFile = ref(false);
-async function openGridFile(filename: string) {
-    if (openingFile.value || initializing.value || writing.value || closing.value || !displayedDirectory.value) return;
-    if (!optionFiles.value.some(file => file.filename === filename)) return;
+async function openGridFile(filename: string, output = false) {
+    const directory = output ? outputDirectory.value : displayedDirectory.value;
+    const files = output ? outputFiles.value : optionFiles.value;
+    if (openingFile.value || initializing.value || writing.value || closing.value || (output && outputLoading.value) || !directory) return;
+    if (!files.some(file => file.filename === filename)) return;
     openingFile.value = true;
-    const directory = displayedDirectory.value;
     try {
         await invoke('open_grid_file', { directory, filename });
     } catch (error) {
@@ -1257,12 +1329,19 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 					<button v-for="(tab, index) in optionTabs" :id="`option-tab-${tab.id}`" :key="tab.id"
 						type="button" role="tab" :aria-selected="activeOptionTab === tab.id"
 						:aria-controls="`option-panel-${tab.id}`" :tabindex="activeOptionTab === tab.id ? 0 : -1"
-						@click="activeOptionTab = tab.id" @keydown="navigateOptionTab($event, index)">{{ tab.label }}</button>
+						@click="selectOptionTab(tab.id)" @keydown="navigateOptionTab($event, index)">{{ tab.label }}</button>
 				</div>
 				<div v-show="activeOptionTab === 'files'" id="option-panel-files" class="option-tab-panel"
 					role="tabpanel" aria-labelledby="option-tab-files" tabindex="0">
 					<OptionGrid :directory="displayedDirectory" :files="optionFiles" :disabled="initializing || writing || closing" @open-file="openGridFile" />
 				</div>
+                <div v-show="activeOptionTab === 'output'" id="option-panel-output" class="option-tab-panel output-panel"
+                    role="tabpanel" aria-labelledby="option-tab-output" tabindex="0" :aria-busy="outputLoading">
+                    <p v-if="outputLoading" class="output-status" role="status">outputを読み込んでいます…</p>
+                    <p v-else-if="outputError" class="output-status" role="alert">{{ outputError }}</p>
+                    <p v-else-if="!outputFiles.length" class="output-status" role="status">outputにCSVと一致するファイルがありません。全エリアSD読込後に表示されます。</p>
+                    <OptionGrid :directory="outputDirectory" :files="outputFiles" :disabled="initializing || writing || closing || outputLoading" @open-file="openGridFile($event, true)" />
+                </div>
 				<div v-show="activeOptionTab === 'history'" id="option-panel-history" class="option-tab-panel history-panel"
 					role="tabpanel" aria-labelledby="option-tab-history" tabindex="0">
 					<div class="history-toolbar">
@@ -1492,6 +1571,9 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 	min-height: 0;
 	overflow: hidden;
 }
+.output-panel { display: flex; flex-direction: column; }
+.output-panel :deep(.option-grid) { flex: 1; min-height: 0; height: auto; }
+.output-status { flex-shrink: 0; margin: 4px 6px; color: #52647c; font-size: 12px; }
 .history-panel { display: flex; flex-direction: column; }
 .history-toolbar { display: flex; align-items: center; flex-shrink: 0; gap: 6px; padding-right: 6px; }
 .history-toolbar .history-hint { flex: 1; min-width: 0; }

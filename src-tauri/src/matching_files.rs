@@ -61,6 +61,19 @@ fn matching_names(
     Ok((matches, warnings))
 }
 
+/// Match only immediate files, without the input fallback used for write sources.
+pub fn find_direct_matches(
+    directory: &Path,
+    filenames: Vec<String>,
+) -> io::Result<(Vec<String>, Vec<String>)> {
+    let keys: HashSet<String> = filenames.into_iter().collect();
+    let stems = keys.iter().filter_map(|name| Path::new(name).file_stem()?.to_str()).collect();
+    match matching_names(directory, &keys, &stems) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok((Vec::new(), Vec::new())),
+        result => result,
+    }
+}
+
 /// Search only immediate files; input is a fallback when the selected folder has no matches.
 pub fn find_matches(
     directory: &Path,
@@ -134,6 +147,25 @@ mod tests {
 
     fn keys() -> Vec<String> {
         vec!["FILE-AA.001".into(), "FILE-AB.001".into()]
+    }
+
+    #[test]
+    fn output_matching_is_direct_only_and_missing_directory_is_empty() {
+        let dir = TestDirectory::new();
+        let output = dir.0.join("output");
+        assert_eq!(find_direct_matches(&output, keys()).unwrap(), (vec![], vec![]));
+        fs::create_dir_all(output.join("input")).unwrap();
+        fs::write(output.join("input/FILE-AA.001"), b"nested").unwrap();
+        fs::write(output.join("FILE-AA.BAK"), b"wrong extension").unwrap();
+        fs::create_dir(output.join("FILE-AB.001")).unwrap();
+        assert_eq!(find_direct_matches(&output, keys()).unwrap(), (vec![], vec!["FILE-AA.BAK".into()]));
+        fs::write(output.join("FILE-AA.001"), b"direct").unwrap();
+        fs::write(output.join("unrelated.txt"), b"ignored").unwrap();
+        assert_eq!(find_direct_matches(&output, keys()).unwrap(),
+            (vec!["FILE-AA.001".into()], vec!["FILE-AA.BAK".into()]));
+        let file = dir.0.join("not-a-folder");
+        fs::write(&file, b"file").unwrap();
+        assert!(find_direct_matches(&file, keys()).is_err());
     }
 
     #[test]
