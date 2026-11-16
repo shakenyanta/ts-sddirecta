@@ -7,7 +7,7 @@ import { formatByteCount } from '../utils/sdWrite';
 const props = defineProps<{ files: {
     filename: string; description: string; individualInfo: string; modifiedAt?: number | null; size?: number | null; csvSize?: number;
     updateNo?: string; updateVer?: string; condition?: string; carType?: string;
-}[]; directory: string; disabled?: boolean }>();
+}[]; directory: string; disabled?: boolean; variant?: 'files' | 'output' }>();
 const emit = defineEmits<{ openFile: [filename: string] }>();
 const selectedRow = ref<number | null>(null);
 watch(() => props.files, () => { selectedRow.value = null; });
@@ -118,10 +118,14 @@ const columns = computed(() => [
     { label: 'ファイル名', width: filenameWidth.value },
     { label: '説明' },
     { label: '個別情報', width: 168 },
-    { label: '更新No', width: 48 },
-    { label: '更新Ver', width: 68 },
-    { label: '条件', width: 30 },
-    { label: '車種', width: 40 },
+    ...(props.variant === 'output' ? [
+        { label: '詳細', width: 186 },
+    ] : [
+        { label: '更新No', width: 48 },
+        { label: '更新Ver', width: 68 },
+        { label: '条件', width: 30 },
+        { label: '車種', width: 40 },
+    ]),
 ].map((column, index) => ({ ...column, width: resizedWidths.value?.[index] ?? column.width })));
 // 説明列に最低80pxを残し、収まらない場合は横スクロールする。
 const tableMinWidth = computed(() => Math.max(520,

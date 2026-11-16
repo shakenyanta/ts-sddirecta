@@ -1340,7 +1340,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
                     <p v-if="outputLoading" class="output-status" role="status">outputを読み込んでいます…</p>
                     <p v-else-if="outputError" class="output-status" role="alert">{{ outputError }}</p>
                     <p v-else-if="!outputFiles.length" class="output-status" role="status">outputにCSVと一致するファイルがありません。全エリアSD読込後に表示されます。</p>
-                    <OptionGrid :directory="outputDirectory" :files="outputFiles" :disabled="initializing || writing || closing || outputLoading" @open-file="openGridFile($event, true)" />
+                    <OptionGrid variant="output" :directory="outputDirectory" :files="outputFiles" :disabled="initializing || writing || closing || outputLoading" @open-file="openGridFile($event, true)" />
                 </div>
 				<div v-show="activeOptionTab === 'history'" id="option-panel-history" class="option-tab-panel history-panel"
 					role="tabpanel" aria-labelledby="option-tab-history" tabindex="0">
