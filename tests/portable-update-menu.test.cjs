@@ -38,7 +38,7 @@ function menu(invoke) {
 const update = { status: 'available', current_version: '0.1.0', version: '0.2.0', notes: 'Changes' };
 
 test('SD detection warnings appear once per continuous state and return after recovery or removal', async () => {
-  const warning = '注意：G:でWindowsがボリューム長0を返しました。';
+  const warning = '注意：G:Windowsがボリューム長0を返しました。';
   const card = { drive: 'G:', type: 'Removable', size: 7969177600, warning };
   let drives = [card];
   const ui = menu(command => command === 'get_drives' ? drives : undefined);

@@ -77,7 +77,7 @@ pub fn list_drives() -> Result<Vec<DriveInfo>, String> {
                 let disk = mapping.disk;
                 if mapping.length == 0 {
                     warning = Some(format!(
-                        "注意：{drive}（物理ディスク{disk}）でWindowsがボリューム長0を返しました。これはSDの実容量0を意味しません。容量は物理ディスクから別途確認します。"
+                        "注意：{drive}Windowsがボリューム長0を返しました。"
                     ));
                 }
                 crate::diagnostics::poll_note(format!(
