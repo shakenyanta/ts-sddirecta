@@ -9,7 +9,7 @@ function transpile(source) {
 
 function utility(path) {
   const exports = {};
-  new Function('exports', transpile(readFileSync(path, 'utf8')))(exports);
+  new Function('require', 'exports', transpile(readFileSync(path, 'utf8')))(require, exports);
   return exports;
 }
 
@@ -1072,6 +1072,7 @@ test('grid filename selection persists on open, resets on refresh and respects b
   let refresh;
   const bindings = {
     ...require('vue'),
+    useGridColumnResize: utility('src/utils/gridColumnResize.ts').useGridColumnResize,
     defineProps: () => props,
     defineEmits: () => (...args) => events.push(args),
     onMounted: () => {},
@@ -1100,7 +1101,7 @@ test('grid renders escaped descriptions, tooltips and more than 23 matching file
   const { descriptor } = parse(readFileSync('src/components/OptionGrid.vue', 'utf8'));
   const script = compileScript(descriptor, { id: 'grid-test', inlineTemplate: true });
   const exports = {};
-  new Function('require', 'exports', transpile(script.content))(name => name === '../utils/fileTimestamp' ? utility('src/utils/fileTimestamp.ts') : name === '../utils/sdWrite' ? utility('src/utils/sdWrite.ts') : require(name), exports);
+  new Function('require', 'exports', transpile(script.content))(name => name === '../utils/gridColumnResize' ? utility('src/utils/gridColumnResize.ts') : name === '../utils/fileTimestamp' ? utility('src/utils/fileTimestamp.ts') : name === '../utils/sdWrite' ? utility('src/utils/sdWrite.ts') : require(name), exports);
   const files = Array.from({ length: 24 }, (_, i) => ({
     filename: `FILE-${i}.001`, individualInfo: i === 23 ? '260122_00 ABCD' : '', modifiedAt: null, size: i === 23 ? 1234 : i === 0 ? 0 : i === 2 ? 512 : i === 3 ? 1024 : null, csvSize: i === 23 || i === 3 ? 512 : i === 0 ? 0 : 512, description: i === 23 ? '日本語 <説明>' : '',
   }));
@@ -1186,7 +1187,7 @@ test('grid renders update number, version, condition and car type in separate ce
   const { descriptor } = parse(readFileSync('src/components/OptionGrid.vue', 'utf8'));
   const script = compileScript(descriptor, { id: 'update-grid-test', inlineTemplate: true });
   const exports = {};
-  new Function('require', 'exports', transpile(script.content))(name => name === '../utils/fileTimestamp' ? utility('src/utils/fileTimestamp.ts') : name === '../utils/sdWrite' ? utility('src/utils/sdWrite.ts') : require(name), exports);
+  new Function('require', 'exports', transpile(script.content))(name => name === '../utils/gridColumnResize' ? utility('src/utils/gridColumnResize.ts') : name === '../utils/fileTimestamp' ? utility('src/utils/fileTimestamp.ts') : name === '../utils/sdWrite' ? utility('src/utils/sdWrite.ts') : require(name), exports);
   const html = (await renderToString(createSSRApp(exports.default, { files: [{ filename: 'FILE-BM.003', description: 'パラメータ2', individualInfo: '', updateNo: '02', updateVer: '230112_00', condition: '00', carType: '01' }] }))).replace(/<!--[\s\S]*?-->/g, '');
   const cells = [...html.matchAll(/<td\b[^>]*>(.*?)<\/td>/g)].map(match => match[1]);
   assert.deepEqual(cells, ['1', 'FILE-BM.003', 'パラメータ2', '', '02', '230112_00', '00', '01']);

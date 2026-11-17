@@ -1167,6 +1167,21 @@ function onFolderDoubleClick(path: string, event: MouseEvent) {
 }
 
 const openingFile = ref(false);
+const openingDailyReport = ref(false);
+async function openDailyReport(filename: string) {
+    if (!features.value.optionPanel || openingDailyReport.value || initializing.value || writing.value
+        || closing.value || outputLoading.value) return;
+    if (!outputFiles.value.some(file => file.filename === filename && file.description === '自動日報2データ')) return;
+    openingDailyReport.value = true;
+    logButtonPress('日報解析');
+    try {
+        await invoke('open_daily_report', { filename });
+    } catch (error) {
+        await appendMessage({ text: `日報解析を開けませんでした: ${filename}: ${String(error)}`, warning: true });
+    } finally {
+        openingDailyReport.value = false;
+    }
+}
 async function openGridFile(filename: string, output = false) {
     const directory = output ? outputDirectory.value : displayedDirectory.value;
     const files = output ? outputFiles.value : optionFiles.value;
@@ -1340,7 +1355,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
                     <p v-if="outputLoading" class="output-status" role="status">outputを読み込んでいます…</p>
                     <p v-else-if="outputError" class="output-status" role="alert">{{ outputError }}</p>
                     <p v-else-if="!outputFiles.length" class="output-status" role="status">outputにCSVと一致するファイルがありません。全エリアSD読込後に表示されます。</p>
-                    <OptionGrid variant="output" :directory="outputDirectory" :files="outputFiles" :disabled="initializing || writing || closing || outputLoading" @open-file="openGridFile($event, true)" />
+                    <OptionGrid variant="output" :directory="outputDirectory" :files="outputFiles" :disabled="initializing || writing || closing || outputLoading || openingDailyReport" @open-file="openGridFile($event, true)" @analyze-daily-report="openDailyReport" />
                 </div>
 				<div v-show="activeOptionTab === 'history'" id="option-panel-history" class="option-tab-panel history-panel"
 					role="tabpanel" aria-labelledby="option-tab-history" tabindex="0">

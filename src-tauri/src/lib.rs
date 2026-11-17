@@ -5,6 +5,7 @@ fn greet(name: &str) -> String {
 }
 
 mod diagnostics;
+mod daily_report;
 mod edition;
 mod file_bc;
 mod individual_info;
@@ -251,6 +252,63 @@ async fn open_grid_file(directory: String, filename: String) -> Result<(), Strin
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn open_daily_report(filename: String, app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    daily_report::require_pro(edition::current().edition)?;
+    if EXIT_WAITING.load(Ordering::SeqCst) || WRITE_RUNNING.load(Ordering::SeqCst) || sd_worker::is_busy() {
+        return Err("SD処理中または終了処理中です".into());
+    }
+    let checked_filename = filename.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        source_directory::file_to_open(
+            sd_read_batch::output_directory()?.to_string_lossy().into_owned(),
+            &checked_filename,
+        )
+    }).await.map_err(|e| e.to_string())??;
+    let label = format!("daily-report-{}", filename.as_bytes().iter()
+        .map(|byte| format!("{byte:02x}")).collect::<String>());
+    if let Some(window) = app.get_webview_window(&label) {
+        window.unminimize().map_err(|e| e.to_string())?;
+        return window.set_focus().map_err(|e| e.to_string());
+    }
+    let mut query = tauri::Url::parse("http://localhost/").map_err(|e| e.to_string())?;
+    query.query_pairs_mut().append_pair("filename", &filename);
+    let url = format!("index.html#/daily-report?{}", query.query().unwrap_or_default());
+    let mut builder = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url.into()))
+        .title(format!("日報解析 - {filename}"))
+        .inner_size(758.0, 810.0)
+        .resizable(true)
+        .visible(false);
+    if let Some(main) = app.get_webview_window("main") {
+        builder = builder.parent(&main).map_err(|e| e.to_string())?;
+    }
+    let window = builder.build().map_err(|e| e.to_string())?;
+    if let Err(error) = window_layout::fit_startup_window(&window) {
+        diagnostics::record("WARN", &format!("daily report window layout failed: {error}"));
+        window.maximize().map_err(|e| e.to_string())?;
+    }
+    window.show().map_err(|e| e.to_string())?;
+    diagnostics::record("INFO", &format!("daily report window opened filename={filename:?}"));
+    Ok(())
+}
+
+#[tauri::command]
+async fn read_daily_report(filename: String) -> Result<Vec<u8>, String> {
+    daily_report::require_pro(edition::current().edition)?;
+    if EXIT_WAITING.load(Ordering::SeqCst) || WRITE_RUNNING.load(Ordering::SeqCst) || sd_worker::is_busy() {
+        return Err("SD処理中または終了処理中です".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = daily_report::read(&sd_read_batch::output_directory()?, &filename);
+        match &result {
+            Ok(bytes) => diagnostics::record("INFO", &format!("daily report read filename={filename:?} bytes={}", bytes.len())),
+            Err(error) => diagnostics::record("WARN", &format!("daily report read failed filename={filename:?} error={error}")),
+        }
+        result
+    }).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -682,6 +740,8 @@ pub fn run() {
             sd_admin_status,
             open_folder,
             open_grid_file,
+            open_daily_report,
+            read_daily_report,
             open_diagnostic_log,
             open_sd_output,
             prepare_sd_write,
@@ -698,6 +758,18 @@ pub fn run() {
             sd_verify_fill
         ])
         .on_window_event(|window, event| {
+            // Closing an analysis window must never initiate the main SD worker shutdown.
+            if window.label() != "main" {
+                return;
+            }
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                use tauri::Manager;
+                for (label, child) in window.app_handle().webview_windows() {
+                    if label.starts_with("daily-report-") {
+                        let _ = child.destroy();
+                    }
+                }
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 use tauri::Emitter;
                 if EXIT_READY.load(Ordering::SeqCst) {

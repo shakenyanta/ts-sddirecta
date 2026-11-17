@@ -3,12 +3,13 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, watchEffect
 import { invoke } from '@tauri-apps/api/core';
 import { formatFileTimestamp } from '../utils/fileTimestamp';
 import { formatByteCount } from '../utils/sdWrite';
+import { useGridColumnResize } from '../utils/gridColumnResize';
 
 const props = defineProps<{ files: {
     filename: string; description: string; individualInfo: string; modifiedAt?: number | null; size?: number | null; csvSize?: number;
     updateNo?: string; updateVer?: string; condition?: string; carType?: string;
 }[]; directory: string; disabled?: boolean; variant?: 'files' | 'output' }>();
-const emit = defineEmits<{ openFile: [filename: string] }>();
+const emit = defineEmits<{ openFile: [filename: string]; analyzeDailyReport: [filename: string] }>();
 const selectedRow = ref<number | null>(null);
 watch(() => props.files, () => { selectedRow.value = null; });
 
@@ -66,37 +67,7 @@ function openFile(index: number) {
 }
 const grid = ref<HTMLElement | null>(null);
 const filenameWidth = ref(68);
-const resizedWidths = ref<number[] | null>(null);
-const resizing = ref(false);
-let resizeState: { index: number; pointerId: number; startX: number; startWidth: number } | null = null;
-
-function startResize(event: PointerEvent, index: number) {
-    if (event.button !== 0 || resizeState) return;
-    const handle = event.currentTarget as HTMLElement;
-    const header = handle.closest('tr');
-    if (!header) return;
-    // 自動配分されていた説明列も実際の幅で固定し、ほかの列の幅を保つ。
-    const widths = Array.from(header.cells, cell => cell.getBoundingClientRect().width);
-    resizedWidths.value = widths;
-    resizeState = { index, pointerId: event.pointerId, startX: event.clientX, startWidth: widths[index] };
-    resizing.value = true;
-    handle.setPointerCapture(event.pointerId);
-    event.preventDefault();
-}
-
-function resizeColumn(event: PointerEvent) {
-    if (!resizeState || event.pointerId !== resizeState.pointerId || !resizedWidths.value) return;
-    resizedWidths.value[resizeState.index] = Math.max(24,
-        resizeState.startWidth + event.clientX - resizeState.startX);
-}
-
-function stopResize(event: PointerEvent) {
-    if (!resizeState || event.pointerId !== resizeState.pointerId) return;
-    resizeState = null;
-    resizing.value = false;
-    const handle = event.currentTarget as HTMLElement;
-    if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
-}
+const { resizedWidths, resizing, startResize, resizeColumn, stopResize } = useGridColumnResize();
 
 onMounted(() => {
     const context = document.createElement('canvas').getContext('2d');
@@ -173,6 +144,11 @@ const backgroundColumns = computed(() => columns.value
                         <template v-else-if="column.label === 'ファイル名'">{{ file.filename }}</template>
                         <template v-else-if="column.label === '説明'">{{ file.description }}</template>
                         <template v-else-if="column.label === '個別情報'">{{ file.individualInfo }}</template>
+                        <template v-else-if="column.label === '詳細'">
+                            <button v-if="file.description === '自動日報2データ'" type="button"
+                                class="daily-report-button" :disabled="disabled"
+                                @click.stop="!disabled && emit('analyzeDailyReport', file.filename)">日報解析</button>
+                        </template>
                         <template v-else-if="column.label === '更新No'">{{ file.updateNo }}</template>
                         <template v-else-if="column.label === '更新Ver'">{{ file.updateVer }}</template>
                         <template v-else-if="column.label === '条件'">{{ file.condition }}</template>
@@ -197,6 +173,8 @@ const backgroundColumns = computed(() => columns.value
     </Teleport>
 </template>
 
+<style scoped src="../styles/fileGrid.css"></style>
+
 <style scoped>
 .im-preview {
     position: fixed;
@@ -213,96 +191,21 @@ const backgroundColumns = computed(() => columns.value
 }
 .im-preview canvas { display: block; max-width: 100%; height: auto; }
 
-.option-grid {
-    --grid-row-height: 18px;
-    width: 100%;
-    height: 100%;
-    padding: 0 3px 3px 0;
-    background: #fff;
-    color: #334155;
-    font: 11px/16px 'Yu Gothic UI', Meiryo, sans-serif;
-}
-.grid-scroll {
-    width: 100%;
-    height: 100%;
-    overflow: auto;
-    scrollbar-width: thin;
-    border: 1px solid #dce2eb;
-    border-radius: 4px;
-    border-top-left-radius: 0;
-}
-.grid-content {
-    display: flex;
-    flex-direction: column;
-    min-height: 100%;
-}
-.grid-background {
-    /* 空行は作らず、残りの高さだけを罫線・縞模様で埋める。 */
-    display: grid;
-    flex: 1;
-    --first-row-color: #fff;
-    --second-row-color: #f5f9fe;
-    background: repeating-linear-gradient(to bottom,
-        var(--first-row-color) 0 calc(var(--grid-row-height) - 1px),
-        #e8edf4 calc(var(--grid-row-height) - 1px) var(--grid-row-height),
-        var(--second-row-color) var(--grid-row-height) calc(2 * var(--grid-row-height) - 1px),
-        #e8edf4 calc(2 * var(--grid-row-height) - 1px) calc(2 * var(--grid-row-height)));
-}
-.grid-background.starts-even {
-    --first-row-color: #f5f9fe;
-    --second-row-color: #fff;
-}
-.grid-background > div:not(:last-child) { border-right: 1px solid #edf1f6; }
-table {
-    flex-shrink: 0;
-    width: 100%;
-    table-layout: fixed;
-    border-collapse: separate;
-    border-spacing: 0;
-}
-th, td {
-    height: var(--grid-row-height);
-    padding: 0 3px;
-    border-right: 1px solid #edf1f6;
-    border-bottom: 1px solid #e8edf4;
-    text-align: center;
-    vertical-align: middle;
-    white-space: nowrap;
-    overflow: hidden;
-}
-th {
-    position: sticky;
-    top: 0;
-    z-index: 1;
-    height: var(--option-grid-header-height, 24px);
+.filename-cell { user-select: none; }
+.daily-report-button {
+    height: 16px;
+    padding: 0 6px;
+    border: 1px solid #b8cce5;
+    border-radius: 3px;
     background: #edf4fd;
     color: #255b9f;
-    border-bottom-color: #d7e5f5;
-    font-weight: 600;
+    font: inherit;
+    line-height: 14px;
+    vertical-align: middle;
+    cursor: pointer;
 }
-.header-content { overflow: hidden; }
-.column-resizer {
-    position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    width: 7px;
-    cursor: col-resize;
-    touch-action: none;
-    user-select: none;
-}
-.column-resizer:hover { background: #93c5fd; }
-.option-grid.resizing, .option-grid.resizing * {
-    cursor: col-resize;
-    user-select: none;
-}
-th:last-child, td:last-child { border-right: 0; }
-tbody tr:nth-child(odd) { background: #fff; }
-tbody tr:nth-child(even) { background: #f5f9fe; }
-tbody tr:hover { background: #eaf3ff; }
-tbody td:nth-child(2), tbody td:nth-child(3) { text-align: left; }
-tbody td { text-overflow: ellipsis; }
-.filename-cell { user-select: none; }
+.daily-report-button:hover:not(:disabled) { background: #dbeafe; }
+.daily-report-button:disabled { opacity: .45; cursor: default; }
 tbody td.selected-cell {
     background: #dbeafe;
     box-shadow: inset 0 0 0 1px #60a5fa;
