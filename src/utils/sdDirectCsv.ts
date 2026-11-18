@@ -9,7 +9,7 @@ export interface SdArea extends AddressRange {
 }
 
 /** Addresses remain strings to preserve hexadecimal notation and leading zeros. */
-export function parseSdDirectCsv(csv: string, defaults?: ReadonlyMap<string, SdArea>): {
+export function parseSdDirectCsv(csv: string): {
 	dictionary: Map<string, SdArea>;
 	addressRange: AddressRange | null;
 } {
@@ -32,9 +32,8 @@ export function parseSdDirectCsv(csv: string, defaults?: ReadonlyMap<string, SdA
 		if (minimumStart === undefined || start < minimumStart) minimumStart = start;
 		if (maximumEnd === undefined || end > maximumEnd) maximumEnd = end;
 		// Keep every area's flag; each SD operation selects its own targets later.
-		// Supplement only the display text; all areas and write settings come from this CSV.
 		dictionary.set(filename, { accessFlag, startAddress, endAddress,
-			description: description || defaults?.get(filename)?.description || '',
+			description,
 		});
 	}
 	const formatAddress = (address: bigint) => `0x${address.toString(16).toUpperCase().padStart(8, '0')}`;

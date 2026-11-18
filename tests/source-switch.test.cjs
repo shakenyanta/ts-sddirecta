@@ -45,6 +45,7 @@ function view(invoke, clock = performance, DateClass = Date, storage, optionPane
     ...utility('src/utils/executablePath.ts'),
     ...utility('src/utils/folderTreeState.ts'),
     ...utility('src/utils/dropHistoryState.ts'),
+    ...utility('src/utils/historyPath.ts'),
     ...utility('src/utils/fileTimestamp.ts'),
     ...utility('src/utils/sdWrite.ts'),
     createLogScroller: getPanel => utility('src/utils/logScroll.ts').createLogScroller(getPanel, {
@@ -56,6 +57,7 @@ function view(invoke, clock = performance, DateClass = Date, storage, optionPane
       selectFolder, selectedFolder, folderNodes, visibleFolders, toggleFolder, pathList, saveFolderState, restoreFolderState, dropHistory, historyRows, historyGroups, historyStorageError,
       selectHistory, reopenHistory, selectedHistoryId, historyBusy, activeOptionTab, copyHistoryPath, toggleHistoryFavorite, deleteHistory,
       historyClearDialog, requestHistoryClear, cancelHistoryClear, confirmHistoryClear,
+      historyPathRules, historyPathDraft, historyPathDialog, historyPathError, displayHistoryPath, editHistoryPathRules, cancelHistoryPathRules, saveHistoryPathRules, restoreHistoryPathRules, closing,
       selectOptionTab, refreshOutputFiles, outputFiles, outputDirectory, outputError, outputLoading,
       sdDirectDictionary, sdloadingDictionary, sdAddressRange, requiredSdCapacity, matchedFiles, writeFiles, optionFiles, canSdWrite, allFileCount, initializing, messages, pathError,
       onSdWrite, onSdRead, onSdFfInitialize, onSdFormat, startSdFormat, formatPlan, formatLabel, formatSimpleTest, formatStep, formatLabelValid, writeStage, canSdRead, popupTitle, statusLabel, closeWriteDialog, copyWriteLog, openDiagnosticLog, failureDetails, writeDialogOpen, writeLog, writing, pendingPlan, progress, percent, currentRun, transientNotice, operationStatus, operationDetail };
@@ -1796,6 +1798,63 @@ function historyStorage() {
   const values = new Map();
   return { values, getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) };
 }
+
+test('path rules edit as a draft, save separately and restore without changing history', async () => {
+  const storage = historyStorage();
+  const ui = view(backend(), performance, Date, storage);
+  const dialog = { open: false, showModal() { this.open = true; }, close() { this.open = false; } };
+  ui.historyPathDialog.value = dialog;
+  ui.dropHistory.value = [{ id: 'untouched', droppedAt: 1, paths: ['C:\\work\\file'] }];
+  const history = structuredClone(ui.dropHistory.value);
+  ui.editHistoryPathRules();
+  ui.historyPathDraft.value[0].label = '取り消し';
+  ui.cancelHistoryPathRules();
+  assert.equal(ui.historyPathRules.value[0].label, '共有');
+  assert.equal(storage.values.size, 0);
+  ui.editHistoryPathRules();
+  ui.historyPathDraft.value = [{ label: '作業', folder: 'C:\\work' }];
+  ui.saveHistoryPathRules();
+  assert.equal(dialog.open, false);
+  assert.deepEqual(ui.displayHistoryPath('C:\\work\\file'), { label: '作業', path: 'file' });
+  assert.deepEqual(ui.dropHistory.value, history);
+  assert.equal(storage.values.size, 1);
+  const next = view(backend(), performance, Date, storage);
+  next.restoreHistoryPathRules();
+  assert.deepEqual(next.historyPathRules.value, ui.historyPathRules.value);
+  ui.editHistoryPathRules();
+  ui.historyPathDraft.value = [];
+  ui.saveHistoryPathRules();
+  next.restoreHistoryPathRules();
+  assert.deepEqual(next.displayHistoryPath('C:\\work\\file'), { label: '', path: 'C:\\work\\file' });
+});
+
+test('invalid and failed path settings saves retain applied rules and corrupt restoration preserves storage', () => {
+  const storage = historyStorage();
+  const ui = view(backend(), performance, Date, storage);
+  const dialog = { open: false, showModal() { this.open = true; }, close() { this.open = false; } };
+  ui.historyPathDialog.value = dialog;
+  const before = structuredClone(ui.historyPathRules.value);
+  ui.editHistoryPathRules();
+  ui.historyPathDraft.value = [{ label: '不正', folder: 'relative' }];
+  ui.saveHistoryPathRules();
+  assert.equal(dialog.open, true);
+  assert.ok(ui.historyPathError.value);
+  assert.equal(storage.values.size, 0);
+  ui.historyPathDraft.value = [{ label: '作業', folder: 'C:\\work' }];
+  storage.setItem = () => { throw Error('quota'); };
+  ui.saveHistoryPathRules();
+  assert.match(ui.historyPathError.value, /quota/);
+  assert.deepEqual(ui.historyPathRules.value, before);
+  ui.closing.value = true;
+  ui.saveHistoryPathRules();
+  assert.deepEqual(ui.historyPathRules.value, before);
+  const key = 'sddirecta-history-path-rules-v1';
+  storage.values.set(key, '{broken');
+  ui.restoreHistoryPathRules();
+  assert.match(ui.historyPathError.value, /復元/);
+  assert.equal(storage.getItem(key), '{broken');
+  assert.deepEqual(ui.historyPathRules.value, before);
+});
 
 test('history survives restart and edition changes with IDs, timestamps, paths and ordering intact', async () => {
   const storage = historyStorage();

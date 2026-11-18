@@ -53,10 +53,7 @@ pub fn prepare(source: &str, drive: &str, run_id: &str) -> Result<Plan, String> 
             {
                 return Err("exeは初期化対象SD以外のディスクへ置いてください".into());
             }
-            let csv = crate::startup_csv_source(Some(source.into()))?
-                .read()
-                .map_err(|e| e.to_string())?;
-            let (entries, total_bytes) = entries(&csv, capacity)?;
+            let (entries, total_bytes) = entries(crate::startup_csv::DEFAULT_CSV, capacity)?;
             Ok(Plan {
                 run_id: run_id.into(),
                 source: source.into(),

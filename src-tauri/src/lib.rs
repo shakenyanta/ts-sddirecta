@@ -519,36 +519,22 @@ async fn resolve_saved_folder(directory: String) -> Result<Option<String>, Strin
 
 #[tauri::command]
 fn check_startup_csv(directory: Option<String>) -> Result<bool, String> {
-    startup_csv_source(directory).map(|_| true)
-}
-
-fn startup_csv_source(directory: Option<String>) -> Result<startup_csv::CsvSource, String> {
-    let source = source_directory::directory(directory)?;
-    let executable = std::env::current_exe().map_err(|e| e.to_string())?;
-    let directory = executable
-        .parent()
-        .ok_or("exeの保存先を取得できませんでした")?;
-    startup_csv::resolve_for_source(&source, directory).map_err(|e| e.to_string())
+    source_directory::directory(directory).map(|_| true)
 }
 
 #[tauri::command]
 fn read_startup_csv(directory: Option<String>) -> Result<StartupCsv, String> {
-    let source = startup_csv_source(directory)?;
-    let executable_directory = get_executable_directory()?;
-    let source_folder = source.folder_label(std::path::Path::new(&executable_directory));
-    let contents = source.read().map_err(|e| e.to_string())?;
+    source_directory::directory(directory)?;
     Ok(StartupCsv {
-        contents,
-        source_folder,
-        embedded_csv: startup_csv::DEFAULT_CSV,
+        contents: startup_csv::DEFAULT_CSV,
+        source_folder: "内蔵CSV",
     })
 }
 
 #[derive(Serialize)]
 struct StartupCsv {
-    contents: String,
+    contents: &'static str,
     source_folder: &'static str,
-    embedded_csv: &'static str,
 }
 
 #[derive(Serialize)]

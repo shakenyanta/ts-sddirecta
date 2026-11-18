@@ -167,10 +167,7 @@ pub fn prepare(source: &str, drive: &str, run_id: &str) -> Result<Plan, String> 
             }
             // Query only the selected target, not every drive on the computer.
             let (disk, capacity) = crate::windows_api::removable_target(drive)?;
-            let contents = crate::startup_csv_source(Some(source.to_string()))?
-                .read()
-                .map_err(|e| e.to_string())?;
-            let areas = parse_areas(&contents)?;
+            let areas = parse_areas(crate::startup_csv::DEFAULT_CSV)?;
             let (matched, from_input, _) = crate::matching_files::find_matches(
                 Path::new(source),
                 areas.iter().map(|a| a.1.clone()).collect(),

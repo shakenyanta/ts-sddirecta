@@ -332,18 +332,28 @@ mod tests {
     }
 
     #[test]
-    fn selected_source_controls_csv_and_input_matching() {
+    fn selected_source_uses_embedded_csv_and_controls_input_matching() {
         let dir = TestDirectory::new();
         let source = Some(dir.0.to_str().unwrap().to_owned());
         let csv = "A,FILE-AA.001,00000000,000001FF";
         fs::write(dir.0.join("sdDirectaxs.csv"), csv).unwrap();
         assert!(crate::check_startup_csv(source.clone()).unwrap());
         let loaded = crate::read_startup_csv(source.clone()).unwrap();
-        assert_eq!(loaded.contents, csv);
-        assert_eq!(loaded.embedded_csv, crate::startup_csv::DEFAULT_CSV);
-        assert_eq!(loaded.source_folder, "対象フォルダ");
+        assert_eq!(loaded.contents, crate::startup_csv::DEFAULT_CSV);
+        assert_eq!(loaded.source_folder, "内蔵CSV");
+        fs::remove_file(dir.0.join("sdDirectaxs.csv")).unwrap();
+        fs::create_dir(dir.0.join("sdDirectaxs.csv")).unwrap();
+        assert_eq!(crate::read_startup_csv(source.clone()).unwrap().contents, loaded.contents);
         fs::create_dir(dir.0.join("input")).unwrap();
         fs::write(dir.0.join("input/FILE-AA.001"), b"test").unwrap();
+        fs::write(dir.0.join("input/sdDirectaxs.csv"), b"invalid external CSV").unwrap();
+        fs::create_dir(dir.0.join("config")).unwrap();
+        fs::write(dir.0.join("config/sdDirectaxs.csv"), b"invalid config CSV").unwrap();
+        for directory in [&dir.0, &dir.0.join("input"), &dir.0.join("config")] {
+            let loaded = crate::read_startup_csv(Some(directory.to_str().unwrap().into())).unwrap();
+            assert_eq!(loaded.contents, crate::startup_csv::DEFAULT_CSV);
+            assert_eq!(loaded.source_folder, "内蔵CSV");
+        }
         let matched = crate::find_dictionary_files(keys(), source).unwrap();
         assert_eq!(matched.files, vec!["FILE-AA.001"]);
         assert!(matched.from_input);

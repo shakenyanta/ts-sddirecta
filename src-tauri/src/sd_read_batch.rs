@@ -80,10 +80,7 @@ pub fn prepare(source: &str, drive: &str, run_id: &str) -> Result<Plan, String> 
             return Err("exeとoutputは読込元SD以外のディスクへ置いてください".into());
         }
     }
-    let csv = crate::startup_csv_source(Some(source.into()))?
-        .read()
-        .map_err(|e| e.to_string())?;
-    let mut entries = areas(&csv)?;
+    let mut entries = areas(crate::startup_csv::DEFAULT_CSV)?;
     if entries.is_empty() {
         return Err("CSVに読込対象の領域がありません".into());
     }

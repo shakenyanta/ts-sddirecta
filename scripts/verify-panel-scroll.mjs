@@ -121,7 +121,7 @@ window.addEventListener('load', async () => {
       const saved = localStorage.getItem('sddirecta-drop-history-v1');
       const clear = historyPanel.querySelector('.history-clear');
       clear.click(); await render();
-      const dialog = document.querySelector('.history-clear-dialog');
+      const dialog = document.querySelector('dialog[aria-labelledby="history-clear-title"]');
       h.clearConfirmation = dialog.open && dialog.textContent.includes('保護されていない履歴をすべて削除しますか？')
         && dialog.textContent.includes('元のファイルやフォルダーは削除されません');
       h.clearCancelFocused = document.activeElement.textContent === 'キャンセル';
@@ -158,10 +158,11 @@ window.addEventListener('load', async () => {
       h.favoriteRestored = historyPanel.querySelector('.history-favorites .history-favorite').getAttribute('aria-pressed') === 'true';
       const originalPaths = JSON.parse(saved).entries[0].paths;
       const copyButtons = [...historyPanel.querySelectorAll('.history-favorites .history-copy')];
-      copyButtons[0].click(); await render();
-      copyButtons[1].click(); await render();
+      for (const button of copyButtons) { button.click(); await render(); }
       copyButtons[1].dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
       h.individualPathCopy = JSON.stringify(copiedHistoryPaths) === JSON.stringify(originalPaths);
+      h.rulesRestored = historyPanel.querySelector('.history-rules-summary').textContent.includes('[案件]')
+        && [...historyPanel.querySelectorAll('.history-path')].some(path => path.textContent.trim() === '[案件] FILE-BA.001');
       h.copyWithoutReplay = historyResolutions.length === 0 && historyTab.getAttribute('aria-selected') === 'true'
         && localStorage.getItem('sddirecta-drop-history-v1') === saved;
       h.copyNotice = document.querySelector('.panel_footer').textContent.includes('フルパスをコピーしました');
@@ -238,7 +239,8 @@ window.addEventListener('load', async () => {
     const clearEmptyDisabled = historyPanel.querySelector('.history-clear').disabled;
     const paths = [
       'C:/' + '日本語の長いフォルダー名/'.repeat(15) + 'FILE-AA.001',
-      'D:/案件 A/FILE-BA.001',
+      ${JSON.stringify(String.raw`\\130.2.1.173\disk\保存ファイル\案件 A\FILE-BA.001`)},
+      ${JSON.stringify(String.raw`C:\Users\SYSTEM-PC7\source\ts02\input`)},
     ];
     const drop = values => listeners.get('tauri://drag-drop')({ payload: { paths: values, position: { x: 0, y: 0 } } });
     const originalNow = Date.now;
@@ -249,6 +251,36 @@ window.addEventListener('load', async () => {
     const time = table.querySelector('time').textContent;
     const originalPaths = [...table.querySelectorAll('.history-path')].map(path => path.title);
     const multiplePaths = JSON.stringify(originalPaths) === JSON.stringify(paths);
+    const displayedPaths = [...table.querySelectorAll('.history-path')].map(path => path.textContent.trim());
+    const relativePath = displayedPaths[1] === ${JSON.stringify(String.raw`[共有] 案件 A\FILE-BA.001`)};
+    const localPath = displayedPaths[2] === ${JSON.stringify(String.raw`[ローカル] source\ts02\input`)};
+    const outsideFullPath = displayedPaths[0] === paths[0];
+    const baseFolderVisible = historyPanel.querySelector('.history-rules-summary').textContent.includes(${JSON.stringify(String.raw`\\130.2.1.173\disk\保存ファイル`)});
+    const settingsButton = historyPanel.querySelector('.history-path-settings button');
+    settingsButton.click(); await render();
+    const settingsDialog = document.querySelector('.history-path-dialog');
+    const settingsBounds = settingsDialog.getBoundingClientRect();
+    const rulesDialogFits = settingsBounds.left >= 0 && settingsBounds.right <= innerWidth
+      && settingsBounds.top >= 0 && settingsBounds.bottom <= innerHeight
+      && settingsDialog.scrollWidth <= settingsDialog.clientWidth;
+    const setInput = (input, value) => { input.value = value; input.dispatchEvent(new Event('input', { bubbles: true })); };
+    setInput(settingsDialog.querySelector('input'), '取り消し'); await render();
+    settingsDialog.querySelector('.history-clear-actions button').click(); await render();
+    const rulesCancelled = !settingsDialog.open && historyPanel.querySelector('.history-rules-summary').textContent.includes('[共有]');
+    settingsButton.click(); await render();
+    settingsDialog.querySelector('.history-rule-add').click(); await render();
+    settingsDialog.querySelector('[type="submit"]').click(); await render();
+    const invalidRuleRejected = settingsDialog.open && !!settingsDialog.querySelector('[role="alert"]');
+    const newRule = [...settingsDialog.querySelectorAll('.history-rule-editor')].at(-1);
+    setInput(newRule.querySelectorAll('input')[0], '案件');
+    setInput(newRule.querySelectorAll('input')[1], ${JSON.stringify(String.raw`\\130.2.1.173\disk\保存ファイル\案件 A`)}); await render();
+    settingsDialog.querySelector('[type="submit"]').click(); await render();
+    const rulesSaved = !settingsDialog.open && JSON.parse(localStorage.getItem('sddirecta-history-path-rules-v1')).rules.length === 3
+      && [...table.querySelectorAll('.history-path')][1].textContent.trim() === '[案件] FILE-BA.001';
+    settingsButton.click(); await render();
+    [...settingsDialog.querySelectorAll('.history-rule-editor')].at(-1).querySelector('button').click(); await render();
+    const draftRuleDeleted = settingsDialog.querySelectorAll('.history-rule-editor').length === 2;
+    settingsDialog.dispatchEvent(new Event('cancel', { cancelable: true })); await render();
     const emptyHidden = !historyPanel.querySelector('.history-recent [role="status"]');
     for (let i = 0; i < 65; i++) drop(['C:/案件 ' + i]);
     Date.now = originalNow;
@@ -270,7 +302,8 @@ window.addEventListener('load', async () => {
     scroller.scrollLeft = scroller.scrollWidth; await render();
     const horizontalScrolls = scroller.scrollWidth > scroller.clientWidth && scroller.scrollLeft > 0;
     historyTab.click(); document.getElementById('option-tab-files').click(); historyTab.click(); await render();
-    results.push({ history: { headings, emptyVisible, clearEmptyDisabled, emptyHidden, singleRow, time, multiplePaths,
+    results.push({ history: { headings, emptyVisible, clearEmptyDisabled, emptyHidden, singleRow, time, multiplePaths, relativePath, localPath, outsideFullPath, baseFolderVisible,
+      rulesDialogFits, rulesCancelled, invalidRuleRejected, rulesSaved, draftRuleDeleted,
       newestFirst, rowCount, headerFixed, scrolls, middleClipped, tailVisible, fits, horizontalScrolls,
       retained: table.querySelectorAll('tbody tr').length === rowCount } });
     const h = results[0].history;
@@ -508,10 +541,10 @@ try {
     assert.equal(result.error, undefined, result.error);
     if (result.history) {
       const h = result.history;
-      assert.deepEqual(h.headings, ['', '日時', 'フルパス', '削除']);
+      assert.deepEqual(h.headings, ['', '日時', '保存先パス', '削除']);
       assert.equal(h.time, '2026/11/11 14:32:08');
       assert.equal(h.rowCount, 66);
-      for (const key of ['emptyVisible', 'emptyHidden', 'singleRow', 'multiplePaths', 'newestFirst',
+      for (const key of ['relativePath', 'localPath', 'outsideFullPath', 'baseFolderVisible', 'rulesDialogFits', 'rulesCancelled', 'invalidRuleRejected', 'rulesSaved', 'draftRuleDeleted', 'rulesRestored', 'emptyVisible', 'emptyHidden', 'singleRow', 'multiplePaths', 'newestFirst',
         'headerFixed', 'scrolls', 'middleClipped', 'tailVisible', 'fits', 'horizontalScrolls', 'retained',
         'restored', 'savedUnchanged', 'warningAbsent', 'singleSelectOnly', 'busyDisabled', 'doubleClickReplay',
         'repeatIgnored', 'enterReplay', 'allPathsReplayed', 'replayUnchanged', 'historyLog',

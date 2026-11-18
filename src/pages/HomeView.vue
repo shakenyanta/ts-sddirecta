@@ -9,6 +9,7 @@ import { features } from '../editions';
 import { folderPathAt, splitFolderPath } from '../utils/executablePath';
 import { folderTreeStorageKey, parseFolderTreeState, type FolderTreeState } from '../utils/folderTreeState';
 import { dropHistoryStorageKey, parseDropHistoryState, type DropHistoryEntry, type DropHistoryState } from '../utils/dropHistoryState';
+import { defaultHistoryPathRules, historyPathRulesStorageKey, parseHistoryPathRules, validateHistoryPathRules, historyDisplayPath, type HistoryPathRule } from '../utils/historyPath';
 import { createLogScroller } from '../utils/logScroll';
 import { formatFileTimestamp } from '../utils/fileTimestamp';
 import { parseSdDirectCsv, type AddressRange, type SdArea } from '../utils/sdDirectCsv';
@@ -30,6 +31,48 @@ const optionTabs = [
 const activeOptionTab = ref<typeof optionTabs[number]['id']>('files');
 
 const dropHistory = ref<DropHistoryEntry[]>([]);
+const historyPathRules = ref<HistoryPathRule[]>(defaultHistoryPathRules.map(rule => ({ ...rule })));
+const historyPathDraft = ref<HistoryPathRule[]>([]);
+const historyPathDialog = ref<HTMLDialogElement | null>(null);
+const historyPathError = ref('');
+
+function displayHistoryPath(path: string) {
+	return historyDisplayPath(path, historyPathRules.value);
+}
+
+function editHistoryPathRules() {
+	if (disposed || closing.value || !historyPathDialog.value || historyPathDialog.value.open) return;
+	historyPathDraft.value = historyPathRules.value.map(rule => ({ ...rule }));
+	historyPathError.value = '';
+	historyPathDialog.value.showModal();
+}
+
+function cancelHistoryPathRules() {
+	historyPathError.value = '';
+	historyPathDialog.value?.close();
+}
+
+function saveHistoryPathRules() {
+	if (disposed || closing.value || !historyPathDialog.value?.open) return;
+	try {
+		const rules = validateHistoryPathRules(historyPathDraft.value);
+		localStorage.setItem(historyPathRulesStorageKey, JSON.stringify({ version: 1, rules }));
+		historyPathRules.value = rules;
+		cancelHistoryPathRules();
+	} catch (error) {
+		historyPathError.value = `省略設定を保存できませんでした: ${String(error)}`;
+	}
+}
+
+function restoreHistoryPathRules() {
+	try {
+		const raw = localStorage.getItem(historyPathRulesStorageKey);
+		if (raw !== null) historyPathRules.value = parseHistoryPathRules(raw);
+	} catch (error) {
+		historyPathError.value = `省略設定を復元できないため初期設定を使用します: ${String(error)}`;
+		void appendMessage({ text: historyPathError.value, warning: true });
+	}
+}
 const historyRows = computed(() => [...dropHistory.value].reverse()
 	.sort((left, right) => right.droppedAt - left.droppedAt));
 const historyGroups = computed(() => [
@@ -529,6 +572,7 @@ async function selectFolder(path: string) {
 }
 
 onMounted(async () => {
+	if (features.value.optionPanel) restoreHistoryPathRules();
 	// Synchronous restore completes before registering drops, avoiding startup races.
 	restoreDropHistory();
 	window.addEventListener('keydown', onRefreshKey, true);
@@ -670,10 +714,9 @@ async function initializeSource(paths?: string[], refreshDirectory?: string, pre
 			return;
 		}
 		try {
-			const csv = await invoke<{ contents: string; source_folder: string; embedded_csv: string }>('read_startup_csv', { directory });
+			const csv = await invoke<{ contents: string; source_folder: string }>('read_startup_csv', { directory });
 			if (!active()) return;
-			const defaults = csv.embedded_csv ? parseSdDirectCsv(csv.embedded_csv).dictionary : undefined;
-			const parsed = parseSdDirectCsv(csv.contents, defaults);
+			const parsed = parseSdDirectCsv(csv.contents);
 			sdDirectDictionary.value = parsed.dictionary;
 			sdAddressRange.value = parsed.addressRange;
 			await appendMessage(`sdDirectaxs.csv読込完了 (${csv.source_folder})`, `dictionary作成：${sdDirectDictionary.value.size}件`);
@@ -1363,12 +1406,17 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 						<p id="history-hint" class="history-hint">パスをダブルクリック、または選択してEnterで再読込します。</p>
 						<button type="button" class="history-clear" :disabled="closing || !historyGroups[1].entries.length" @click="requestHistoryClear">履歴をクリア</button>
 					</div>
+					<div class="history-path-settings">
+						<button type="button" class="history-clear" :disabled="closing" @click="editHistoryPathRules">パスの省略設定</button>
+						<span class="history-rules-summary" :title="historyPathRules.map(rule => `[${rule.label}] ${rule.folder}`).join('\n')">{{ historyPathRules.length ? historyPathRules.map(rule => `[${rule.label}] ${rule.folder}`).join(' ／ ') : '省略設定なし（フルパス表示）' }}</span>
+					</div>
+					<p v-if="historyPathError && !historyPathDialog?.open" class="history-settings-error" role="alert">{{ historyPathError }}</p>
 					<section v-for="group in historyGroups" :key="group.id" class="history-section" :class="`history-${group.id}`"
 						:aria-label="group.label">
 					<div class="history-list">
 						<table class="history-table" :aria-label="group.label">
 							<colgroup><col class="history-favorite-column"><col class="history-date-column"><col><col class="history-delete-column"></colgroup>
-							<thead><tr><th scope="col" class="history-favorite-cell" aria-label="お気に入り"></th><th scope="col">日時</th><th scope="col">フルパス</th><th scope="col">削除</th></tr></thead>
+							<thead><tr><th scope="col" class="history-favorite-cell" aria-label="お気に入り"></th><th scope="col">日時</th><th scope="col">保存先パス</th><th scope="col">削除</th></tr></thead>
 							<tbody>
 								<tr v-for="entry in group.entries" :key="entry.id" :class="{ 'history-selected': selectedHistoryId === entry.id }"
 									@click="selectHistory(entry.id)">
@@ -1384,8 +1432,9 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 										<button type="button" class="history-path" :title="path" :aria-label="path"
 											aria-describedby="history-hint" :disabled="historyBusy" @focus="selectHistory(entry.id)"
 											@dblclick.prevent="reopenHistory(entry.id)" @keydown.enter.prevent="!$event.repeat && reopenHistory(entry.id)">
-											<span v-if="path.length > 24" class="history-path-prefix" aria-hidden="true">{{ path.slice(0, -24) }}</span>
-											<span class="history-path-suffix" :class="{ 'has-prefix': path.length > 24 }" aria-hidden="true"><span>{{ path.slice(-24) }}</span></span>
+											<span v-if="displayHistoryPath(path).label" class="history-path-label" aria-hidden="true">[{{ displayHistoryPath(path).label }}] </span>
+											<span v-if="displayHistoryPath(path).path.length > 24" class="history-path-prefix" aria-hidden="true">{{ displayHistoryPath(path).path.slice(0, -24) }}</span>
+											<span class="history-path-suffix" :class="{ 'has-prefix': displayHistoryPath(path).path.length > 24 }" aria-hidden="true"><span>{{ displayHistoryPath(path).path.slice(-24) }}</span></span>
 										</button>
 										<button type="button" class="history-copy" title="フルパスをコピー" :aria-label="`${path} をコピー`"
 											@click.stop="copyHistoryPath(entry.id, index)" @dblclick.stop.prevent @keydown.enter.stop>
@@ -1410,6 +1459,24 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 			</section>
 		</div>
 	</div>
+	<dialog v-if="features.optionPanel" ref="historyPathDialog" class="history-clear-dialog history-path-dialog" aria-labelledby="history-path-title"
+		@cancel.prevent="cancelHistoryPathRules">
+		<form @submit.prevent="saveHistoryPathRules">
+			<h2 id="history-path-title">パスの省略設定</h2>
+			<p>登録フォルダーとその配下を「[表示名] 相対パス」で表示します。複数に一致すると、最も深いフォルダーを優先します。</p>
+			<div class="history-rule-list">
+				<div v-for="(rule, index) in historyPathDraft" :key="index" class="history-rule-editor">
+					<label>表示名<input v-model="rule.label" type="text" :disabled="closing" :aria-label="`${index + 1}行目の表示名`" placeholder="共有"></label>
+					<label>省略するフォルダー<input v-model="rule.folder" type="text" :disabled="closing" :aria-label="`${index + 1}行目の省略するフォルダー`" placeholder="C:\作業"></label>
+					<button type="button" :disabled="closing" :aria-label="`${index + 1}行目を削除`" @click="historyPathDraft.splice(index, 1)">削除</button>
+				</div>
+			</div>
+			<button type="button" class="history-rule-add" :disabled="closing" @click="historyPathDraft.push({ label: '', folder: '' })">設定を追加</button>
+			<p>設定をすべて削除するとフルパスで表示します。コピー・再読込は常に元のフルパスを使います。</p>
+			<p v-if="historyPathError" class="history-settings-error" role="alert">{{ historyPathError }}</p>
+			<div class="history-clear-actions"><button type="button" autofocus @click="cancelHistoryPathRules">キャンセル</button><button type="submit" :disabled="closing">保存</button></div>
+		</form>
+	</dialog>
 	<dialog v-if="features.optionPanel" ref="historyClearDialog" class="history-clear-dialog" aria-labelledby="history-clear-title"
 		aria-describedby="history-clear-description" @cancel.prevent="cancelHistoryClear">
 		<h2 id="history-clear-title">履歴をクリア</h2>
@@ -1590,6 +1657,16 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 .output-panel :deep(.option-grid) { flex: 1; min-height: 0; height: auto; }
 .output-status { flex-shrink: 0; margin: 4px 6px; color: #52647c; font-size: 12px; }
 .history-panel { display: flex; flex-direction: column; }
+.history-path-settings { display: flex; align-items: center; flex-shrink: 0; gap: 6px; padding: 2px 6px; color: #52647c; font: 11px/18px 'Yu Gothic UI', Meiryo, sans-serif; border-bottom: 1px solid #d7e5f5; }
+.history-rules-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-settings-error { margin: 4px 6px; color: #a74444; font-size: 11px; overflow-wrap: anywhere; }
+.history-clear-dialog.history-path-dialog { width: min(680px, calc(100vw - 64px)); max-width: none; box-sizing: border-box; max-height: calc(100vh - 32px); overflow: auto; }
+.history-rule-list { max-height: 40vh; overflow: auto; }
+.history-rule-editor { display: grid; grid-template-columns: minmax(60px, 1fr) minmax(100px, 3fr) auto; align-items: end; gap: 6px; margin-bottom: 8px; }
+.history-rule-editor label { min-width: 0; }
+.history-rule-editor input { display: block; width: 100%; box-sizing: border-box; padding: 4px; border: 1px solid #b8c9df; border-radius: 3px; font: inherit; }
+.history-rule-editor button, .history-rule-add { padding: 4px 8px; border: 1px solid #d7e5f5; border-radius: 3px; background: #fff; font: inherit; cursor: pointer; }
+.history-path-label { flex-shrink: 0; max-width: 30%; overflow: hidden; text-overflow: ellipsis; color: #52647c; }
 .history-toolbar { display: flex; align-items: center; flex-shrink: 0; gap: 6px; padding-right: 6px; }
 .history-toolbar .history-hint { flex: 1; min-width: 0; }
 .history-clear { flex-shrink: 0; padding: 2px 6px; border: 1px solid #d7e5f5; border-radius: 3px; background: #fff; color: #52647c; font: 11px/18px 'Yu Gothic UI', Meiryo, sans-serif; cursor: pointer; }
