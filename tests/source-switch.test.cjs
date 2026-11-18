@@ -645,7 +645,7 @@ test('grid timestamps refresh without a filename change and clear on source or l
     resolve_drop_directory: () => { throw new Error('source unavailable'); },
   }));
   await ui.initializeSource();
-  assert.deepEqual(ui.writeFiles.value, [{ filename: 'FILE-AA.001', description: '', individualInfo: '', modifiedAt: timestamp, size, csvSize: 512 }]);
+  assert.deepEqual(ui.writeFiles.value, [{ filename: 'FILE-AA.001', description: '', startAddress: '00000000', endAddress: '000001FF', individualInfo: '', modifiedAt: timestamp, size, csvSize: 512 }]);
   timestamp += 60000;
   size = 0;
   await ui.refreshMatchedFiles();
@@ -1023,47 +1023,29 @@ test('embedded CSV is valid UTF-8 and preserves descriptions and added areas thr
   }));
   await ui.initializeSource();
   assert.deepEqual(ui.writeFiles.value, [
-    { filename: 'FILE-AA.001', description: 'ローディング回数制限', individualInfo: '', modifiedAt: null, size: null, csvSize: 1024 },
-    { filename: 'FILE-AB.014', description: 'デジタコ14日目', individualInfo: '', modifiedAt: null, size: null, csvSize: 358400 },
+    { filename: 'FILE-AA.001', description: 'ローディング回数制限', startAddress: '00008000', endAddress: '000083FF', individualInfo: '', modifiedAt: null, size: null, csvSize: 1024 },
+    { filename: 'FILE-AB.014', description: 'デジタコ14日目', startAddress: '02244E00', endAddress: '0229C5FF', individualInfo: '', modifiedAt: null, size: null, csvSize: 358400 },
   ]);
 });
 
-test('description defaults fill blanks without importing any fallback areas or write settings', () => {
-  const { parseSdDirectCsv } = utility('src/utils/sdDirectCsv.ts');
-  const defaults = parseSdDirectCsv('A,FILE-AA.001,1000,1FFF,内蔵の説明\nA,FILE-BA.001,2000,2FFF,カード種別\nA,ONLY-DEFAULT.001,3000,3FFF,追加禁止').dictionary;
-  const csv = 'W,FILE-AA.001,10,1F\nR,FILE-BA.001,20,2F,外部の説明\nA,UNKNOWN.001,30,3F,  \nE\nA,ONLY-DEFAULT.001,0,FFFFFFFF';
-  const parsed = parseSdDirectCsv(csv, defaults);
-  assert.deepEqual([...parsed.dictionary], [
-    ['FILE-AA.001', { accessFlag: 'W', startAddress: '10', endAddress: '1F', description: '内蔵の説明' }],
-    ['FILE-BA.001', { accessFlag: 'R', startAddress: '20', endAddress: '2F', description: '外部の説明' }],
-    ['UNKNOWN.001', { accessFlag: 'A', startAddress: '30', endAddress: '3F', description: '' }],
-  ]);
-  assert.deepEqual(parsed.addressRange, { startAddress: '0x00000010', endAddress: '0x0000003F' });
-  assert.equal(parseSdDirectCsv('A,FILE-BA.001,0,FF,  ', defaults).dictionary.get('FILE-BA.001').description, 'カード種別');
-  assert.equal(defaults.get('FILE-AA.001').startAddress, '1000');
-});
-
-test('external CSV in input retains its layout while grid descriptions use embedded defaults and refresh', async () => {
-  const embedded_csv = readFileSync('config/sdDirectaxs.csv', 'utf8');
-  let description = '';
-  const ui = view(backend({
-    read_startup_csv: () => ({ contents: `W,TS-DISP.HEX,10,1F,${description}\nA,CUSTOM.HEX,20,2F`, source_folder: '対象フォルダ', embedded_csv }),
-    find_dictionary_files: () => ({ files: ['TS-DISP.HEX', 'CUSTOM.HEX'], from_input: false, input_exists: false }),
-  }));
-  await ui.mount();
-  await ui.initializeSource(['C:\\parent\\input']);
-  assert.equal(ui.writeFiles.value[0].description, '表示');
-  assert.equal(ui.writeFiles.value[1].description, '');
-  assert.equal(ui.sdDirectDictionary.value.size, 2);
-  assert.equal(ui.sdloadingDictionary.value.size, 2);
-  assert.deepEqual(ui.sdDirectDictionary.value.get('TS-DISP.HEX'), { accessFlag: 'W', startAddress: '10', endAddress: '1F', description: '表示' });
-  assert.deepEqual(ui.sdAddressRange.value, { startAddress: '0x00000010', endAddress: '0x0000002F' });
-  description = '外部CSVの表示プログラム';
-  ui.key('F5');
-  await until(() => !ui.initializing.value);
-  assert.equal(ui.writeFiles.value[0].description, description);
-  assert.ok(panelContents(ui).includes('dictionary作成：2件'));
-  ui.unmount();
+test('built-in CSV descriptions and areas remain consistent across input selection and F5', async () => {
+  const contents = readFileSync('config/sdDirectaxs.csv', 'utf8');
+  const expected = utility('src/utils/sdDirectCsv.ts').parseSdDirectCsv(contents);
+  for (const optionPanel of [true, false]) {
+    const ui = view(backend({
+      read_startup_csv: () => contents,
+      find_dictionary_files: () => ({ files: ['TS-DISP.HEX'], from_input: false, input_exists: false }),
+    }), undefined, undefined, undefined, optionPanel);
+    await ui.mount();
+    await ui.initializeSource(['C:\\parent\\input']);
+    assert.deepEqual(ui.sdDirectDictionary.value, expected.dictionary);
+    assert.deepEqual(ui.sdAddressRange.value, expected.addressRange);
+    assert.equal(ui.writeFiles.value[0].description, expected.dictionary.get('TS-DISP.HEX').description);
+    ui.key('F5');
+    await until(() => !ui.initializing.value);
+    assert.deepEqual(ui.sdDirectDictionary.value, expected.dictionary);
+    ui.unmount();
+  }
 });
 
 test('grid filename selection persists on open, resets on refresh and respects busy state', () => {
@@ -1106,6 +1088,7 @@ test('grid renders escaped descriptions, tooltips and more than 23 matching file
   new Function('require', 'exports', transpile(script.content))(name => name === '../utils/gridColumnResize' ? utility('src/utils/gridColumnResize.ts') : name === '../utils/fileTimestamp' ? utility('src/utils/fileTimestamp.ts') : name === '../utils/sdWrite' ? utility('src/utils/sdWrite.ts') : require(name), exports);
   const files = Array.from({ length: 24 }, (_, i) => ({
     filename: `FILE-${i}.001`, individualInfo: i === 23 ? '260122_00 ABCD' : '', modifiedAt: null, size: i === 23 ? 1234 : i === 0 ? 0 : i === 2 ? 512 : i === 3 ? 1024 : null, csvSize: i === 23 || i === 3 ? 512 : i === 0 ? 0 : 512, description: i === 23 ? '日本語 <説明>' : '',
+    ...(i === 23 ? { startAddress: '00000000', endAddress: '000001FF', modifiedAt: new Date(2026, 10, 18, 10, 30, 0).getTime() } : {}),
   }));
   const html = await renderToString(createSSRApp(exports.default, { files }));
   assert.deepEqual([...html.matchAll(/<th\b[^>]*>.*?<span>(.*?)<\/span>.*?<\/th>/g)].map(match => match[1]),
@@ -1115,15 +1098,47 @@ test('grid renders escaped descriptions, tooltips and more than 23 matching file
   assert.equal(cells.length, 8);
   assert.equal(cells[2], '日本語 &lt;説明&gt;');
   assert.equal(cells[4], '');
-  assert.match(html, /title="日本語 &lt;説明&gt;"/);
   assert.match(html, /title="260122_00 ABCD"/);
   assert.match(html.replace(/<!--[\s\S]*?-->/g, ''), />260122_00 ABCD<\/td>/);
   assert.match(html.replace(/<!--[\s\S]*?-->/g, ''), />日本語 &lt;説明&gt;<\/td>/);
-  assert.match(html, /title="FILE-23\.001 1,234\(0x4d2\)バイト \[CSV: 512\(0x200\)バイト\]"/);
-  assert.match(html, /title="FILE-0\.001 0\(0x0\)バイト"/);
+  assert.match(html, /title="FILE-23\.001 2026\/11\/18 10:30:00"/);
+  assert.match(lastRow, /title="00000000,000001FF 1.21KB \[CSV: 512バイト\]">日本語 &lt;説明&gt;/);
+  assert.match(html, /title="FILE-0\.001"/);
+  assert.match(html, /title="0バイト"/);
   assert.match(html, /title="FILE-1\.001"/);
-  assert.match(html, /title="FILE-2\.001 512\(0x200\)バイト"/);
-  assert.match(html, /title="FILE-3\.001 1,024\(0x400\)バイト \[CSV: 512\(0x200\)バイト\]"/);
+  assert.match(html, /title="512バイト"/);
+  assert.match(html, /title="1KB \[CSV: 512バイト\]"/);
+  for (const variant of ['files', 'output']) {
+    const sizeCases = [
+      [0, 0, '0バイト'],
+      [1023, 1023, '1,023バイト'],
+      [1024, 1024, '1KB'],
+      [1536, 1536, '1.5KB'],
+      [8192, 16384, '8KB [CSV: 16KB]'],
+      [16 * 1024 ** 2, 16 * 1024 ** 2, '16MB'],
+      [1024 ** 3, 1024 ** 3, '1GB'],
+      [8192, 8193, '8KB (8,192バイト) [CSV: 8KB (8,193バイト)]'],
+      [8193, 8192, '8KB (8,193バイト) [CSV: 8KB (8,192バイト)]'],
+      [8192, undefined, '8KB'],
+      [null, 16384, undefined],
+    ];
+    const sizeHtml = await renderToString(createSSRApp(exports.default, { variant, directory: '', files:
+      sizeCases.map(([size, csvSize], index) => ({ filename: `size-${index}`, description: '容量', individualInfo: '', size, csvSize })),
+    }));
+    const sizeRows = sizeHtml.replace(/<!--[\s\S]*?-->/g, '').match(/<tr>[^]*?<\/tr>/g).slice(1);
+    sizeCases.forEach(([, , expected], index) => {
+      const descriptionCell = [...sizeRows[index].matchAll(/<td\b([^>]*)>.*?<\/td>/g)][2];
+      const title = descriptionCell[1].match(/title="([^"]*)"/)?.[1];
+      assert.equal(title, expected, `${variant}: size case ${index}`);
+    });
+    const missingHtml = await renderToString(createSSRApp(exports.default, { variant, files: [
+      { filename: 'missing.001', description: '未取得', individualInfo: '', startAddress: '00000000', endAddress: '000003FF', csvSize: 1024 },
+      { filename: 'unknown.001', description: '情報なし', individualInfo: '' },
+    ] })).then(html => html.replace(/<!--[\s\S]*?-->/g, ''));
+    assert.match(missingHtml, /title="00000000,000003FF">未取得/);
+    assert.match(missingHtml, /<td class="">情報なし<\/td>/);
+    assert.doesNotMatch(missingHtml, /CSV:|バイト|undefined|null/);
+  }
   assert.equal((html.match(/<tr>/g) || []).length, 25);
   // 少数・空の一覧でも、装飾のための空行をスクロール対象にしない。
   for (const count of [0, 3, 4]) {

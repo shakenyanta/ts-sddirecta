@@ -259,7 +259,7 @@ const statusLabel = computed(() => operationKind.value === 'format' && writeStag
     ? 'FF初期化中' : writeStageLabel(writeStage.value));
 const writeFiles = computed(() => [...sdloadingDictionary.value]
     .filter(([, area]) => area.accessFlag !== 'E')
-    .map(([filename, area]) => ({ filename, description: area.description, individualInfo: fileIndividualInfos.value.get(filename)?.value ?? '', modifiedAt: fileMetadata.value.get(filename)?.modified_at ?? null, size: fileMetadata.value.get(filename)?.size ?? null, csvSize: Number.parseInt(area.endAddress, 16) - Number.parseInt(area.startAddress, 16) + 1 })));
+    .map(([filename, area]) => ({ filename, description: area.description, startAddress: area.startAddress, endAddress: area.endAddress, individualInfo: fileIndividualInfos.value.get(filename)?.value ?? '', modifiedAt: fileMetadata.value.get(filename)?.modified_at ?? null, size: fileMetadata.value.get(filename)?.size ?? null, csvSize: Number.parseInt(area.endAddress, 16) - Number.parseInt(area.startAddress, 16) + 1 })));
 const allFileCount = computed(() => writeFiles.value.length);
 interface UpdateInfo { update_no: string; update_ver: string; condition: string; car_type: string }
 interface FileUpdates { files: Record<string, UpdateInfo[]>; warnings: string[] }
@@ -323,6 +323,7 @@ const outputFiles = computed(() => {
         const area = sdDirectDictionary.value.get(filename);
         if (!area || area.accessFlag === 'E') return [];
         return [{ filename, description: area.description,
+            startAddress: area.startAddress, endAddress: area.endAddress,
             individualInfo: result.individual_infos[filename]?.value ?? '',
             modifiedAt: result.file_metadata[filename]?.modified_at ?? null,
             size: result.file_metadata[filename]?.size ?? null,

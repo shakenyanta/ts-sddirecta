@@ -2,14 +2,38 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, watchEffect } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { formatFileTimestamp } from '../utils/fileTimestamp';
-import { formatByteCount } from '../utils/sdWrite';
 import { useGridColumnResize } from '../utils/gridColumnResize';
 
 const props = defineProps<{ files: {
     filename: string; description: string; individualInfo: string; modifiedAt?: number | null; size?: number | null; csvSize?: number;
+    startAddress?: string; endAddress?: string;
     updateNo?: string; updateVer?: string; condition?: string; carType?: string;
 }[]; directory: string; disabled?: boolean; variant?: 'files' | 'output' }>();
 const emit = defineEmits<{ openFile: [filename: string]; analyzeDailyReport: [filename: string] }>();
+
+function formatFileSize(bytes: number): string {
+    const units = ['バイト', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB'];
+    let value = bytes;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+        value /= 1024;
+        unit++;
+    }
+    return `${value.toLocaleString('ja-JP', { maximumFractionDigits: 2 })}${units[unit]}`;
+}
+
+function descriptionTooltip(file: typeof props.files[number]): string | undefined {
+    const size = file.size == null ? '' : formatFileSize(file.size);
+    const mismatch = file.size != null && file.csvSize != null && file.size !== file.csvSize;
+    const csvSize = mismatch ? formatFileSize(file.csvSize!) : '';
+    const showBytes = mismatch && size === csvSize;
+    const exactBytes = (bytes: number) => ` (${bytes.toLocaleString('ja-JP')}バイト)`;
+    return [
+        [file.startAddress, file.endAddress].filter(Boolean).join(','),
+        size + (showBytes ? exactBytes(file.size!) : ''),
+        mismatch ? `[CSV: ${csvSize}${showBytes ? exactBytes(file.csvSize!) : ''}]` : '',
+    ].filter(Boolean).join(' ') || undefined;
+}
 const selectedRow = ref<number | null>(null);
 watch(() => props.files, () => { selectedRow.value = null; });
 
@@ -139,7 +163,7 @@ const backgroundColumns = computed(() => columns.value
                         @mouseleave="hideImPreview"
                         @click="column.label === 'ファイル名' && selectFile(index)"
                         @dblclick="column.label === 'ファイル名' && openFile(index)"
-                        :title="column.label === '個別情報' ? (isImFile(file.filename) ? undefined : file.individualInfo || undefined) : column.label === '説明' ? file.description || undefined : column.label === 'ファイル名' ? [file.filename, formatFileTimestamp(file.modifiedAt), file.size == null ? '' : `${formatByteCount(file.size)}バイト`, file.size != null && file.csvSize != null && file.size !== file.csvSize ? `[CSV: ${formatByteCount(file.csvSize)}バイト]` : ''].filter(Boolean).join(' ') : undefined">
+                        :title="column.label === '個別情報' ? (isImFile(file.filename) ? undefined : file.individualInfo || undefined) : column.label === '説明' ? descriptionTooltip(file) : column.label === 'ファイル名' ? [file.filename, formatFileTimestamp(file.modifiedAt)].filter(Boolean).join(' ') : undefined">
                         <template v-if="column.label === 'No'">{{ index + 1 }}</template>
                         <template v-else-if="column.label === 'ファイル名'">{{ file.filename }}</template>
                         <template v-else-if="column.label === '説明'">{{ file.description }}</template>
