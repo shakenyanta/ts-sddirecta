@@ -277,14 +277,12 @@ async fn open_daily_report(filename: String, app: tauri::AppHandle) -> Result<()
     let mut query = tauri::Url::parse("http://localhost/").map_err(|e| e.to_string())?;
     query.query_pairs_mut().append_pair("filename", &filename);
     let url = format!("index.html#/daily-report?{}", query.query().unwrap_or_default());
-    let mut builder = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url.into()))
+    // メインと前後を自由に切り替えられる独立ウィンドウにする。
+    let builder = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url.into()))
         .title(format!("日報解析 - {filename}"))
         .inner_size(758.0, 810.0)
         .resizable(true)
         .visible(false);
-    if let Some(main) = app.get_webview_window("main") {
-        builder = builder.parent(&main).map_err(|e| e.to_string())?;
-    }
     let window = builder.build().map_err(|e| e.to_string())?;
     if let Err(error) = window_layout::fit_startup_window(&window) {
         diagnostics::record("WARN", &format!("daily report window layout failed: {error}"));

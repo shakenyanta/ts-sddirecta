@@ -125,6 +125,28 @@ test('output tab uses exe/output and current CSV without replacing source or wri
   assert.equal(calls.length, 3);
 });
 
+test('output hides only multiple FILE-BC warnings while source warnings remain visible', async () => {
+  const duplicate = 'FILE-BCが複数あります: FILE-BC.001, FILE-BC.002, FILE-BC.003';
+  const result = outputMatch();
+  result.file_updates.warnings = [duplicate, 'FILE-AAがありません', 'FILE-BAが複数あります: FILE-BA.001, FILE-BA.002', 'FILE-BCの読込に失敗しました'];
+  result.warning_files = ['FILE-BC.txt'];
+  const ui = view(backend({
+    get_executable_directory: () => 'C:\\app',
+    find_output_files: () => result,
+    read_startup_csv: () => 'A,FILE-BM.001,0,1FF\nE',
+    find_dictionary_files: () => ({ ...outputMatch(), file_updates: { files: {}, warnings: [duplicate] } }),
+  }));
+  await ui.initializeSource();
+  assert.ok(panelContents(ui).some(message => message.text?.includes(duplicate) && message.warning));
+  ui.messages.value = [];
+  await ui.selectOptionTab('output');
+  assert.deepEqual(panelContents(ui), [
+    { text: 'output：拡張子エラー：FILE-BC.txt', warning: true },
+    ...result.file_updates.warnings.slice(1).map(text => ({ text: `output：${text}`, warning: true })),
+  ]);
+  assert.deepEqual(ui.outputFiles.value.map(row => row.updateNo), ['01', '02']);
+});
+
 test('output reload clears missing files and errors, and only the latest request is displayed', async () => {
   const pending = [];
   const ui = view(async command => {

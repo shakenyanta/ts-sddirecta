@@ -69,8 +69,13 @@ const tableWidth = computed(() => columns.value.reduce((sum, column) => sum + co
 <style scoped src="../styles/fileGrid.css"></style>
 <style scoped>
 .report-grid { padding: 0; }
-.grid-scroll { height: auto; max-height: 100%; }
+.grid-scroll { height: auto; max-height: 100%; border-color: #cee2d5; }
 .grid-content { flex-shrink: 0; min-height: 0; }
+th, td { border-right-color: #cee2d5; border-bottom-color: #cee2d5; }
+th { background: #ddefe3; color: #246b45; }
+tbody tr:nth-child(even) { background: #eff8f2; }
+tbody tr:hover { background: #e2f1e7; }
+.column-resizer:hover { background: #a7d3b5; }
 tbody td:nth-child(2) { text-align: center; }
 tbody td:nth-child(3), tbody td:nth-child(4), tbody td:nth-child(5) { text-align: left; }
 tbody td:nth-child(4) { font-family: Consolas, monospace; }

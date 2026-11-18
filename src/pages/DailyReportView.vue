@@ -75,7 +75,7 @@ onMounted(async () => {
 <style scoped>
 .daily-report { display: flex; flex-direction: column; height: 100%; padding: 10px; gap: 8px; background: #f7f9fc; color: #334155; font: 12px/1.5 'Yu Gothic UI', Meiryo, sans-serif; }
 .report-toolbar { display: flex; align-items: center; flex-shrink: 0; gap: 12px; min-height: 28px; }
-h1 { flex-shrink: 0; color: #255b9f; font-size: 14px; font-weight: 600; }
+h1 { flex-shrink: 0; color: #246b45; font-size: 14px; font-weight: 600; }
 .record-controls { display: flex; align-items: center; gap: 6px; margin-left: auto; flex-shrink: 0; }
 .record-position { min-width: 68px; text-align: right; font-variant-numeric: tabular-nums; }
 .report-messages { flex-shrink: 0; max-height: 96px; overflow: auto; padding: 6px 8px; border: 1px solid #e7d5aa; border-radius: 4px; background: #fff8e8; color: #795821; }

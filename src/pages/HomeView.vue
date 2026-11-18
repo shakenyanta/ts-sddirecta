@@ -352,7 +352,9 @@ async function refreshOutputFiles() {
         const result = await invoke<MatchedFileResult>('find_output_files', { filenames: [...sdDirectDictionary.value.keys()] });
         if (!active()) return;
         outputResult.value = result;
-        const warnings = [...result.warning_files.map(name => `拡張子エラー：${name}`), ...result.file_updates.warnings];
+        // outputでは複数のFILE-BCを保持できるため、複数存在の警告だけを表示しない。
+        const updateWarnings = result.file_updates.warnings.filter(text => !text.startsWith('FILE-BCが複数あります:'));
+        const warnings = [...result.warning_files.map(name => `拡張子エラー：${name}`), ...updateWarnings];
         if (warnings.length) await appendMessage(...warnings.map(text => ({ text: `output：${text}`, warning: true as const })));
     } catch (error) {
         if (!active()) return;
