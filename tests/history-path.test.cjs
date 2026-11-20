@@ -9,6 +9,49 @@ new Function('exports', ts.transpileModule(readFileSync('src/utils/historyPath.t
 const { defaultHistoryPathRules: defaults, historyDisplayPath: display, validateHistoryPathRules: validate, parseHistoryPathRules: parse } = bindings;
 const base = defaults[0].folder;
 
+test('fixed folders use the requested labels and colors and replace legacy duplicates', () => {
+  const { fixedHistoryPathRules: fixed, editableHistoryPathRules: editable, historyPathsColorStyle: style } = bindings;
+  assert.deepEqual(fixed.map(rule => [rule.label, rule.color]), [
+    ['TS-02各社', 'blue'], ['TS-01各社', 'green'], ['TS-02開発', 'orange'], ['TS-01開発', 'purple'],
+  ]);
+  assert.deepEqual(validate(fixed), fixed);
+  for (const rule of fixed) {
+    assert.deepEqual(display(rule.folder + '\\file.hex'), { label: rule.label, path: 'file.hex' });
+    assert.deepEqual(style([rule.folder + '\\file.hex'], [...fixed, ...defaults]), bindings.historyPathColorStyle(rule.color));
+    const legacy = { label: '旧名', folder: rule.folder.toUpperCase().replaceAll('\\', '/') + '/', color: 'red' };
+    assert.deepEqual(editable([legacy, ...defaults]), defaults);
+  }
+});
+
+test('eight color presets persist and old rules remain compatible', () => {
+  const { historyPathColors: colors, historyPathColorStyle: style, historyPathsColorStyle: pathsStyle } = bindings;
+  assert.equal(colors.length, 8);
+  assert.equal(new Set(colors.map(color => color.id)).size, 8);
+  for (const color of colors) {
+    const rules = validate([{ label: '作業', folder: 'C:\\work', color: color.id }]);
+    assert.deepEqual(parse(JSON.stringify({ version: 1, rules })), rules);
+    assert.deepEqual(pathsStyle(['C:\\work\\file'], rules), { color: color.color, backgroundColor: color.backgroundColor });
+  }
+  assert.deepEqual(pathsStyle([base], defaults), style('blue'));
+  for (const color of ['invalid', '', null, 1, '#fff']) {
+    assert.throws(() => validate([{ label: '作業', folder: 'C:\\work', color }]));
+  }
+});
+
+test('row colors use the deepest rule and avoid coloring mixed or unrelated entries', () => {
+  const { historyPathColorStyle: style, historyPathsColorStyle: pathsStyle } = bindings;
+  const rules = validate([
+    { label: '親', folder: 'C:\\work', color: 'green' },
+    { label: '子', folder: 'C:\\work\\child', color: 'red' },
+  ]);
+  assert.deepEqual(pathsStyle(['c:/WORK/child/file'], rules), style('red'));
+  assert.deepEqual(pathsStyle(['C:\\work\\a', 'C:\\work\\b'], rules), style('green'));
+  assert.deepEqual(pathsStyle(['C:\\work\\a', 'C:\\work\\child\\b'], rules), {});
+  assert.deepEqual(pathsStyle(['C:\\work\\a', 'D:\\other'], rules), {});
+  assert.deepEqual(pathsStyle(['D:\\other'], rules), {});
+  assert.deepEqual(pathsStyle([], rules), {});
+});
+
 test('history paths label complete descendants and leave unrelated locations intact', () => {
   assert.deepEqual(display(base + '\\案件 A\\FILE-AA.001'), { label: '共有', path: '案件 A\\FILE-AA.001' });
   assert.deepEqual(display(base.toUpperCase() + '\\案件 B'), { label: '共有', path: '案件 B' });
@@ -35,6 +78,8 @@ test('deepest rule wins in either order, with drive roots and disabling supporte
 });
 
 test('rule validation rejects malformed, ambiguous or relative paths without modifying the draft', () => {
+
+  assert.throws(() => validate([{ label: '作業', folder: '' }], 4), /5行目/);
   const valid = { label: '作業', folder: 'C:\\work' };
   for (const folder of ['', 'work', 'C:', '\\\\server', 'C:\\work\\..\\other', 'C:\\work\\.\\other',
     'C:\\a*', 'C:\\a:b', 'C:\\work\\\\other']) assert.throws(() => validate([{ ...valid, folder }]));

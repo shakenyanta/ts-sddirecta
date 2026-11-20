@@ -9,7 +9,7 @@ import { features } from '../editions';
 import { folderPathAt, splitFolderPath } from '../utils/executablePath';
 import { folderTreeStorageKey, parseFolderTreeState, type FolderTreeState } from '../utils/folderTreeState';
 import { dropHistoryStorageKey, parseDropHistoryState, type DropHistoryEntry, type DropHistoryState } from '../utils/dropHistoryState';
-import { defaultHistoryPathRules, historyPathRulesStorageKey, parseHistoryPathRules, validateHistoryPathRules, historyDisplayPath, type HistoryPathRule } from '../utils/historyPath';
+import { defaultHistoryPathRules, fixedHistoryPathRules, editableHistoryPathRules, historyPathRulesStorageKey, parseHistoryPathRules, validateHistoryPathRules, historyDisplayPath, historyPathColors, historyPathColorStyle, historyPathsColorStyle, type HistoryPathRule } from '../utils/historyPath';
 import { createLogScroller } from '../utils/logScroll';
 import { formatFileTimestamp } from '../utils/fileTimestamp';
 import { parseSdDirectCsv, type AddressRange, type SdArea } from '../utils/sdDirectCsv';
@@ -31,8 +31,10 @@ const optionTabs = [
 const activeOptionTab = ref<typeof optionTabs[number]['id']>('files');
 
 const dropHistory = ref<DropHistoryEntry[]>([]);
-const historyPathRules = ref<HistoryPathRule[]>(defaultHistoryPathRules.map(rule => ({ ...rule })));
+const customHistoryPathRules = ref<HistoryPathRule[]>(defaultHistoryPathRules.map(rule => ({ ...rule })));
+const historyPathRules = computed(() => [...fixedHistoryPathRules, ...customHistoryPathRules.value]);
 const historyPathDraft = ref<HistoryPathRule[]>([]);
+const historyPathEditorRows = computed(() => [...fixedHistoryPathRules.map(rule => ({ ...rule })), ...historyPathDraft.value]);
 const historyPathDialog = ref<HTMLDialogElement | null>(null);
 const historyPathError = ref('');
 
@@ -42,7 +44,7 @@ function displayHistoryPath(path: string) {
 
 function editHistoryPathRules() {
 	if (disposed || closing.value || !historyPathDialog.value || historyPathDialog.value.open) return;
-	historyPathDraft.value = historyPathRules.value.map(rule => ({ ...rule }));
+	historyPathDraft.value = customHistoryPathRules.value.map(rule => ({ ...rule }));
 	historyPathError.value = '';
 	historyPathDialog.value.showModal();
 }
@@ -55,9 +57,10 @@ function cancelHistoryPathRules() {
 function saveHistoryPathRules() {
 	if (disposed || closing.value || !historyPathDialog.value?.open) return;
 	try {
-		const rules = validateHistoryPathRules(historyPathDraft.value);
+		const draft = validateHistoryPathRules(historyPathDraft.value.filter(rule => rule.label.trim() || rule.folder.trim()), fixedHistoryPathRules.length);
+		const rules = validateHistoryPathRules([...fixedHistoryPathRules, ...editableHistoryPathRules(draft)]).slice(fixedHistoryPathRules.length);
 		localStorage.setItem(historyPathRulesStorageKey, JSON.stringify({ version: 1, rules }));
-		historyPathRules.value = rules;
+		customHistoryPathRules.value = rules;
 		cancelHistoryPathRules();
 	} catch (error) {
 		historyPathError.value = `省略設定を保存できませんでした: ${String(error)}`;
@@ -67,7 +70,7 @@ function saveHistoryPathRules() {
 function restoreHistoryPathRules() {
 	try {
 		const raw = localStorage.getItem(historyPathRulesStorageKey);
-		if (raw !== null) historyPathRules.value = parseHistoryPathRules(raw);
+		if (raw !== null) customHistoryPathRules.value = editableHistoryPathRules(parseHistoryPathRules(raw));
 	} catch (error) {
 		historyPathError.value = `省略設定を復元できないため初期設定を使用します: ${String(error)}`;
 		void appendMessage({ text: historyPathError.value, warning: true });
@@ -1422,6 +1425,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 							<thead><tr><th scope="col" class="history-favorite-cell" aria-label="お気に入り"></th><th scope="col">日時</th><th scope="col">保存先パス</th><th scope="col">削除</th></tr></thead>
 							<tbody>
 								<tr v-for="entry in group.entries" :key="entry.id" :class="{ 'history-selected': selectedHistoryId === entry.id }"
+									:style="historyPathsColorStyle(entry.paths, historyPathRules)"
 									@click="selectHistory(entry.id)">
 									<td class="history-favorite-cell">
 										<button type="button" class="history-favorite" :class="{ 'is-favorite': entry.favorite }"
@@ -1431,7 +1435,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 									</td>
 									<td class="history-date"><time :datetime="new Date(entry.droppedAt).toISOString()">{{ formatFileTimestamp(entry.droppedAt) }}</time></td>
 									<td>
-										<div v-for="(path, index) in entry.paths" :key="index" class="history-path-row">
+										<div v-for="(path, index) in entry.paths" :key="index" class="history-path-row" :style="historyPathsColorStyle([path], historyPathRules)">
 										<button type="button" class="history-path" :title="path" :aria-label="path"
 											aria-describedby="history-hint" :disabled="historyBusy" @focus="selectHistory(entry.id)"
 											@dblclick.prevent="reopenHistory(entry.id)" @keydown.enter.prevent="!$event.repeat && reopenHistory(entry.id)">
@@ -1468,16 +1472,29 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 			<h2 id="history-path-title">パスの省略設定</h2>
 			<p>登録フォルダーとその配下を「[表示名] 相対パス」で表示します。複数に一致すると、最も深いフォルダーを優先します。</p>
 			<div class="history-rule-list">
-				<div v-for="(rule, index) in historyPathDraft" :key="index" class="history-rule-editor">
-					<label>表示名<input v-model="rule.label" type="text" :disabled="closing" :aria-label="`${index + 1}行目の表示名`" placeholder="共有"></label>
-					<label>省略するフォルダー<input v-model="rule.folder" type="text" :disabled="closing" :aria-label="`${index + 1}行目の省略するフォルダー`" placeholder="C:\作業"></label>
-					<button type="button" :disabled="closing" :aria-label="`${index + 1}行目を削除`" @click="historyPathDraft.splice(index, 1)">削除</button>
-				</div>
+				<table class="history-rule-table" aria-label="パスの省略設定一覧">
+					<colgroup><col class="history-rule-number-column"><col class="history-rule-label-column"><col><col class="history-rule-color-column"><col class="history-rule-delete-column"></colgroup>
+					<thead><tr><th scope="col">No</th><th scope="col">表示名</th><th scope="col">省略するフォルダー</th><th scope="col">色</th><th scope="col">削除</th></tr></thead>
+					<tbody>
+				<tr v-for="(rule, index) in historyPathEditorRows" :key="index" class="history-rule-editor">
+					<td class="history-rule-number">{{ index + 1 }}</td>
+					<td><input v-model="rule.label" type="text" :style="historyPathColorStyle(rule.color)" :disabled="closing || index < fixedHistoryPathRules.length" :aria-label="`${index + 1}行目の表示名`" placeholder="共有"></td>
+					<td><input v-model="rule.folder" type="text" :disabled="closing || index < fixedHistoryPathRules.length" :aria-label="`${index + 1}行目の省略するフォルダー`" placeholder="C:\作業"></td>
+					<td><select :value="rule.color ?? 'blue'" :style="historyPathColorStyle(rule.color)" :disabled="closing || index < fixedHistoryPathRules.length" :aria-label="`${index + 1}行目の色`" @change="rule.color = ($event.target as HTMLSelectElement).value as HistoryPathRule['color']">
+						<option v-for="(preset, colorIndex) in historyPathColors" :key="preset.id" :value="preset.id" :style="historyPathColorStyle(preset.id)">{{ colorIndex + 1 }}：{{ preset.label }}</option>
+					</select></td>
+					<td><span v-if="index < fixedHistoryPathRules.length">固定</span><button v-else type="button" :disabled="closing" :aria-label="`${index + 1}行目を削除`" @click="historyPathDraft.splice(index - fixedHistoryPathRules.length, 1)">削除</button></td>
+				</tr>
+					</tbody>
+				</table>
 			</div>
-			<button type="button" class="history-rule-add" :disabled="closing" @click="historyPathDraft.push({ label: '', folder: '' })">設定を追加</button>
-			<p>設定をすべて削除するとフルパスで表示します。コピー・再読込は常に元のフルパスを使います。</p>
+			<p>色は8パターンから選べます。表示名と履歴の行に反映し、複数の保存先がある行はパスごとに色分けします。</p>
 			<p v-if="historyPathError" class="history-settings-error" role="alert">{{ historyPathError }}</p>
-			<div class="history-clear-actions"><button type="button" autofocus @click="cancelHistoryPathRules">キャンセル</button><button type="submit" :disabled="closing">保存</button></div>
+			<div class="history-clear-actions">
+				<button type="button" class="history-rule-add" :disabled="closing" @click="historyPathDraft.push({ label: '', folder: '' })">追加</button>
+				<button type="button" autofocus @click="cancelHistoryPathRules">キャンセル</button>
+				<button type="submit" :disabled="closing">保存</button>
+			</div>
 		</form>
 	</dialog>
 	<dialog v-if="features.optionPanel" ref="historyClearDialog" class="history-clear-dialog" aria-labelledby="history-clear-title"
@@ -1663,13 +1680,23 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 .history-path-settings { display: flex; align-items: center; flex-shrink: 0; gap: 6px; padding: 2px 6px; color: #52647c; font: 11px/18px 'Yu Gothic UI', Meiryo, sans-serif; border-bottom: 1px solid #d7e5f5; }
 .history-rules-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .history-settings-error { margin: 4px 6px; color: #a74444; font-size: 11px; overflow-wrap: anywhere; }
-.history-clear-dialog.history-path-dialog { width: min(680px, calc(100vw - 64px)); max-width: none; box-sizing: border-box; max-height: calc(100vh - 32px); overflow: auto; }
-.history-rule-list { max-height: 40vh; overflow: auto; }
-.history-rule-editor { display: grid; grid-template-columns: minmax(60px, 1fr) minmax(100px, 3fr) auto; align-items: end; gap: 6px; margin-bottom: 8px; }
-.history-rule-editor label { min-width: 0; }
-.history-rule-editor input { display: block; width: 100%; box-sizing: border-box; padding: 4px; border: 1px solid #b8c9df; border-radius: 3px; font: inherit; }
+.history-clear-dialog.history-path-dialog { width: calc(100vw - 32px); height: calc(100vh - 32px); max-width: none; box-sizing: border-box; max-height: calc(100vh - 32px); overflow: auto; }
+.history-path-dialog > form { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.history-path-dialog > form > :not(.history-rule-list) { flex-shrink: 0; }
+.history-rule-list { flex: 1; min-height: 0; overflow: auto; }
+.history-rule-table { width: 100%; min-width: 480px; table-layout: fixed; border-collapse: separate; border-spacing: 0; }
+.history-rule-number-column { width: 32px; }
+.history-rule-label-column { width: 21%; }
+.history-rule-color-column { width: 96px; }
+.history-rule-delete-column { width: 54px; }
+.history-rule-table th, .history-rule-table td { padding: 5px; border-right: 1px solid #d7e5f5; border-bottom: 1px solid #d7e5f5; text-align: left; vertical-align: middle; }
+.history-rule-table td.history-rule-number { text-align: center; }
+.history-rule-table th:first-child, .history-rule-table td:first-child { border-left: 1px solid #d7e5f5; }
+.history-rule-table th { position: sticky; top: 0; z-index: 1; background: #edf4fd; border-top: 1px solid #d7e5f5; font-weight: normal; }
+.history-rule-table tbody tr:nth-child(even) { background: #f5f9fe; }
+.history-rule-editor input, .history-rule-editor select { display: block; width: 100%; box-sizing: border-box; padding: 4px; border: 1px solid #b8c9df; border-radius: 3px; font: inherit; }
 .history-rule-editor button, .history-rule-add { padding: 4px 8px; border: 1px solid #d7e5f5; border-radius: 3px; background: #fff; font: inherit; cursor: pointer; }
-.history-path-label { flex-shrink: 0; max-width: 30%; overflow: hidden; text-overflow: ellipsis; color: #52647c; }
+.history-path-label { flex-shrink: 0; max-width: 30%; overflow: hidden; text-overflow: ellipsis; color: inherit; }
 .history-toolbar { display: flex; align-items: center; flex-shrink: 0; gap: 6px; padding-right: 6px; }
 .history-toolbar .history-hint { flex: 1; min-width: 0; }
 .history-clear { flex-shrink: 0; padding: 2px 6px; border: 1px solid #d7e5f5; border-radius: 3px; background: #fff; color: #52647c; font: 11px/18px 'Yu Gothic UI', Meiryo, sans-serif; cursor: pointer; }
@@ -1736,6 +1763,11 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 .history-table tbody tr:nth-child(even) { background: #f5f9fe; }
 .history-table tbody tr:hover { background: #eaf3ff; }
 .history-table tbody tr.history-selected { background: #dbeafe; }
+.history-table tbody tr:hover td { box-shadow: inset 0 1px #2875d966, inset 0 -1px #2875d966; }
+.history-table tbody tr.history-selected td { position: relative; z-index: 0; }
+.history-table tbody tr.history-selected td::after { content: ''; position: absolute; inset: 0 -1px -1px 0; z-index: 1; border-top: 2px solid #2875d9; border-bottom: 2px solid #2875d9; box-sizing: border-box; pointer-events: none; }
+.history-table tbody tr.history-selected td:first-child::after { border-left: 2px solid #2875d9; }
+.history-table tbody tr.history-selected td:last-child::after { right: 0; border-right: 2px solid #2875d9; }
 .history-date { white-space: nowrap; }
 .history-path-row { display: flex; gap: 4px; min-width: 0; }
 .history-path {
@@ -1745,7 +1777,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 }
 .history-path:disabled { cursor: default; }
 .history-path:focus-visible { outline: 2px solid #2875d9; outline-offset: -2px; }
-.history-copy { flex: 0 0 18px; width: 18px; height: 18px; padding: 2px; border: 0; border-radius: 2px; background: transparent; color: #52647c; cursor: pointer; }
+.history-copy { flex: 0 0 18px; width: 18px; height: 18px; padding: 2px; border: 0; border-radius: 2px; background: transparent; color: inherit; cursor: pointer; }
 .history-copy:hover { background: #cce0fa; }
 .history-copy:focus-visible { outline: 2px solid #2875d9; outline-offset: -2px; }
 .history-copy svg { display: block; width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.2; }

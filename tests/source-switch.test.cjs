@@ -1836,6 +1836,34 @@ function historyStorage() {
   return { values, getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) };
 }
 
+test('fixed path rules survive empty saves, missing storage and legacy overrides', () => {
+  const { fixedHistoryPathRules: fixed, historyPathRulesStorageKey: key } = utility('src/utils/historyPath.ts');
+  const storage = historyStorage();
+  storage.setItem(key, JSON.stringify({ version: 1, rules: [
+    { label: '旧設定', folder: fixed[0].folder, color: 'red' },
+    { label: '作業', folder: 'C:\\work', color: 'yellow' },
+  ] }));
+  const ui = view(backend(), performance, Date, storage);
+  ui.restoreHistoryPathRules();
+  assert.deepEqual(ui.historyPathRules.value.slice(0, 4), fixed);
+  assert.equal(ui.historyPathRules.value.length, 5);
+  const dialog = { open: false, showModal() { this.open = true; }, close() { this.open = false; } };
+  ui.historyPathDialog.value = dialog;
+  ui.editHistoryPathRules();
+  assert.deepEqual(ui.historyPathDraft.value, [{ label: '作業', folder: 'C:\\work', color: 'yellow' }]);
+  ui.historyPathDraft.value = [];
+  ui.saveHistoryPathRules();
+  assert.deepEqual(ui.historyPathRules.value, fixed);
+  assert.deepEqual(JSON.parse(storage.getItem(key)).rules, []);
+  const next = view(backend(), performance, Date, storage);
+  next.restoreHistoryPathRules();
+  assert.deepEqual(next.historyPathRules.value, fixed);
+  storage.values.delete(key);
+  const fresh = view(backend(), performance, Date, storage);
+  fresh.restoreHistoryPathRules();
+  assert.deepEqual(fresh.historyPathRules.value.slice(0, 4), fixed);
+});
+
 test('path rules edit as a draft, save separately and restore without changing history', async () => {
   const storage = historyStorage();
   const ui = view(backend(), performance, Date, storage);
@@ -1846,7 +1874,7 @@ test('path rules edit as a draft, save separately and restore without changing h
   ui.editHistoryPathRules();
   ui.historyPathDraft.value[0].label = '取り消し';
   ui.cancelHistoryPathRules();
-  assert.equal(ui.historyPathRules.value[0].label, '共有');
+  assert.equal(ui.historyPathRules.value[4].label, '共有');
   assert.equal(storage.values.size, 0);
   ui.editHistoryPathRules();
   ui.historyPathDraft.value = [{ label: '作業', folder: 'C:\\work' }];
@@ -1863,6 +1891,37 @@ test('path rules edit as a draft, save separately and restore without changing h
   ui.saveHistoryPathRules();
   next.restoreHistoryPathRules();
   assert.deepEqual(next.displayHistoryPath('C:\\work\\file'), { label: '', path: 'C:\\work\\file' });
+});
+
+test('saving path settings skips blank rows but rejects partially filled rows', () => {
+  const storage = historyStorage();
+  const ui = view(backend(), performance, Date, storage);
+  const dialog = { open: false, showModal() { this.open = true; }, close() { this.open = false; } };
+  ui.historyPathDialog.value = dialog;
+  const before = structuredClone(ui.historyPathRules.value);
+  ui.editHistoryPathRules();
+  ui.historyPathDraft.value.push({ label: '', folder: '' }, { label: '  ', folder: '  ', color: 'red' });
+  ui.saveHistoryPathRules();
+  assert.equal(dialog.open, false);
+  assert.equal(ui.historyPathError.value, '');
+  assert.deepEqual(ui.historyPathRules.value, before);
+  const next = view(backend(), performance, Date, storage);
+  next.restoreHistoryPathRules();
+  assert.deepEqual(next.historyPathRules.value, before);
+  for (const partial of [{ label: '作業', folder: '' }, { label: '', folder: 'C:\\work' }]) {
+    ui.editHistoryPathRules();
+    ui.historyPathDraft.value.push(partial);
+    ui.saveHistoryPathRules();
+    assert.equal(dialog.open, true);
+    assert.ok(ui.historyPathError.value);
+    assert.deepEqual(ui.historyPathRules.value, before);
+    ui.cancelHistoryPathRules();
+  }
+  ui.editHistoryPathRules();
+  ui.historyPathDraft.value = [{ label: '', folder: '' }];
+  ui.saveHistoryPathRules();
+  assert.equal(dialog.open, false);
+  assert.deepEqual(ui.historyPathRules.value, utility('src/utils/historyPath.ts').fixedHistoryPathRules);
 });
 
 test('invalid and failed path settings saves retain applied rules and corrupt restoration preserves storage', () => {
