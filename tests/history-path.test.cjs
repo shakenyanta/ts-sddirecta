@@ -38,6 +38,22 @@ test('eight color presets persist and old rules remain compatible', () => {
   }
 });
 
+test('no color persists and overrides a colored parent without changing shortening', () => {
+  const { historyPathColorStyle: style, historyPathsColorStyle: pathsStyle } = bindings;
+  const rules = validate([
+    { label: '親', folder: 'C:\\work', color: 'green' },
+    { label: '子', folder: 'C:\\work\\child', color: 'none' },
+  ]);
+  const restored = parse(JSON.stringify({ version: 1, rules }));
+  assert.deepEqual(restored, rules);
+  assert.deepEqual(style('none'), {});
+  assert.deepEqual(pathsStyle(['C:\\work\\child\\file'], restored), {});
+  assert.deepEqual(pathsStyle(['C:\\work\\child\\a', 'C:\\work\\child\\b'], restored), {});
+  assert.deepEqual(pathsStyle(['C:\\work\\a', 'C:\\work\\child\\b'], restored), {});
+  assert.deepEqual(pathsStyle(['C:\\work\\a'], restored), style('green'));
+  assert.deepEqual(display('C:\\work\\child\\file', restored), { label: '子', path: 'file' });
+});
+
 test('row colors use the deepest rule and avoid coloring mixed or unrelated entries', () => {
   const { historyPathColorStyle: style, historyPathsColorStyle: pathsStyle } = bindings;
   const rules = validate([

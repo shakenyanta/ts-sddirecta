@@ -8,10 +8,11 @@ export const historyPathColors = [
 	{ id: 'yellow', label: '黄', color: '#635014', backgroundColor: '#fff7d6' },
 	{ id: 'gray', label: '灰', color: '#374151', backgroundColor: '#edf0f4' },
 ] as const;
-type HistoryPathColor = typeof historyPathColors[number]['id'];
+type HistoryPathColor = typeof historyPathColors[number]['id'] | 'none';
 export interface HistoryPathRule { label: string; folder: string; color?: HistoryPathColor }
 
 export function historyPathColorStyle(color: HistoryPathColor = 'blue') {
+	if (color === 'none') return {};
 	const preset = historyPathColors.find(preset => preset.id === color) ?? historyPathColors[0];
 	return { color: preset.color, backgroundColor: preset.backgroundColor };
 }
@@ -55,7 +56,7 @@ export function validateHistoryPathRules(value: unknown, rowOffset = 0): History
 			throw Error(`${index + 1}行目にはドライブから始まる絶対パス、または共有フォルダーのUNCパスを入力してください。`);
 		}
 		if (labels.has(label.toLowerCase()) || folders.has(folder.toLowerCase())) throw Error(`${index + 1}行目の表示名またはフォルダーが重複しています。`);
-		if (rule.color !== undefined && !historyPathColors.some(preset => preset.id === rule.color)) throw Error(`${index + 1}行目の配色が不正です。`);
+		if (rule.color !== undefined && rule.color !== 'none' && !historyPathColors.some(preset => preset.id === rule.color)) throw Error(`${index + 1}行目の配色が不正です。`);
 		labels.add(label.toLowerCase());
 		folders.add(folder.toLowerCase());
 		return { label, folder: /^[a-z]:$/i.test(folder) ? folder + '\\' : folder, ...(rule.color === undefined ? {} : { color: rule.color }) };

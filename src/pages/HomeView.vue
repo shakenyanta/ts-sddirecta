@@ -37,6 +37,12 @@ const historyPathDraft = ref<HistoryPathRule[]>([]);
 const historyPathEditorRows = computed(() => [...fixedHistoryPathRules.map(rule => ({ ...rule })), ...historyPathDraft.value]);
 const historyPathDialog = ref<HTMLDialogElement | null>(null);
 const historyPathError = ref('');
+const historySettingsMenu = ref<HTMLDetailsElement | null>(null);
+const historyHelpDialog = ref<HTMLDialogElement | null>(null);
+
+function closeHistorySettingsMenu() {
+	if (historySettingsMenu.value) historySettingsMenu.value.open = false;
+}
 
 function displayHistoryPath(path: string) {
 	return historyDisplayPath(path, historyPathRules.value);
@@ -1389,11 +1395,23 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 			<div v-if="features.optionPanel" id="resizer3" class="resizer resizer-horizontal" @pointerdown="resizeOptions"></div>
 			<section v-if="features.optionPanel" id="panel_option" class="panel_option" aria-label="オプション"
 				:style="{ '--option-menu-height': `${Math.max(menuHeight, minimumMenuHeight)}px` }">
+				<div class="option-header">
 				<div class="option-tabs" role="tablist" aria-label="表示内容">
 					<button v-for="(tab, index) in optionTabs" :id="`option-tab-${tab.id}`" :key="tab.id"
 						type="button" role="tab" :aria-selected="activeOptionTab === tab.id"
 						:aria-controls="`option-panel-${tab.id}`" :tabindex="activeOptionTab === tab.id ? 0 : -1"
 						@click="selectOptionTab(tab.id)" @keydown="navigateOptionTab($event, index)">{{ tab.label }}</button>
+				</div>
+				<details v-if="activeOptionTab === 'history'" ref="historySettingsMenu" class="history-settings"
+					@keydown.esc.stop.prevent="closeHistorySettingsMenu(); ($event.currentTarget as HTMLElement).querySelector('summary')?.focus()"
+					@focusout="!($event.currentTarget as HTMLElement).contains($event.relatedTarget as Node | null) && closeHistorySettingsMenu()">
+					<summary title="履歴の設定" aria-label="履歴の設定"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 3-.6 2.4-2 .9-2.2-.7-2 3.4 1.7 1.7v2.6L2.2 15l2 3.4 2.2-.7 2 .9L9 21h4l.6-2.4 2-.9 2.2.7 2-3.4-1.7-1.7v-2.6L19.8 9l-2-3.4-2.2.7-2-.9L13 3Z"/><circle cx="11" cy="12" r="3"/></svg></summary>
+					<div class="history-settings-menu">
+						<button type="button" :disabled="closing" @click="closeHistorySettingsMenu(); editHistoryPathRules()">パスの省略設定…</button>
+						<button type="button" @click="closeHistorySettingsMenu(); historyHelpDialog?.showModal()">操作方法</button>
+						<button type="button" class="history-settings-clear" :disabled="closing || !historyGroups[1].entries.length" @click="closeHistorySettingsMenu(); requestHistoryClear()">履歴をクリア…</button>
+					</div>
+				</details>
 				</div>
 				<div v-show="activeOptionTab === 'files'" id="option-panel-files" class="option-tab-panel"
 					role="tabpanel" aria-labelledby="option-tab-files" tabindex="0">
@@ -1408,14 +1426,6 @@ function resize(event: PointerEvent, divider: 1 | 2) {
                 </div>
 				<div v-show="activeOptionTab === 'history'" id="option-panel-history" class="option-tab-panel history-panel"
 					role="tabpanel" aria-labelledby="option-tab-history" tabindex="0">
-					<div class="history-toolbar">
-						<p id="history-hint" class="history-hint">パスをダブルクリック、または選択してEnterで再読込します。</p>
-						<button type="button" class="history-clear" :disabled="closing || !historyGroups[1].entries.length" @click="requestHistoryClear">履歴をクリア</button>
-					</div>
-					<div class="history-path-settings">
-						<button type="button" class="history-clear" :disabled="closing" @click="editHistoryPathRules">パスの省略設定</button>
-						<span class="history-rules-summary" :title="historyPathRules.map(rule => `[${rule.label}] ${rule.folder}`).join('\n')">{{ historyPathRules.length ? historyPathRules.map(rule => `[${rule.label}] ${rule.folder}`).join(' ／ ') : '省略設定なし（フルパス表示）' }}</span>
-					</div>
 					<p v-if="historyPathError && !historyPathDialog?.open" class="history-settings-error" role="alert">{{ historyPathError }}</p>
 					<section v-for="group in historyGroups" :key="group.id" class="history-section" :class="`history-${group.id}`"
 						:aria-label="group.label">
@@ -1436,8 +1446,8 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 									<td class="history-date"><time :datetime="new Date(entry.droppedAt).toISOString()">{{ formatFileTimestamp(entry.droppedAt) }}</time></td>
 									<td>
 										<div v-for="(path, index) in entry.paths" :key="index" class="history-path-row" :style="historyPathsColorStyle([path], historyPathRules)">
-										<button type="button" class="history-path" :title="path" :aria-label="path"
-											aria-describedby="history-hint" :disabled="historyBusy" @focus="selectHistory(entry.id)"
+										<button type="button" class="history-path" :title="`${path}\nダブルクリック、または選択してEnterで再読込`" :aria-label="path"
+											:disabled="historyBusy" @focus="selectHistory(entry.id)"
 											@dblclick.prevent="reopenHistory(entry.id)" @keydown.enter.prevent="!$event.repeat && reopenHistory(entry.id)">
 											<span v-if="displayHistoryPath(path).label" class="history-path-label" aria-hidden="true">[{{ displayHistoryPath(path).label }}] </span>
 											<span v-if="displayHistoryPath(path).path.length > 24" class="history-path-prefix" aria-hidden="true">{{ displayHistoryPath(path).path.slice(0, -24) }}</span>
@@ -1466,6 +1476,12 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 			</section>
 		</div>
 	</div>
+	<dialog v-if="features.optionPanel" ref="historyHelpDialog" class="history-clear-dialog" aria-labelledby="history-help-title">
+		<h2 id="history-help-title">履歴の操作方法</h2>
+		<p>パスをダブルクリック、または選択してEnterで再読込します。</p>
+		<p>☆でお気に入りに登録し、★で解除します。パスの横のコピーアイコンでフルパスをコピーできます。</p>
+		<div class="history-clear-actions"><button type="button" @click="historyHelpDialog?.close()">閉じる</button></div>
+	</dialog>
 	<dialog v-if="features.optionPanel" ref="historyPathDialog" class="history-clear-dialog history-path-dialog" aria-labelledby="history-path-title"
 		@cancel.prevent="cancelHistoryPathRules">
 		<form @submit.prevent="saveHistoryPathRules">
@@ -1481,6 +1497,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 					<td><input v-model="rule.label" type="text" :style="historyPathColorStyle(rule.color)" :disabled="closing || index < fixedHistoryPathRules.length" :aria-label="`${index + 1}行目の表示名`" placeholder="共有"></td>
 					<td><input v-model="rule.folder" type="text" :disabled="closing || index < fixedHistoryPathRules.length" :aria-label="`${index + 1}行目の省略するフォルダー`" placeholder="C:\作業"></td>
 					<td><select :value="rule.color ?? 'blue'" :style="historyPathColorStyle(rule.color)" :disabled="closing || index < fixedHistoryPathRules.length" :aria-label="`${index + 1}行目の色`" @change="rule.color = ($event.target as HTMLSelectElement).value as HistoryPathRule['color']">
+						<option value="none" style="color: CanvasText; background-color: Canvas">なし</option>
 						<option v-for="(preset, colorIndex) in historyPathColors" :key="preset.id" :value="preset.id" :style="historyPathColorStyle(preset.id)">{{ colorIndex + 1 }}：{{ preset.label }}</option>
 					</select></td>
 					<td><span v-if="index < fixedHistoryPathRules.length">固定</span><button v-else type="button" :disabled="closing" :aria-label="`${index + 1}行目を削除`" @click="historyPathDraft.splice(index - fixedHistoryPathRules.length, 1)">削除</button></td>
@@ -1488,7 +1505,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 					</tbody>
 				</table>
 			</div>
-			<p>色は8パターンから選べます。表示名と履歴の行に反映し、複数の保存先がある行はパスごとに色分けします。</p>
+			<p>色は「なし」と8パターンから選べます。表示名と履歴の行に反映し、複数の保存先がある行はパスごとに色分けします。</p>
 			<p v-if="historyPathError" class="history-settings-error" role="alert">{{ historyPathError }}</p>
 			<div class="history-clear-actions">
 				<button type="button" class="history-rule-add" :disabled="closing" @click="historyPathDraft.push({ label: '', folder: '' })">追加</button>
@@ -1642,6 +1659,19 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 	overflow: hidden;
 	background: #fff;
 }
+.option-header { display: flex; position: relative; flex-shrink: 0; background: #f5f9fe; border-bottom: 1px solid #d7e5f5; }
+.option-header .option-tabs { flex: 1; min-width: 0; border-bottom: 0; }
+.history-settings { align-self: center; margin: 0 6px; color: #52647c; }
+.history-settings summary { display: flex; padding: 4px; border-radius: 3px; cursor: pointer; list-style: none; }
+.history-settings summary::-webkit-details-marker { display: none; }
+.history-settings summary:hover, .history-settings[open] summary { background: #eaf3ff; }
+.history-settings summary:focus-visible, .history-settings-menu button:focus-visible { outline: 2px solid #2875d9; outline-offset: -2px; }
+.history-settings summary svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; }
+.history-settings-menu { position: absolute; top: 100%; right: 6px; z-index: 5; min-width: 160px; padding: 4px; border: 1px solid #d7e5f5; border-radius: 5px; background: #fff; box-shadow: 0 4px 12px #0002; }
+.history-settings-menu button { display: block; width: 100%; padding: 7px 10px; border: 0; border-radius: 3px; background: transparent; color: #26364d; font: 12px 'Yu Gothic UI', Meiryo, sans-serif; text-align: left; cursor: pointer; }
+.history-settings-menu button:hover:not(:disabled) { background: #eaf3ff; }
+.history-settings-menu button:disabled { opacity: .5; cursor: default; }
+.history-settings-menu .history-settings-clear { margin-top: 4px; border-top: 1px solid #d7e5f5; border-radius: 0; }
 .option-tabs {
 	display: flex;
 	flex-shrink: 0;
@@ -1677,8 +1707,6 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 .output-panel :deep(.option-grid) { flex: 1; min-height: 0; height: auto; }
 .output-status { flex-shrink: 0; margin: 4px 6px; color: #52647c; font-size: 12px; }
 .history-panel { display: flex; flex-direction: column; }
-.history-path-settings { display: flex; align-items: center; flex-shrink: 0; gap: 6px; padding: 2px 6px; color: #52647c; font: 11px/18px 'Yu Gothic UI', Meiryo, sans-serif; border-bottom: 1px solid #d7e5f5; }
-.history-rules-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .history-settings-error { margin: 4px 6px; color: #a74444; font-size: 11px; overflow-wrap: anywhere; }
 .history-clear-dialog.history-path-dialog { width: calc(100vw - 32px); height: calc(100vh - 32px); max-width: none; box-sizing: border-box; max-height: calc(100vh - 32px); overflow: auto; }
 .history-path-dialog > form { display: flex; flex-direction: column; height: 100%; min-height: 0; }
@@ -1697,10 +1725,6 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 .history-rule-editor input, .history-rule-editor select { display: block; width: 100%; box-sizing: border-box; padding: 4px; border: 1px solid #b8c9df; border-radius: 3px; font: inherit; }
 .history-rule-editor button, .history-rule-add { padding: 4px 8px; border: 1px solid #d7e5f5; border-radius: 3px; background: #fff; font: inherit; cursor: pointer; }
 .history-path-label { flex-shrink: 0; max-width: 30%; overflow: hidden; text-overflow: ellipsis; color: inherit; }
-.history-toolbar { display: flex; align-items: center; flex-shrink: 0; gap: 6px; padding-right: 6px; }
-.history-toolbar .history-hint { flex: 1; min-width: 0; }
-.history-clear { flex-shrink: 0; padding: 2px 6px; border: 1px solid #d7e5f5; border-radius: 3px; background: #fff; color: #52647c; font: 11px/18px 'Yu Gothic UI', Meiryo, sans-serif; cursor: pointer; }
-.history-clear:disabled { opacity: .5; cursor: default; }
 .history-clear-dialog { max-width: min(440px, calc(100vw - 32px)); padding: 16px; border: 1px solid #d7e5f5; border-radius: 7px; color: #26364d; font: 12px/1.6 'Yu Gothic UI', Meiryo, sans-serif; }
 .history-clear-dialog::backdrop { background: #0005; }
 .history-clear-dialog h2 { margin: 0 0 10px; font-size: 15px; }
@@ -1712,7 +1736,6 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 .history-favorites { flex: 0 1 auto; max-height: min(160px, 40%); border-bottom: 1px solid #d7e5f5; }
 .history-recent { flex: 1; }
 .history-section > .history-list { height: auto; }
-.history-hint { flex-shrink: 0; margin: 0; padding: 3px 6px; color: #52647c; font: 11px/18px 'Yu Gothic UI', Meiryo, sans-serif; }
 .history-list {
 	height: 100%;
 	flex: 1;
