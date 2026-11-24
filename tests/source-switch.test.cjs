@@ -14,18 +14,19 @@ function utility(path) {
 }
 
 // Exercise the actual view setup with IPC/lifecycle boundaries replaced; no WebView or SD access.
-function view(invoke, clock = performance, DateClass = Date, storage, optionPanel = true, clipboardWrite) {
+function view(invoke, clock = performance, DateClass = Date, storage, optionPanel = true, clipboardWrite, initializeEdition = async () => {}) {
   const source = readFileSync('src/pages/HomeView.vue', 'utf8').match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
     .replace(/^import .*;\r?$/gm, '');
   let mount, unmount, listener, timer, copied, unlistened = false;
   const eventListeners = new Map();
   const keyListeners = new Set();
   const bindings = {
+    initializeEdition,
     localStorage: storage ?? { getItem: () => null, setItem: () => {} },
     performance: clock,
     Date: DateClass,
     crypto: require('node:crypto').webcrypto,
-    features: { value: { optionPanel, mapDetails: optionPanel } },
+    features: { get value() { const enabled = typeof optionPanel === 'function' ? optionPanel() : optionPanel; return { optionPanel: enabled, mapDetails: enabled }; } },
     ref: value => ({ value }),
     computed: get => ({ get value() { return get(); } }),
     nextTick: async () => {},
@@ -2794,6 +2795,25 @@ test('shutdown waiting keeps target changes disabled and reports wait failures',
   ui.unmount();
 });
 
+
+test('startup waits for edition resolution before restoring the selected tab', async () => {
+  for (const pro of [true, false]) {
+    let resolveEdition;
+    let enabled = false;
+    const pending = new Promise(resolve => { resolveEdition = resolve; });
+    const storage = historyStorage();
+    storage.setItem('sddirecta-option-tab-v1', 'file-info');
+    const ui = view(backend({ list_directory_files: () => [] }), performance, Date, storage,
+      () => enabled, undefined, async () => { await pending; enabled = pro; });
+    const mounted = ui.mount();
+    assert.equal(ui.activeOptionTab.value, 'files');
+    resolveEdition();
+    await mounted;
+    assert.equal(ui.activeOptionTab.value, pro ? 'file-info' : 'files');
+    assert.equal(storage.getItem('sddirecta-option-tab-v1'), 'file-info');
+    ui.unmount();
+  }
+});
 
 test('selected option tab survives restart and reloads file listings on startup', async () => {
   const key = 'sddirecta-option-tab-v1';

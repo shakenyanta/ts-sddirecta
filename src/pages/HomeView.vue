@@ -6,7 +6,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import SdMenu from '../components/SdMenu.vue';
 import OptionGrid from '../components/OptionGrid.vue';
 import FolderCombo from '../components/FolderCombo.vue';
-import { features } from '../editions';
+import { features, initializeEdition } from '../editions';
 import { folderPathAt, splitFolderPath } from '../utils/executablePath';
 import { folderTreeStorageKey, parseFolderTreeState, type FolderTreeState } from '../utils/folderTreeState';
 import { dropHistoryStorageKey, parseDropHistoryState, type DropHistoryEntry, type DropHistoryState } from '../utils/dropHistoryState';
@@ -686,6 +686,8 @@ async function selectFolder(path: string) {
 }
 
 onMounted(async () => {
+	await initializeEdition();
+	if (disposed) return;
 	if (features.value.optionPanel) {
         restoreHistoryPathRules();
         restoreOptionTab();
