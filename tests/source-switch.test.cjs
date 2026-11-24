@@ -47,6 +47,7 @@ function view(invoke, clock = performance, DateClass = Date, storage, optionPane
     ...utility('src/utils/dropHistoryState.ts'),
     ...utility('src/utils/historyPath.ts'),
     ...utility('src/utils/fileTimestamp.ts'),
+    ...utility('src/utils/fileIconCache.ts'),
     ...utility('src/utils/sdWrite.ts'),
     createLogScroller: getPanel => utility('src/utils/logScroll.ts').createLogScroller(getPanel, {
       request: () => 1, cancel: () => {}, reducedMotion: () => false,
@@ -55,10 +56,11 @@ function view(invoke, clock = performance, DateClass = Date, storage, optionPane
   const api = new Function(...Object.keys(bindings), transpile(source) + `
     return { resize, sdHeightRatio, menuHeight, resizeOptions, baseWidthRatio, appendMessage, initializeSource, refreshMatchedFiles, sourceDirectory, displayedDirectory, openFolder, openGridFile,
       selectFolder, selectedFolder, folderNodes, visibleFolders, toggleFolder, pathList, saveFolderState, restoreFolderState, dropHistory, historyRows, historyGroups, historyStorageError,
-      selectHistory, reopenHistory, selectedHistoryId, historyBusy, activeOptionTab, copyHistoryPath, toggleHistoryFavorite, deleteHistory,
+      selectRegisteredFolder, selectHistory, reopenHistory, selectedHistoryId, historyBusy, activeOptionTab, copyHistoryPath, toggleHistoryFavorite, deleteHistory,
       historyClearDialog, requestHistoryClear, cancelHistoryClear, confirmHistoryClear,
       historyPathRules, historyPathDraft, historyPathDialog, historyPathError, displayHistoryPath, editHistoryPathRules, cancelHistoryPathRules, saveHistoryPathRules, restoreHistoryPathRules, closing,
       selectOptionTab, refreshOutputFiles, outputFiles, outputDirectory, outputError, outputLoading,
+      generalFiles, directoryFilesLoading, directoryFilesError, refreshDirectoryFiles,
       sdDirectDictionary, sdloadingDictionary, sdAddressRange, requiredSdCapacity, matchedFiles, writeFiles, optionFiles, canSdWrite, allFileCount, initializing, messages, pathError,
       onSdWrite, onSdRead, onSdFfInitialize, onSdFormat, startSdFormat, formatPlan, formatLabel, formatSimpleTest, formatStep, formatLabelValid, writeStage, canSdRead, popupTitle, statusLabel, closeWriteDialog, copyWriteLog, openDiagnosticLog, failureDetails, writeDialogOpen, writeLog, writing, pendingPlan, progress, percent, currentRun, transientNotice, operationStatus, operationDetail };
   `)(...Object.values(bindings));
@@ -1070,19 +1072,17 @@ test('built-in CSV descriptions and areas remain consistent across input selecti
   }
 });
 
-test('grid filename selection persists on open, resets on refresh and respects busy state', () => {
+test('grid filename selection persists on open and icon updates, resets on refresh and respects busy state', async () => {
   const source = readFileSync('src/components/OptionGrid.vue', 'utf8').match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
     .replace(/^import .*;\r?$/gm, '');
-  const props = { files: [{ filename: 'FILE-AA.001' }, { filename: 'FILE-BM.001' }], disabled: false };
+  const props = require('vue').reactive({ files: [{ filename: 'FILE-AA.001' }, { filename: 'FILE-BM.001' }], disabled: false });
   const events = [];
-  let refresh;
   const bindings = {
     ...require('vue'),
     useGridColumnResize: utility('src/utils/gridColumnResize.ts').useGridColumnResize,
     defineProps: () => props,
     defineEmits: () => (...args) => events.push(args),
     onMounted: () => {},
-    watch: (get, fn) => { if (get() === props.files) refresh = fn; },
   };
   const grid = new Function(...Object.keys(bindings), transpile(source) + '\nreturn { selectFile, openFile, selectedRow };')(...Object.values(bindings));
   grid.selectFile(1);
@@ -1096,7 +1096,11 @@ test('grid filename selection persists on open, resets on refresh and respects b
   grid.openFile(0);
   assert.equal(grid.selectedRow.value, 1);
   assert.equal(events.length, 1);
-  refresh();
+  props.files = props.files.map(file => ({ ...file, icon: 'data:image/png;base64,icon' }));
+  await require('vue').nextTick();
+  assert.equal(grid.selectedRow.value, 1);
+  props.files = [{ filename: 'NEW.001' }];
+  await require('vue').nextTick();
   assert.equal(grid.selectedRow.value, null);
 });
 
@@ -1229,7 +1233,7 @@ test('grid renders update number, version, condition and car type in separate ce
   new Function('require', 'exports', transpile(script.content))(name => name === '../utils/gridColumnResize' ? utility('src/utils/gridColumnResize.ts') : name === '../utils/fileTimestamp' ? utility('src/utils/fileTimestamp.ts') : name === '../utils/sdWrite' ? utility('src/utils/sdWrite.ts') : require(name), exports);
   const html = (await renderToString(createSSRApp(exports.default, { files: [{ filename: 'FILE-BM.003', description: 'パラメータ2', individualInfo: '', updateNo: '02', updateVer: '230112_00', condition: '00', carType: '01' }] }))).replace(/<!--[\s\S]*?-->/g, '');
   const cells = [...html.matchAll(/<td\b[^>]*>(.*?)<\/td>/g)].map(match => match[1]);
-  assert.deepEqual(cells, ['1', 'FILE-BM.003', 'パラメータ2', '', '02', '230112_00', '00', '01']);
+  assert.deepEqual(cells.map(cell => cell.replace(/<[^>]*>/g, '')), ['1', 'FILE-BM.003', 'パラメータ2', '', '02', '230112_00', '00', '01']);
 });
 
 test('CSV preserves every access flag and includes non-A areas in the bounds', () => {
@@ -1265,6 +1269,7 @@ function backend(overrides = {}) {
       case 'get_executable_directory': return 'C:\\app';
       case 'resolve_drop_directory': return args.paths[0];
       case 'list_child_folders': return [];
+      case 'list_file_icons': return {};
       case 'check_startup_csv': return true;
       case 'read_startup_csv': return { contents: csv, source_folder: 'EXEフォルダ' };
       case 'find_dictionary_files': return { files: ['FILE-AA.001'], warning_files: [], from_input: true, input_exists: true };
@@ -1353,6 +1358,228 @@ test('drop history excludes drops blocked by SD work, shutdown or a disposed vie
   ui.unmount();
   ui.drop(['C:\\disposed']);
   assert.deepEqual(ui.dropHistory.value, []);
+});
+
+test('registered folder selection loads files and rejects selection while busy or disposed', async () => {
+  const resolved = [];
+  const folder = String.raw`C:\registered`;
+  const ui = view(backend({ resolve_drop_directory: ({ paths }) => { resolved.push(paths); return folder; } }));
+  await ui.mount();
+  ui.activeOptionTab.value = 'history';
+  await ui.selectRegisteredFolder(folder);
+  assert.equal(ui.sourceDirectory.value, folder);
+  assert.equal(ui.activeOptionTab.value, 'files');
+  assert.deepEqual(resolved, [[folder]]);
+  assert.ok(panelContents(ui).includes('登録フォルダーを選択'));
+  assert.ok(!panelContents(ui).includes('ドラッグ＆ドロップ'));
+  for (const state of [ui.writing, ui.initializing, ui.closing]) {
+    state.value = true;
+    await ui.selectRegisteredFolder('C:\\blocked');
+    state.value = false;
+  }
+  ui.unmount();
+  await ui.selectRegisteredFolder('C:\\disposed');
+  assert.equal(resolved.length, 1);
+});
+
+test('unfiltered registered folders display direct files independently of TS matches and input fallback', async () => {
+  const calls = [];
+  const ui = view(backend({
+    list_directory_files: args => {
+      calls.push(args);
+      return [{ filename: 'readme.txt', metadata: { size: 12, modified_at: 2000 } },
+        { filename: 'no-extension', metadata: { size: 0, modified_at: null } }];
+    },
+    open_grid_file: args => { calls.push(args); },
+  }));
+  await ui.mount();
+  const rule = ui.historyPathRules.value.find(rule => rule.label === '共有');
+  await ui.selectRegisteredFolder(rule.folder);
+  assert.equal(ui.activeOptionTab.value, 'file-info');
+  assert.deepEqual(calls[0], { directory: rule.folder });
+  assert.equal(ui.displayedDirectory.value, rule.folder + '\\input');
+  assert.deepEqual(ui.generalFiles.value.map(file => file.filename), ['readme.txt', 'no-extension']);
+  assert.equal(ui.generalFiles.value[0].size, 12);
+  assert.equal(ui.generalFiles.value[1].modifiedAt, null);
+  assert.deepEqual(ui.writeFiles.value.map(file => file.filename), ['FILE-AA.001']);
+  await ui.openGridFile('readme.txt', false, true);
+  assert.deepEqual(calls[1], { directory: rule.folder, filename: 'readme.txt' });
+  await ui.openGridFile('not-listed.txt', false, true);
+  assert.equal(calls.length, 2);
+  const fixed = ui.historyPathRules.value[0];
+  await ui.selectRegisteredFolder(fixed.folder);
+  assert.equal(ui.activeOptionTab.value, 'files');
+  assert.deepEqual(ui.generalFiles.value, []);
+  ui.unmount();
+});
+
+test('general file listing handles errors, empty directories, reloads and stale replies', async () => {
+  let resolve;
+  let fail = true;
+  const ui = view(backend({ list_directory_files: () => {
+    if (fail) throw Error('access denied');
+    return new Promise(done => { resolve = done; });
+  } }));
+  await ui.mount();
+  await ui.selectOptionTab('file-info');
+  assert.match(ui.directoryFilesError.value, /access denied/);
+  assert.equal(ui.directoryFilesLoading.value, false);
+  assert.deepEqual(ui.generalFiles.value, []);
+  fail = false;
+  const pending = ui.refreshDirectoryFiles();
+  assert.equal(ui.directoryFilesLoading.value, true);
+  ui.activeOptionTab.value = 'files';
+  await ui.initializeSource(undefined, 'D:\\new');
+  resolve([{ filename: 'stale.txt', metadata: { size: 1, modified_at: null } }]);
+  await pending;
+  assert.deepEqual(ui.generalFiles.value, []);
+  const empty = ui.selectOptionTab('file-info');
+  resolve([]);
+  await empty;
+  assert.equal(ui.directoryFilesError.value, '');
+  assert.equal(ui.directoryFilesLoading.value, false);
+  assert.deepEqual(ui.generalFiles.value, []);
+  ui.unmount();
+});
+
+test('general file listing does not execute for lite, busy or disposed views', async () => {
+  let calls = 0;
+  const makeView = optionPanel => view(backend({ list_directory_files: () => { calls++; return []; } }), performance, Date, undefined, optionPanel);
+  const lite = makeView(false);
+  await lite.mount();
+  await lite.selectOptionTab('file-info');
+  lite.unmount();
+  const pro = makeView(true);
+  await pro.mount();
+  for (const state of [pro.initializing, pro.writing, pro.closing]) {
+    state.value = true;
+    await pro.refreshDirectoryFiles();
+    state.value = false;
+  }
+  pro.unmount();
+  await pro.refreshDirectoryFiles();
+  assert.equal(calls, 0);
+});
+
+test('file icons load after the listing in bounded batches and do not replace file information', async () => {
+  const batches = [];
+  let finishFirst;
+  const ui = view(backend({
+    list_directory_files: () => Array.from({ length: 65 }, (_, i) => ({ filename: `${i}.exe`, metadata: { size: i, modified_at: null } })),
+    list_file_icons: ({ filenames }) => {
+      if (filenames[0] === 'FILE-AA.001') return {};
+      batches.push(filenames);
+      if (batches.length === 1) return new Promise(done => { finishFirst = done; });
+      return Object.fromEntries(filenames.map(name => [name, 'data:image/png;base64,icon']));
+    },
+  }));
+  await ui.mount();
+  await ui.selectOptionTab('file-info');
+  assert.equal(ui.directoryFilesLoading.value, false);
+  assert.equal(ui.generalFiles.value.length, 65);
+  assert.equal(ui.generalFiles.value[0].icon, undefined);
+  finishFirst({ '0.exe': 'data:image/png;base64,first' });
+  await until(() => !!ui.generalFiles.value[64].icon);
+  assert.deepEqual(batches.map(batch => batch.length), [8, 8, 8, 8, 8, 8, 8, 8, 1]);
+  assert.equal(ui.generalFiles.value[0].icon, 'data:image/png;base64,first');
+  assert.equal(ui.generalFiles.value[1].icon, undefined);
+  assert.equal(ui.generalFiles.value[64].size, 64);
+  ui.unmount();
+});
+
+test('TS rows share icons from the actual matched folder without reloading unchanged matches', async () => {
+  for (const fromInput of [true, false]) {
+    const calls = [];
+    const ui = view(backend({
+      read_startup_csv: () => 'A,FILE-BM.001,0,1FF\nE',
+      find_dictionary_files: () => ({ ...outputMatch(), from_input: fromInput }),
+      list_file_icons: args => { calls.push(args); return { 'FILE-BM.001': 'data:image/png;base64,bm' }; },
+    }));
+    await ui.mount();
+    await until(() => !!ui.optionFiles.value[0]?.icon);
+    assert.equal(ui.optionFiles.value.length, 2);
+    assert.ok(ui.optionFiles.value.every(file => file.icon === 'data:image/png;base64,bm'));
+    assert.deepEqual(calls, [{ directory: fromInput ? 'C:\\app\\input' : 'C:\\app', filenames: ['FILE-BM.001'] }]);
+    await ui.refreshMatchedFiles();
+    assert.equal(calls.length, 1);
+    ui.unmount();
+  }
+});
+
+test('TS icon replies are discarded after folder changes and lite does not request icons', async () => {
+  let finish;
+  const ui = view(backend({ list_file_icons: () => new Promise(done => { finish = done; }) }));
+  await ui.mount();
+  const old = finish;
+  await ui.initializeSource(undefined, 'D:\\new');
+  old({ 'FILE-AA.001': 'data:image/png;base64,old' });
+  finish({ 'FILE-AA.001': 'data:image/png;base64,new' });
+  await until(() => ui.optionFiles.value[0]?.icon === 'data:image/png;base64,new');
+  ui.unmount();
+  let calls = 0;
+  const lite = view(backend({ list_file_icons: () => { calls++; return {}; } }), performance, Date, undefined, false);
+  await lite.mount();
+  assert.equal(calls, 0);
+  lite.unmount();
+});
+
+test('both tabs reuse cached icons and retrieve changed metadata again', async () => {
+  let calls = 0;
+  let size = 512;
+  let modified = 2000;
+  const ui = view(backend({
+    read_startup_csv: () => 'A,FILE-BM.001,0,1FF\nE',
+    find_dictionary_files: () => ({ ...outputMatch(), from_input: false,
+      file_metadata: { 'FILE-BM.001': { size, modified_at: modified } } }),
+    list_directory_files: () => [{ filename: 'FILE-BM.001', metadata: { size, modified_at: modified } }],
+    list_file_icons: () => { calls++; return { 'FILE-BM.001': `data:image/png;base64,${calls}` }; },
+  }));
+  await ui.mount();
+  await until(() => !!ui.optionFiles.value[0]?.icon);
+  assert.equal(calls, 1);
+  await ui.selectOptionTab('file-info');
+  assert.equal(ui.generalFiles.value[0].icon, 'data:image/png;base64,1');
+  await ui.selectOptionTab('file-info');
+  await ui.initializeSource(undefined, 'C:\\app');
+  assert.equal(calls, 1);
+  assert.equal(ui.optionFiles.value[0].icon, 'data:image/png;base64,1');
+  size = 1024;
+  await ui.refreshMatchedFiles();
+  await until(() => ui.optionFiles.value[0]?.icon === 'data:image/png;base64,2');
+  await ui.selectOptionTab('file-info');
+  assert.equal(ui.generalFiles.value[0].icon, 'data:image/png;base64,2');
+  assert.equal(calls, 2);
+  modified = 3000;
+  await ui.selectOptionTab('file-info');
+  await until(() => ui.generalFiles.value[0]?.icon === 'data:image/png;base64,3');
+  assert.equal(calls, 3);
+  ui.unmount();
+});
+
+test('late icon replies cannot update a newly selected folder and icon errors preserve files', async () => {
+  let finishIcons;
+  let fail = false;
+  const ui = view(backend({
+    list_directory_files: () => [{ filename: 'same.exe', metadata: { size: 4, modified_at: null } }],
+    list_file_icons: ({ filenames }) => {
+      if (filenames[0] === 'FILE-AA.001') return {};
+      if (fail) throw Error('icon unavailable');
+      return new Promise(done => { finishIcons = done; });
+    },
+  }));
+  await ui.mount();
+  await ui.selectOptionTab('file-info');
+  const oldReply = finishIcons;
+  ui.activeOptionTab.value = 'files';
+  await ui.initializeSource(undefined, 'D:\\new');
+  fail = true;
+  await ui.selectOptionTab('file-info');
+  oldReply({ 'same.exe': 'data:image/png;base64,stale' });
+  await until(() => panelContents(ui).some(line => line.warning && line.text.includes('icon unavailable')));
+  assert.equal(ui.generalFiles.value.length, 1);
+  assert.equal(ui.generalFiles.value[0].icon, undefined);
+  assert.equal(ui.directoryFilesError.value, '');
+  ui.unmount();
 });
 
 test('history replay uses all original paths and current file information without modifying saved history', async () => {
@@ -2295,8 +2522,8 @@ test('F5 reloads CSV and matches in the selected source without a polling timer 
   assert.deepEqual(ui.sdAddressRange.value, { startAddress: '0x00000000', endAddress: '0x00000001' });
   assert.deepEqual(ui.matchedFiles.value, ['NEW.001']);
   assert.equal(ui.canSdWrite.value, true);
-  assert.deepEqual(calls.slice(before).map(([command]) => command), ['check_startup_csv', 'read_startup_csv', 'find_dictionary_files']);
-  for (const [, args] of calls.slice(before)) assert.equal(args.directory, 'C:\\selected');
+  assert.deepEqual(calls.slice(before).map(([command]) => command), ['check_startup_csv', 'read_startup_csv', 'find_dictionary_files', 'list_file_icons']);
+  for (const [command, args] of calls.slice(before)) assert.equal(args.directory, command === 'list_file_icons' ? 'C:\\selected\\input' : 'C:\\selected');
   ui.unmount();
   assert.equal(ui.key('F5'), false);
 });
@@ -2565,4 +2792,50 @@ test('shutdown waiting keeps target changes disabled and reports wait failures',
   assert.ok(panelContents(ui).some(m => typeof m === 'object' && /終了確認失敗/.test(m.text)));
   assert.equal(ui.canSdWrite.value, false);
   ui.unmount();
+});
+
+
+test('selected option tab survives restart and reloads file listings on startup', async () => {
+  const key = 'sddirecta-option-tab-v1';
+  for (const tab of ['files', 'file-info', 'history', 'output']) {
+    const storage = historyStorage();
+    const invoke = backend({ list_directory_files: () => [], find_output_files: () => ({ files: [], warning_files: [] }) });
+    const first = view(invoke, performance, Date, storage);
+    await first.selectOptionTab(tab);
+    assert.equal(storage.getItem(key), tab);
+    const restarted = view(invoke, performance, Date, storage);
+    await restarted.mount();
+    assert.equal(restarted.activeOptionTab.value, tab);
+    restarted.unmount();
+  }
+});
+
+test('invalid or unreadable tab settings fall back safely and lite preserves the pro selection', async () => {
+  const key = 'sddirecta-option-tab-v1';
+  for (const saved of [null, 'unknown']) {
+    const storage = historyStorage();
+    if (saved) storage.setItem(key, saved);
+    const ui = view(backend(), performance, Date, storage);
+    await ui.mount();
+    assert.equal(ui.activeOptionTab.value, 'files');
+    ui.unmount();
+  }
+  const storage = historyStorage();
+  storage.setItem(key, 'history');
+  const lite = view(backend(), performance, Date, storage, false);
+  await lite.mount();
+  assert.equal(lite.activeOptionTab.value, 'files');
+  await lite.selectOptionTab('files');
+  assert.equal(storage.getItem(key), 'history');
+  lite.unmount();
+  const failing = view(backend(), performance, Date, {
+    getItem: () => { throw Error('read denied'); },
+    setItem: () => { throw Error('write denied'); },
+  });
+  await failing.mount();
+  assert.equal(failing.activeOptionTab.value, 'files');
+  await failing.selectOptionTab('history');
+  assert.equal(failing.activeOptionTab.value, 'history');
+  assert.ok(panelContents(failing).some(row => row.warning && row.text.includes('????????????')));
+  failing.unmount();
 });

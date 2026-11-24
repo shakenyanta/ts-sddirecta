@@ -12,7 +12,7 @@ const base = defaults[0].folder;
 test('fixed folders use the requested labels and colors and replace legacy duplicates', () => {
   const { fixedHistoryPathRules: fixed, editableHistoryPathRules: editable, historyPathsColorStyle: style } = bindings;
   assert.deepEqual(fixed.map(rule => [rule.label, rule.color]), [
-    ['TS-02各社', 'blue'], ['TS-01各社', 'green'], ['TS-02開発', 'orange'], ['TS-01開発', 'purple'],
+    ['TS-02各社', 'red'], ['TS-01各社', 'teal'], ['TS-02開発', 'yellow'], ['TS-01開発', 'gray'],
   ]);
   assert.deepEqual(validate(fixed), fixed);
   for (const rule of fixed) {
@@ -52,6 +52,19 @@ test('no color persists and overrides a colored parent without changing shorteni
   assert.deepEqual(pathsStyle(['C:\\work\\a', 'C:\\work\\child\\b'], restored), {});
   assert.deepEqual(pathsStyle(['C:\\work\\a'], restored), style('green'));
   assert.deepEqual(display('C:\\work\\child\\file', restored), { label: '子', path: 'file' });
+});
+
+test('folder filters persist, reject unknown values and preserve older settings', () => {
+  assert.ok(bindings.fixedHistoryPathRules.every(rule => rule.filter === 'ts'));
+  const legacy = { label: '作業', folder: 'C:\\work' };
+  assert.deepEqual(parse(JSON.stringify({ version: 1, rules: [legacy] })), [legacy]);
+  for (const filter of ['ts', 'none']) {
+    const rule = { ...legacy, color: 'none', filter };
+    assert.deepEqual(parse(JSON.stringify({ version: 1, rules: [rule] })), [rule]);
+  }
+  for (const filter of ['', 'invalid', null, 1, {}]) {
+    assert.throws(() => validate([{ ...legacy, filter }]), /フィルタ/);
+  }
 });
 
 test('row colors use the deepest rule and avoid coloring mixed or unrelated entries', () => {

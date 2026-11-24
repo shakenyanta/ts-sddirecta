@@ -30,12 +30,14 @@ test('edition is fetched once and pro is unavailable until Rust responds', async
   });
   assert.equal(module.isLite.value, true);
   assert.equal(module.features.value.optionPanel, false);
+  assert.equal(module.features.value.folderSelector, false);
   const pending = module.initializeEdition();
   assert.equal(module.initializeEdition(), pending);
   complete({ edition: 'pro', development: true, warning: null });
   await pending;
   assert.equal(calls, 1);
   assert.equal(module.isLite.value, false);
+  assert.equal(module.features.value.folderSelector, true);
   assert.equal(module.features.value.optionPanel, true);
   assert.equal(module.editionLabel.value, 'プロ版［開発］');
 });

@@ -121,9 +121,54 @@ pub fn child_folders(path: String) -> Result<Vec<String>, String> {
     Ok(names)
 }
 
+#[derive(serde::Serialize)]
+pub struct DirectoryFile {
+    pub filename: String,
+    pub metadata: crate::matching_files::FileMetadata,
+}
+
+/// List direct files without TS filename matching, input fallback or content parsing.
+pub fn files(path: String) -> Result<Vec<DirectoryFile>, String> {
+    let directory = directory(Some(path))?;
+    let mut files = Vec::new();
+    for entry in fs::read_dir(directory).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if !entry.file_type().map_err(|e| e.to_string())?.is_file() {
+            continue;
+        }
+        files.push(DirectoryFile {
+            filename: entry.file_name().into_string()
+                .map_err(|_| "ファイル名を変換できませんでした")?,
+            metadata: crate::matching_files::file_metadata(&entry.path()),
+        });
+    }
+    files.sort_by_cached_key(|file| file.filename.to_lowercase());
+    Ok(files)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn files_include_all_extensions_but_no_folders_or_descendants() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("input")).unwrap();
+        fs::write(root.path().join("input").join("nested.txt"), b"nested").unwrap();
+        for name in ["B.txt", "a", "日本語.unknown", ".hidden", "FILE-AA.001"] {
+            fs::write(root.path().join(name), b"data").unwrap();
+        }
+        let listed = files(root.path().to_str().unwrap().to_owned()).unwrap();
+        assert_eq!(listed.iter().map(|file| file.filename.as_str()).collect::<Vec<_>>(),
+            vec![".hidden", "a", "B.txt", "FILE-AA.001", "日本語.unknown"]);
+        assert!(listed.iter().all(|file| file.metadata.size == Some(4) && file.metadata.modified_at.is_some()));
+        assert!(files(root.path().join("input").to_str().unwrap().to_owned()).is_ok());
+        assert!(files(root.path().join("missing").to_str().unwrap().to_owned()).is_err());
+        assert!(files(root.path().join("a").to_str().unwrap().to_owned()).is_err());
+        assert!(files("relative".into()).is_err());
+        fs::remove_file(root.path().join("input").join("nested.txt")).unwrap();
+        assert!(files(root.path().join("input").to_str().unwrap().to_owned()).unwrap().is_empty());
+    }
 
     #[test]
     fn saved_selection_uses_nearest_existing_directory_only() {

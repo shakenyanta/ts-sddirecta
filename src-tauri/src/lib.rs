@@ -8,6 +8,7 @@ mod diagnostics;
 mod daily_report;
 mod edition;
 mod file_bc;
+mod file_icon;
 mod individual_info;
 mod matching_files;
 mod portable_update;
@@ -509,6 +510,37 @@ fn list_child_folders(directory: String) -> Result<Vec<String>, String> {
     source_directory::child_folders(directory)
 }
 
+#[tauri::command(async)]
+fn list_directory_files(directory: String) -> Result<Vec<source_directory::DirectoryFile>, String> {
+    if edition::current().edition != edition::Edition::Pro {
+        return Err("ファイル情報タブはプロ版専用です".into());
+    }
+    source_directory::files(directory)
+}
+
+#[tauri::command(async)]
+fn list_file_icons(directory: String, filenames: Vec<String>) -> Result<std::collections::HashMap<String, String>, String> {
+    if edition::current().edition != edition::Edition::Pro {
+        return Err("ファイルアイコンの取得はプロ版専用です".into());
+    }
+    if filenames.len() > 8 { return Err("アイコンは8件ずつ取得してください".into()); }
+    let mut icons = std::collections::HashMap::new();
+    let mut failures = 0;
+    let mut first_error = None;
+    for filename in filenames {
+        let result = source_directory::file_to_open(directory.clone(), &filename)
+            .and_then(|path| file_icon::data_url(&path));
+        match result {
+            Ok(icon) => { icons.insert(filename, icon); },
+            Err(error) => { failures += 1; first_error.get_or_insert(error); },
+        }
+    }
+    if failures > 0 {
+        diagnostics::record("WARN", &format!("file icons unavailable directory={directory:?} count={failures} first_error={first_error:?}"));
+    }
+    Ok(icons)
+}
+
 #[tauri::command]
 async fn resolve_saved_folder(directory: String) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || source_directory::saved_directory(directory))
@@ -715,6 +747,8 @@ pub fn run() {
             get_executable_directory,
             resolve_drop_directory,
             list_child_folders,
+            list_directory_files,
+            list_file_icons,
             resolve_saved_folder,
             check_startup_csv,
             read_startup_csv,

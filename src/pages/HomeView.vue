@@ -5,6 +5,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import SdMenu from '../components/SdMenu.vue';
 import OptionGrid from '../components/OptionGrid.vue';
+import FolderCombo from '../components/FolderCombo.vue';
 import { features } from '../editions';
 import { folderPathAt, splitFolderPath } from '../utils/executablePath';
 import { folderTreeStorageKey, parseFolderTreeState, type FolderTreeState } from '../utils/folderTreeState';
@@ -12,6 +13,7 @@ import { dropHistoryStorageKey, parseDropHistoryState, type DropHistoryEntry, ty
 import { defaultHistoryPathRules, fixedHistoryPathRules, editableHistoryPathRules, historyPathRulesStorageKey, parseHistoryPathRules, validateHistoryPathRules, historyDisplayPath, historyPathColors, historyPathColorStyle, historyPathsColorStyle, type HistoryPathRule } from '../utils/historyPath';
 import { createLogScroller } from '../utils/logScroll';
 import { formatFileTimestamp } from '../utils/fileTimestamp';
+import { FileIconCache, type IconFile } from '../utils/fileIconCache';
 import { parseSdDirectCsv, type AddressRange, type SdArea } from '../utils/sdDirectCsv';
 import { writePercent, writeStageLabel, sizeComment, formatByteCount, formatCardCapacity, explainSdFailure, type WritePlan, type WriteProgress, type OperationStatus } from '../utils/sdWrite';
 
@@ -24,11 +26,34 @@ let textScrollMaximum = 0;
 const sdHeightRatio = ref(4 / 7);
 const baseWidthRatio = ref(1 / 3);
 const optionTabs = [
-    { id: 'files', label: 'ファイル情報' },
+    { id: 'files', label: 'TSファイル情報' },
+    { id: 'file-info', label: 'ファイル情報' },
     { id: 'history', label: '履歴' },
     { id: 'output', label: 'output' },
 ] as const;
-const activeOptionTab = ref<typeof optionTabs[number]['id']>('files');
+type OptionTabId = typeof optionTabs[number]['id'];
+const activeOptionTab = ref<OptionTabId>('files');
+const optionTabStorageKey = 'sddirecta-option-tab-v1';
+
+function setOptionTab(id: OptionTabId) {
+    activeOptionTab.value = id;
+    if (!features.value.optionPanel) return;
+    try {
+        localStorage.setItem(optionTabStorageKey, id);
+    } catch (error) {
+        void appendMessage({ text: `???????????????: ${String(error)}`, warning: true });
+    }
+}
+
+function restoreOptionTab() {
+    try {
+        const saved = localStorage.getItem(optionTabStorageKey);
+        const tab = optionTabs.find(tab => tab.id === saved);
+        if (tab) activeOptionTab.value = tab.id;
+    } catch (error) {
+        void appendMessage({ text: `???????????????: ${String(error)}`, warning: true });
+    }
+}
 
 const dropHistory = ref<DropHistoryEntry[]>([]);
 const customHistoryPathRules = ref<HistoryPathRule[]>(defaultHistoryPathRules.map(rule => ({ ...rule })));
@@ -46,6 +71,13 @@ function closeHistorySettingsMenu() {
 
 function displayHistoryPath(path: string) {
 	return historyDisplayPath(path, historyPathRules.value);
+}
+
+async function selectRegisteredFolder(folder: string) {
+	if (disposed || historyBusy.value) return;
+	const rule = historyPathRules.value.find(rule => rule.folder === folder);
+	setOptionTab(rule && rule.filter !== 'ts' ? 'file-info' : 'files');
+	await initializeSource([folder], undefined, false, 'registered');
 }
 
 function editHistoryPathRules() {
@@ -172,7 +204,7 @@ async function reopenHistory(id: string) {
 	const entry = dropHistory.value.find(entry => entry.id === id);
 	if (!entry) return;
 	selectedHistoryId.value = id;
-	activeOptionTab.value = 'files';
+	setOptionTab('files');
 	await initializeSource([...entry.paths], undefined, false, 'history');
 }
 
@@ -287,7 +319,11 @@ function expandOptionFiles(files: typeof writeFiles.value, infos: Map<string, Fi
         }));
     });
 }
-const optionFiles = computed(() => expandOptionFiles(writeFiles.value, fileIndividualInfos.value, fileUpdates.value));
+const tsFileIcons = ref(new Map<string, string>());
+const fileIconCache = new FileIconCache();
+let tsFileIconsRequest = 0;
+const optionFiles = computed(() => expandOptionFiles(writeFiles.value, fileIndividualInfos.value, fileUpdates.value)
+    .map(file => ({ ...file, icon: tsFileIcons.value.get(file.filename) })));
 let unlistenDrop: UnlistenFn | undefined;
 let generation = 0;
 let ready = false;
@@ -325,6 +361,17 @@ const outputDirectory = ref('');
 const outputLoading = ref(false);
 const outputError = ref('');
 let outputRequest = 0;
+interface DirectoryFile { filename: string; metadata: FileMetadata }
+const directoryFiles = ref<DirectoryFile[]>([]);
+const directoryFileIcons = ref(new Map<string, string>());
+const directoryFilesLoading = ref(false);
+const directoryFilesError = ref('');
+let directoryFilesRequest = 0;
+const generalFiles = computed(() => directoryFiles.value.map(file => ({
+    filename: file.filename, description: '', individualInfo: '',
+    size: file.metadata.size, modifiedAt: file.metadata.modified_at,
+    icon: directoryFileIcons.value.get(file.filename),
+})));
 const outputFiles = computed(() => {
     const result = outputResult.value;
     if (!result) return [];
@@ -342,8 +389,63 @@ const outputFiles = computed(() => {
 });
 
 async function selectOptionTab(id: typeof optionTabs[number]['id']) {
-    activeOptionTab.value = id;
+    setOptionTab(id);
     if (id === 'output') await refreshOutputFiles();
+    if (id === 'file-info') await refreshDirectoryFiles();
+}
+
+async function refreshDirectoryFiles() {
+    if (!features.value.optionPanel || disposed || initializing.value || writing.value || closing.value || !sourceDirectory.value) return;
+    const request = ++directoryFilesRequest;
+    const current = generation;
+    const directory = sourceDirectory.value;
+    const active = () => !disposed && current === generation && request === directoryFilesRequest;
+    directoryFiles.value = [];
+    directoryFileIcons.value = new Map();
+    directoryFilesError.value = '';
+    directoryFilesLoading.value = true;
+    try {
+        const files = await invoke<DirectoryFile[]>('list_directory_files', { directory });
+        if (!active()) return;
+        directoryFiles.value = files;
+        void loadFileIcons(directory, files.map(file => ({ filename: file.filename, size: file.metadata.size, modifiedAt: file.metadata.modified_at })), active,
+            icons => { directoryFileIcons.value = new Map([...directoryFileIcons.value, ...Object.entries(icons)]); });
+    } catch (error) {
+        if (!active()) return;
+        directoryFilesError.value = `ファイル一覧を取得できませんでした: ${directory}: ${String(error)}`;
+        await appendMessage({ text: directoryFilesError.value, warning: true });
+    } finally {
+        if (active()) directoryFilesLoading.value = false;
+    }
+}
+
+async function loadFileIcons(directory: string, files: IconFile[], active: () => boolean,
+    apply: (icons: Record<string, string>) => void) {
+    if (!active()) return;
+    const cached: Record<string, string> = Object.create(null);
+    const pending: IconFile[] = [];
+    for (const file of files) {
+        const icon = fileIconCache.get(directory, file);
+        if (icon) cached[file.filename] = icon;
+        else pending.push(file);
+    }
+    apply(cached);
+    try {
+        for (let offset = 0; offset < pending.length; offset += 8) {
+            if (!active() || writing.value || closing.value) return;
+            const batch = pending.slice(offset, offset + 8);
+            const icons = await invoke<Record<string, string>>('list_file_icons', {
+                directory, filenames: batch.map(file => file.filename),
+            });
+            if (!active()) return;
+            for (const file of batch) {
+                if (Object.prototype.hasOwnProperty.call(icons, file.filename) && icons[file.filename]) fileIconCache.set(directory, file, icons[file.filename]);
+            }
+            apply(icons);
+        }
+    } catch (error) {
+        if (active()) await appendMessage({ text: `ファイルアイコンを取得できませんでした: ${directory}: ${String(error)}`, warning: true });
+    }
 }
 
 async function refreshOutputFiles() {
@@ -574,7 +676,7 @@ async function selectFolder(path: string) {
 	if (initializing.value || writing.value || closing.value || disposed) return;
 	const node = folderNodes.value.get(path);
 	if (!node) return;
-	activeOptionTab.value = 'files';
+	if (activeOptionTab.value !== 'file-info') setOptionTab('files');
 	node.expanded = true;
 	const children = loadChildFolders(path);
 	if (path === selectedFolder.value) { await children; return; }
@@ -584,7 +686,10 @@ async function selectFolder(path: string) {
 }
 
 onMounted(async () => {
-	if (features.value.optionPanel) restoreHistoryPathRules();
+	if (features.value.optionPanel) {
+        restoreHistoryPathRules();
+        restoreOptionTab();
+    }
 	// Synchronous restore completes before registering drops, avoiding startup races.
 	restoreDropHistory();
 	window.addEventListener('keydown', onRefreshKey, true);
@@ -644,7 +749,7 @@ onMounted(async () => {
 					droppedAt: Date.now(),
 					paths: [...event.payload.paths],
 				});
-				activeOptionTab.value = 'files';
+				setOptionTab('files');
 				void initializeSource(event.payload.paths);
 				saveDropHistory();
 			}
@@ -671,13 +776,20 @@ function onRefreshKey(event: KeyboardEvent) {
 	void initializeSource(undefined, sourceDirectory.value || undefined);
 }
 
-async function initializeSource(paths?: string[], refreshDirectory?: string, preserveTree = false, pathSource: 'drop' | 'history' = 'drop') {
+async function initializeSource(paths?: string[], refreshDirectory?: string, preserveTree = false, pathSource: 'drop' | 'history' | 'registered' = 'drop') {
 	if (closing.value) return;
 	if (writing.value) { showNotice('SD処理中のため変更できません'); return; }
 	if (paths) messages.value = [];
 	const current = ++generation;
 	const active = () => !disposed && current === generation;
 	initializing.value = true;
+	directoryFilesRequest++;
+	directoryFiles.value = [];
+	directoryFileIcons.value = new Map();
+	tsFileIconsRequest++;
+	tsFileIcons.value = new Map();
+	directoryFilesLoading.value = false;
+	directoryFilesError.value = '';
 	outputRequest++;
 	outputLoading.value = false;
 	outputResult.value = null;
@@ -707,7 +819,7 @@ async function initializeSource(paths?: string[], refreshDirectory?: string, pre
 		if (!preserveTree) resetFolderTree(directory);
 		if (preserveTree) await appendMessage(`フォルダー選択：${directory.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || directory}`);
 		else if (refreshDirectory) await appendMessage('F5：表示を更新');
-		else if (paths) await appendMessage(pathSource === 'history' ? '履歴から再読込' : 'ドラッグ＆ドロップ');
+		else if (paths) await appendMessage(pathSource === 'history' ? '履歴から再読込' : pathSource === 'registered' ? '登録フォルダーを選択' : 'ドラッグ＆ドロップ');
 		await nextTick();
 		if (!active()) return;
 		if (!preserveTree && pathList.value) pathList.value.scrollTop = pathList.value.scrollHeight;
@@ -748,6 +860,7 @@ async function initializeSource(paths?: string[], refreshDirectory?: string, pre
 		if (active()) {
 			if (!preserveTree && displayedDirectory.value) resetFolderTree(displayedDirectory.value);
 			initializing.value = false;
+			if (activeOptionTab.value === 'file-info') await refreshDirectoryFiles();
 			if (activeOptionTab.value === 'output') await refreshOutputFiles();
 			if (!preserveTree) {
 				await nextTick();
@@ -792,6 +905,11 @@ async function refreshMatchedFiles(report = false) {
 		const updates = result.file_updates ?? { files: {}, warnings: [] };
 		const updateWarningsChanged = JSON.stringify(fileUpdates.value.warnings) !== JSON.stringify(updates.warnings);
 		const changed = warningsChanged || updateWarningsChanged || useInputDirectory.value !== result.from_input || JSON.stringify(matchedFiles.value) !== JSON.stringify(result.files);
+		const metadataChanged = result.files.some(filename => {
+			const previous = fileMetadata.value.get(filename);
+			const next = result.file_metadata?.[filename];
+			return previous?.modified_at !== next?.modified_at || previous?.size !== next?.size;
+		});
 		const matchedDictionary = new Map<string, SdArea>();
 		for (const filename of result.files) {
 			const range = sdDirectDictionary.value.get(filename);
@@ -805,6 +923,13 @@ async function refreshMatchedFiles(report = false) {
 		fileUpdates.value = updates;
 		warningFiles.value = result.warning_files;
 		useInputDirectory.value = result.from_input;
+		if (features.value.optionPanel && (report || changed || metadataChanged)) {
+			const request = ++tsFileIconsRequest;
+			tsFileIcons.value = new Map();
+			void loadFileIcons(displayedDirectory.value, writeFiles.value,
+				() => !disposed && current === generation && request === tsFileIconsRequest,
+				icons => { tsFileIcons.value = new Map([...tsFileIcons.value, ...Object.entries(icons)]); });
+		}
 		if (matchedDictionary.size > 0) folderMatches.value.set(folderMatchKey(displayedDirectory.value), true);
 		scheduleFolderSave();
 		lastMatchError = '';
@@ -1237,10 +1362,10 @@ async function openDailyReport(filename: string) {
         openingDailyReport.value = false;
     }
 }
-async function openGridFile(filename: string, output = false) {
-    const directory = output ? outputDirectory.value : displayedDirectory.value;
-    const files = output ? outputFiles.value : optionFiles.value;
-    if (openingFile.value || initializing.value || writing.value || closing.value || (output && outputLoading.value) || !directory) return;
+async function openGridFile(filename: string, output = false, general = false) {
+    const directory = general ? sourceDirectory.value : output ? outputDirectory.value : displayedDirectory.value;
+    const files = general ? generalFiles.value : output ? outputFiles.value : optionFiles.value;
+    if (openingFile.value || initializing.value || writing.value || closing.value || (output && outputLoading.value) || (general && directoryFilesLoading.value) || !directory) return;
     if (!files.some(file => file.filename === filename)) return;
     openingFile.value = true;
     try {
@@ -1335,7 +1460,8 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 				<div id="resizer1" class="resizer" @pointerdown="resize($event, 1)"></div>
 				<section id="panel_sd" class="panel_sd" aria-label="表示中のフォルダー">
 					<div class="path-header sd-path-header">
-						<div class="path-heading"><h2>書き込み対象</h2><span class="file-count" role="status" aria-label="SD書込ファイル数">{{ allFileCount }}ファイル</span></div>
+						<FolderCombo v-if="features.folderSelector" :rules="historyPathRules" :selected-folder="sourceDirectory" :disabled="historyBusy" @select="selectRegisteredFolder" />
+						<span v-else class="folder-selector-placeholder" aria-hidden="true"></span>
 						<button type="button" class="copy-path" :disabled="!sourceDirectory" @click="copyDirectory" :title="displayedDirectory">
 							<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="2" width="8" height="10" rx="1.5"/><path d="M10 14H4a1 1 0 0 1-1-1V5"/></svg>
 							パスをコピー
@@ -1417,6 +1543,13 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 					role="tabpanel" aria-labelledby="option-tab-files" tabindex="0">
 					<OptionGrid :directory="displayedDirectory" :files="optionFiles" :disabled="initializing || writing || closing" @open-file="openGridFile" />
 				</div>
+				<div v-show="activeOptionTab === 'file-info'" id="option-panel-file-info" class="option-tab-panel"
+					role="tabpanel" aria-labelledby="option-tab-file-info" tabindex="0" :aria-busy="directoryFilesLoading">
+					<p v-if="directoryFilesLoading" class="output-status" role="status">ファイルを読み込んでいます…</p>
+					<p v-else-if="directoryFilesError" class="output-status" role="alert">{{ directoryFilesError }}</p>
+					<p v-else-if="!generalFiles.length" class="output-status" role="status">ファイルがありません。</p>
+					<OptionGrid variant="general" :directory="sourceDirectory" :files="generalFiles" :disabled="historyBusy || directoryFilesLoading" @open-file="openGridFile($event, false, true)" />
+				</div>
                 <div v-show="activeOptionTab === 'output'" id="option-panel-output" class="option-tab-panel output-panel"
                     role="tabpanel" aria-labelledby="option-tab-output" tabindex="0" :aria-busy="outputLoading">
                     <p v-if="outputLoading" class="output-status" role="status">outputを読み込んでいます…</p>
@@ -1489,12 +1622,15 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 			<p>登録フォルダーとその配下を「[表示名] 相対パス」で表示します。複数に一致すると、最も深いフォルダーを優先します。</p>
 			<div class="history-rule-list">
 				<table class="history-rule-table" aria-label="パスの省略設定一覧">
-					<colgroup><col class="history-rule-number-column"><col class="history-rule-label-column"><col><col class="history-rule-color-column"><col class="history-rule-delete-column"></colgroup>
-					<thead><tr><th scope="col">No</th><th scope="col">表示名</th><th scope="col">省略するフォルダー</th><th scope="col">色</th><th scope="col">削除</th></tr></thead>
+					<colgroup><col class="history-rule-number-column"><col class="history-rule-label-column"><col class="history-rule-filter-column"><col><col class="history-rule-color-column"><col class="history-rule-delete-column"></colgroup>
+					<thead><tr><th scope="col">No</th><th scope="col">表示名</th><th scope="col">フィルタ</th><th scope="col">省略するフォルダー</th><th scope="col">色</th><th scope="col">削除</th></tr></thead>
 					<tbody>
 				<tr v-for="(rule, index) in historyPathEditorRows" :key="index" class="history-rule-editor">
 					<td class="history-rule-number">{{ index + 1 }}</td>
 					<td><input v-model="rule.label" type="text" :style="historyPathColorStyle(rule.color)" :disabled="closing || index < fixedHistoryPathRules.length" :aria-label="`${index + 1}行目の表示名`" placeholder="共有"></td>
+					<td><select :value="rule.filter ?? 'none'" :disabled="closing || index < fixedHistoryPathRules.length" :aria-label="`${index + 1}行目のフィルタ`" @change="rule.filter = ($event.target as HTMLSelectElement).value as HistoryPathRule['filter']">
+						<option value="ts">TS用</option><option value="none">なし</option>
+					</select></td>
 					<td><input v-model="rule.folder" type="text" :disabled="closing || index < fixedHistoryPathRules.length" :aria-label="`${index + 1}行目の省略するフォルダー`" placeholder="C:\作業"></td>
 					<td><select :value="rule.color ?? 'blue'" :style="historyPathColorStyle(rule.color)" :disabled="closing || index < fixedHistoryPathRules.length" :aria-label="`${index + 1}行目の色`" @change="rule.color = ($event.target as HTMLSelectElement).value as HistoryPathRule['color']">
 						<option value="none" style="color: CanvasText; background-color: Canvas">なし</option>
@@ -1508,7 +1644,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 			<p>色は「なし」と8パターンから選べます。表示名と履歴の行に反映し、複数の保存先がある行はパスごとに色分けします。</p>
 			<p v-if="historyPathError" class="history-settings-error" role="alert">{{ historyPathError }}</p>
 			<div class="history-clear-actions">
-				<button type="button" class="history-rule-add" :disabled="closing" @click="historyPathDraft.push({ label: '', folder: '' })">追加</button>
+				<button type="button" class="history-rule-add" :disabled="closing" @click="historyPathDraft.push({ label: '', folder: '', color: 'none' })">追加</button>
 				<button type="button" autofocus @click="cancelHistoryPathRules">キャンセル</button>
 				<button type="submit" :disabled="closing">保存</button>
 			</div>
@@ -1712,9 +1848,10 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 .history-path-dialog > form { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .history-path-dialog > form > :not(.history-rule-list) { flex-shrink: 0; }
 .history-rule-list { flex: 1; min-height: 0; overflow: auto; }
-.history-rule-table { width: 100%; min-width: 480px; table-layout: fixed; border-collapse: separate; border-spacing: 0; }
+.history-rule-table { width: 100%; min-width: 560px; table-layout: fixed; border-collapse: separate; border-spacing: 0; }
 .history-rule-number-column { width: 32px; }
 .history-rule-label-column { width: 21%; }
+.history-rule-filter-column { width: 80px; }
 .history-rule-color-column { width: 96px; }
 .history-rule-delete-column { width: 54px; }
 .history-rule-table th, .history-rule-table td { padding: 5px; border-right: 1px solid #d7e5f5; border-bottom: 1px solid #d7e5f5; text-align: left; vertical-align: middle; }
@@ -1872,9 +2009,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 	border-radius: 7px;
 }
 .panel_sd .sd-path-header { padding: 5px 7px; background: #fff; border-bottom: 1px solid #edf0f5; }
-.path-heading { display: flex; align-items: center; gap: 7px; min-width: 0; }
-.path-heading h2 { margin: 0; font-size: 12px; font-weight: 700; color: #273449; white-space: nowrap; }
-.file-count { padding: 1px 6px; border-radius: 9px; background: #eef1f5; color: #64748b; font-size: 10px; white-space: nowrap; }
+.folder-selector-placeholder { flex: 1; min-width: 0; max-width: 240px; height: 24px; }
 .sd-path-header .copy-path { display: inline-flex; align-items: center; gap: 3px; flex-shrink: 0; padding: 2px; border: 0; border-radius: 3px; background: transparent; color: #3267aa; white-space: nowrap; }
 .copy-path svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.2; }
 .copy-path:hover:enabled { background: #edf4fe; }

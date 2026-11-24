@@ -8,7 +8,8 @@ const props = defineProps<{ files: {
     filename: string; description: string; individualInfo: string; modifiedAt?: number | null; size?: number | null; csvSize?: number;
     startAddress?: string; endAddress?: string;
     updateNo?: string; updateVer?: string; condition?: string; carType?: string;
-}[]; directory: string; disabled?: boolean; variant?: 'files' | 'output' }>();
+    icon?: string;
+}[]; directory: string; disabled?: boolean; variant?: 'files' | 'output' | 'general' }>();
 const emit = defineEmits<{ openFile: [filename: string]; analyzeDailyReport: [filename: string] }>();
 
 function formatFileSize(bytes: number): string {
@@ -35,7 +36,9 @@ function descriptionTooltip(file: typeof props.files[number]): string | undefine
     ].filter(Boolean).join(' ') || undefined;
 }
 const selectedRow = ref<number | null>(null);
-watch(() => props.files, () => { selectedRow.value = null; });
+watch(() => props.variant !== 'output' ? props.files.map(file => file.filename).join('\0') : props.files,
+    () => { selectedRow.value = null; });
+watch(() => props.directory, () => { selectedRow.value = null; });
 
 const imPreview = ref<{ x: number; y: number; error: string } | null>(null);
 const imCanvas = ref<HTMLCanvasElement | null>(null);
@@ -102,7 +105,7 @@ onMounted(() => {
         let width = 68;
         for (const file of props.files) {
             // 左右の余白6pxと罫線1pxも含め、端数を切り上げる。
-            width = Math.max(width, Math.ceil(context.measureText(file.filename).width) + 7);
+            width = Math.max(width, Math.ceil(context.measureText(file.filename).width) + 7 + (props.variant !== 'output' ? 20 : 0));
         }
         filenameWidth.value = width;
     });
@@ -111,15 +114,20 @@ onMounted(() => {
 const columns = computed(() => [
     { label: 'No', width: 24 },
     { label: 'ファイル名', width: filenameWidth.value },
-    { label: '説明' },
-    { label: '個別情報', width: 168 },
-    ...(props.variant === 'output' ? [
-        { label: '詳細', width: 186 },
+    ...(props.variant === 'general' ? [
+        { label: 'サイズ', width: 110 },
+        { label: '更新日時', width: 160 },
     ] : [
-        { label: '更新No', width: 48 },
-        { label: '更新Ver', width: 68 },
-        { label: '条件', width: 30 },
-        { label: '車種', width: 40 },
+        { label: '説明' },
+        { label: '個別情報', width: 168 },
+        ...(props.variant === 'output' ? [
+            { label: '詳細', width: 186 },
+        ] : [
+            { label: '更新No', width: 48 },
+            { label: '更新Ver', width: 68 },
+            { label: '条件', width: 30 },
+            { label: '車種', width: 40 },
+        ]),
     ]),
 ].map((column, index) => ({ ...column, width: resizedWidths.value?.[index] ?? column.width })));
 // 説明列に最低80pxを残し、収まらない場合は横スクロールする。
@@ -165,7 +173,16 @@ const backgroundColumns = computed(() => columns.value
                         @dblclick="column.label === 'ファイル名' && openFile(index)"
                         :title="column.label === '個別情報' ? (isImFile(file.filename) ? undefined : file.individualInfo || undefined) : column.label === '説明' ? descriptionTooltip(file) : column.label === 'ファイル名' ? [file.filename, formatFileTimestamp(file.modifiedAt)].filter(Boolean).join(' ') : undefined">
                         <template v-if="column.label === 'No'">{{ index + 1 }}</template>
-                        <template v-else-if="column.label === 'ファイル名'">{{ file.filename }}</template>
+                        <template v-else-if="column.label === 'ファイル名'">
+                            <span v-if="variant !== 'output'" class="file-with-icon">
+                                <img v-if="file.icon" class="file-icon" :src="file.icon" alt="" draggable="false">
+                                <svg v-else class="file-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 1.5h6l4 4v9H3Z" fill="#fff" stroke="#94a3b8"/><path d="M9 1.5v4h4" fill="none" stroke="#94a3b8"/></svg>
+                                <span>{{ file.filename }}</span>
+                            </span>
+                            <template v-else>{{ file.filename }}</template>
+                        </template>
+                        <template v-else-if="column.label === 'サイズ'">{{ file.size == null ? '' : formatFileSize(file.size) }}</template>
+                        <template v-else-if="column.label === '更新日時'">{{ formatFileTimestamp(file.modifiedAt) }}</template>
                         <template v-else-if="column.label === '説明'">{{ file.description }}</template>
                         <template v-else-if="column.label === '個別情報'">{{ file.individualInfo }}</template>
                         <template v-else-if="column.label === '詳細'">
@@ -200,6 +217,9 @@ const backgroundColumns = computed(() => columns.value
 <style scoped src="../styles/fileGrid.css"></style>
 
 <style scoped>
+.file-with-icon { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.file-icon { width: 16px; height: 16px; flex-shrink: 0; object-fit: contain; }
+.file-with-icon > span { overflow: hidden; text-overflow: ellipsis; }
 .im-preview {
     position: fixed;
     z-index: 1000;

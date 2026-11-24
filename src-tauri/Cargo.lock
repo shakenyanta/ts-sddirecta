@@ -4493,6 +4493,7 @@ version = "0.1.16"
 dependencies = [
  "base64 0.22.1",
  "minisign-verify",
+ "png",
  "reqwest 0.12.28",
  "semver",
  "serde",

@@ -9,7 +9,7 @@ export const historyPathColors = [
 	{ id: 'gray', label: '灰', color: '#374151', backgroundColor: '#edf0f4' },
 ] as const;
 type HistoryPathColor = typeof historyPathColors[number]['id'] | 'none';
-export interface HistoryPathRule { label: string; folder: string; color?: HistoryPathColor }
+export interface HistoryPathRule { label: string; folder: string; color?: HistoryPathColor; filter?: 'ts' | 'none' }
 
 export function historyPathColorStyle(color: HistoryPathColor = 'blue') {
 	if (color === 'none') return {};
@@ -19,10 +19,10 @@ export function historyPathColorStyle(color: HistoryPathColor = 'blue') {
 
 export const historyPathRulesStorageKey = 'sddirecta-history-path-rules-v1';
 export const fixedHistoryPathRules: readonly Readonly<HistoryPathRule>[] = [
-	{ label: 'TS-02各社', folder: String.raw`\\130.2.1.173\disk\保存ファイル\ＴＳ－０２テスト用\各社設定`, color: 'blue' },
-	{ label: 'TS-01各社', folder: String.raw`\\130.2.1.173\disk\保存ファイル\ＴＳテスト用\各社設定20170314`, color: 'green' },
-	{ label: 'TS-02開発', folder: String.raw`\\130.2.1.173\disk\保存ファイル\ＴＳ－０２テスト用\TS02開発中HEX`, color: 'orange' },
-	{ label: 'TS-01開発', folder: String.raw`\\130.2.1.173\disk\保存ファイル\ＴＳテスト用\TS開発中HEX`, color: 'purple' },
+	{ label: 'TS-02各社', folder: String.raw`\\130.2.1.173\disk\保存ファイル\ＴＳ－０２テスト用\各社設定`, color: 'red', filter: 'ts' },
+	{ label: 'TS-01各社', folder: String.raw`\\130.2.1.173\disk\保存ファイル\ＴＳテスト用\各社設定20170314`, color: 'teal', filter: 'ts' },
+	{ label: 'TS-02開発', folder: String.raw`\\130.2.1.173\disk\保存ファイル\ＴＳ－０２テスト用\TS02開発中HEX`, color: 'yellow', filter: 'ts' },
+	{ label: 'TS-01開発', folder: String.raw`\\130.2.1.173\disk\保存ファイル\ＴＳテスト用\TS開発中HEX`, color: 'gray', filter: 'ts' },
 ];
 export const defaultHistoryPathRules: readonly HistoryPathRule[] = [
 	{ label: '共有', folder: String.raw`\\130.2.1.173\disk\保存ファイル` },
@@ -57,9 +57,10 @@ export function validateHistoryPathRules(value: unknown, rowOffset = 0): History
 		}
 		if (labels.has(label.toLowerCase()) || folders.has(folder.toLowerCase())) throw Error(`${index + 1}行目の表示名またはフォルダーが重複しています。`);
 		if (rule.color !== undefined && rule.color !== 'none' && !historyPathColors.some(preset => preset.id === rule.color)) throw Error(`${index + 1}行目の配色が不正です。`);
+		if (rule.filter !== undefined && rule.filter !== 'ts' && rule.filter !== 'none') throw Error(`${index + 1}行目のフィルタが不正です。`);
 		labels.add(label.toLowerCase());
 		folders.add(folder.toLowerCase());
-		return { label, folder: /^[a-z]:$/i.test(folder) ? folder + '\\' : folder, ...(rule.color === undefined ? {} : { color: rule.color }) };
+		return { label, folder: /^[a-z]:$/i.test(folder) ? folder + '\\' : folder, ...(rule.color === undefined ? {} : { color: rule.color }), ...(rule.filter === undefined ? {} : { filter: rule.filter }) };
 	});
 }
 
