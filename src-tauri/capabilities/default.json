@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "メインウィンドウのデフォルトケーパビリティ",
-  "windows": ["main", "daily-report-*"],
+  "windows": ["main", "daily-report-*", "receipt-*"],
   "permissions": [
     "core:path:default",
     "core:event:default",

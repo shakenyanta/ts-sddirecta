@@ -6,6 +6,11 @@ const router = createRouter({
   history: createWebHashHistory(),
   routes: [
     {
+      path: "/receipt",
+      component: () => import("../pages/ReceiptView.vue"),
+      props: route => ({ directory: typeof route.query.directory === 'string' ? route.query.directory : '' }),
+    },
+    {
       path: "/daily-report",
       name: "daily-report",
       component: () => import("../pages/DailyReportView.vue"),

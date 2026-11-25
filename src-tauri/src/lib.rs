@@ -5,6 +5,7 @@ fn greet(name: &str) -> String {
 }
 
 mod diagnostics;
+mod receipt;
 mod daily_report;
 mod edition;
 mod file_bc;
@@ -253,6 +254,48 @@ async fn open_grid_file(directory: String, filename: String) -> Result<(), Strin
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn open_receipt(directory: String, app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    if EXIT_WAITING.load(Ordering::SeqCst) || WRITE_RUNNING.load(Ordering::SeqCst) || sd_worker::is_busy() {
+        return Err("SD処理中または終了処理中です".into());
+    }
+    let checked_directory = directory.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        source_directory::file_to_open(
+            checked_directory,
+            "FILE-BQ.001",
+        )
+    }).await.map_err(|e| e.to_string())??;
+    let label = format!("receipt-{}", directory.as_bytes().iter()
+        .map(|byte| format!("{byte:02x}")).collect::<String>());
+    if let Some(window) = app.get_webview_window(&label) {
+        window.unminimize().map_err(|e| e.to_string())?;
+        return window.set_focus().map_err(|e| e.to_string());
+    }
+    let mut query = tauri::Url::parse("http://localhost/").map_err(|e| e.to_string())?;
+    query.query_pairs_mut().append_pair("directory", &directory);
+    let url = format!("index.html#/receipt?{}", query.query().unwrap_or_default());
+    let main = app.get_webview_window("main").ok_or("メインウィンドウが見つかりません")?;
+    let main_size = main.inner_size().map_err(|e| e.to_string())?;
+    let main_position = main.outer_position().map_err(|e| e.to_string())?;
+    // メインと前後を自由に切り替えられる独立ウィンドウにする。
+    let builder = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url.into()))
+        .title("FILE-BQレシート")
+        .resizable(true)
+        .visible(false);
+    let window = builder.build().map_err(|e| e.to_string())?;
+    window.set_position(main_position).map_err(|e| e.to_string())?;
+    window.set_size(main_size).map_err(|e| e.to_string())?;
+    if let Err(error) = window_layout::fit_startup_window(&window) {
+        diagnostics::record("WARN", &format!("receipt window layout failed: {error}"));
+        window.maximize().map_err(|e| e.to_string())?;
+    }
+    window.show().map_err(|e| e.to_string())?;
+    diagnostics::record("INFO", &format!("receipt window opened directory={directory:?}"));
+    Ok(())
 }
 
 #[tauri::command]
@@ -759,6 +802,8 @@ pub fn run() {
             open_folder,
             open_grid_file,
             open_daily_report,
+            open_receipt,
+            receipt::read_receipts,
             read_daily_report,
             open_diagnostic_log,
             open_sd_output,
@@ -783,7 +828,7 @@ pub fn run() {
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 use tauri::Manager;
                 for (label, child) in window.app_handle().webview_windows() {
-                    if label.starts_with("daily-report-") {
+                    if label.starts_with("daily-report-") || label.starts_with("receipt-") {
                         let _ = child.destroy();
                     }
                 }

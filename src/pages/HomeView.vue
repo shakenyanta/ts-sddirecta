@@ -1350,6 +1350,19 @@ function onFolderDoubleClick(path: string, event: MouseEvent) {
 
 const openingFile = ref(false);
 const openingDailyReport = ref(false);
+const openingReceipt = ref(false);
+async function openReceipt(output = false) {
+    const directory = output ? outputDirectory.value : displayedDirectory.value;
+    if (!directory || openingReceipt.value || initializing.value || writing.value || closing.value || (output && outputLoading.value)) return;
+    openingReceipt.value = true;
+    try {
+        await invoke('open_receipt', { directory });
+    } catch (error) {
+        await appendMessage({ text: `レシートを開けませんでした: ${String(error)}`, warning: true });
+    } finally {
+        openingReceipt.value = false;
+    }
+}
 async function openDailyReport(filename: string) {
     if (!features.value.optionPanel || openingDailyReport.value || initializing.value || writing.value
         || closing.value || outputLoading.value) return;
@@ -1543,7 +1556,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 				</div>
 				<div v-show="activeOptionTab === 'files'" id="option-panel-files" class="option-tab-panel"
 					role="tabpanel" aria-labelledby="option-tab-files" tabindex="0">
-					<OptionGrid :directory="displayedDirectory" :files="optionFiles" :disabled="initializing || writing || closing" @open-file="openGridFile" />
+					<OptionGrid :directory="displayedDirectory" :files="optionFiles" :disabled="initializing || writing || closing" @open-receipt="openReceipt()" @open-file="openGridFile" />
 				</div>
 				<div v-show="activeOptionTab === 'file-info'" id="option-panel-file-info" class="option-tab-panel"
 					role="tabpanel" aria-labelledby="option-tab-file-info" tabindex="0" :aria-busy="directoryFilesLoading">
@@ -1557,7 +1570,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
                     <p v-if="outputLoading" class="output-status" role="status">outputを読み込んでいます…</p>
                     <p v-else-if="outputError" class="output-status" role="alert">{{ outputError }}</p>
                     <p v-else-if="!outputFiles.length" class="output-status" role="status">outputにCSVと一致するファイルがありません。全エリアSD読込後に表示されます。</p>
-                    <OptionGrid variant="output" :directory="outputDirectory" :files="outputFiles" :disabled="initializing || writing || closing || outputLoading || openingDailyReport" @open-file="openGridFile($event, true)" @analyze-daily-report="openDailyReport" />
+                    <OptionGrid variant="output" :directory="outputDirectory" :files="outputFiles" :disabled="initializing || writing || closing || outputLoading || openingDailyReport" @open-receipt="openReceipt(true)" @open-file="openGridFile($event, true)" @analyze-daily-report="openDailyReport" />
                 </div>
 				<div v-show="activeOptionTab === 'history'" id="option-panel-history" class="option-tab-panel history-panel"
 					role="tabpanel" aria-labelledby="option-tab-history" tabindex="0">

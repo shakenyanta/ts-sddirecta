@@ -10,7 +10,7 @@ const props = defineProps<{ files: {
     updateNo?: string; updateVer?: string; condition?: string; carType?: string;
     icon?: string;
 }[]; directory: string; disabled?: boolean; variant?: 'files' | 'output' | 'general' }>();
-const emit = defineEmits<{ openFile: [filename: string]; analyzeDailyReport: [filename: string] }>();
+const emit = defineEmits<{ openReceipt: []; openFile: [filename: string]; analyzeDailyReport: [filename: string] }>();
 
 function formatFileSize(bytes: number): string {
     const units = ['バイト', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB'];
@@ -186,7 +186,7 @@ const backgroundColumns = computed(() => columns.value
                         <template v-else-if="column.label === '説明'">{{ file.description }}</template>
                         <template v-else-if="column.label === '個別情報'">
                             <button v-if="file.filename === 'FILE-BQ.001'" type="button"
-                                class="receipt-button" :disabled="disabled" @click.stop>レシート</button>
+                                class="receipt-button" :disabled="disabled" @click.stop="emit('openReceipt')">レシート</button>
                             <template v-else>{{ file.individualInfo }}</template>
                         </template>
                         <template v-else-if="column.label === '詳細'">
