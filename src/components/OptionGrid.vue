@@ -184,7 +184,11 @@ const backgroundColumns = computed(() => columns.value
                         <template v-else-if="column.label === 'サイズ'">{{ file.size == null ? '' : formatFileSize(file.size) }}</template>
                         <template v-else-if="column.label === '更新日時'">{{ formatFileTimestamp(file.modifiedAt) }}</template>
                         <template v-else-if="column.label === '説明'">{{ file.description }}</template>
-                        <template v-else-if="column.label === '個別情報'">{{ file.individualInfo }}</template>
+                        <template v-else-if="column.label === '個別情報'">
+                            <button v-if="file.filename === 'FILE-BQ.001'" type="button"
+                                class="receipt-button" :disabled="disabled" @click.stop>レシート</button>
+                            <template v-else>{{ file.individualInfo }}</template>
+                        </template>
                         <template v-else-if="column.label === '詳細'">
                             <button v-if="file.description === '自動日報2データ'" type="button"
                                 class="daily-report-button" :disabled="disabled"
@@ -236,7 +240,8 @@ const backgroundColumns = computed(() => columns.value
 .im-preview canvas { display: block; max-width: 100%; height: auto; }
 
 .filename-cell { user-select: none; }
-.daily-report-button {
+.daily-report-button,
+.receipt-button {
     height: 16px;
     padding: 0 6px;
     border: 1px solid #b8cce5;
@@ -248,8 +253,10 @@ const backgroundColumns = computed(() => columns.value
     vertical-align: middle;
     cursor: pointer;
 }
-.daily-report-button:hover:not(:disabled) { background: #dbeafe; }
-.daily-report-button:disabled { opacity: .45; cursor: default; }
+.daily-report-button:hover:not(:disabled),
+.receipt-button:hover:not(:disabled) { background: #dbeafe; }
+.daily-report-button:disabled,
+.receipt-button:disabled { opacity: .45; cursor: default; }
 tbody td.selected-cell {
     background: #dbeafe;
     box-shadow: inset 0 0 0 1px #60a5fa;
