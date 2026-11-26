@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { highlightReceiptSearch } from '../utils/receiptSearch';
 const props = defineProps<{ directory: string }>();
 const rows = ref<{name: string; text: string; size: number; issues: number}[]>([]);
 const selected = ref(-1);
@@ -10,12 +11,17 @@ const preview = ref<HTMLElement | null>(null);
 const mode = ref('standard');
 const showVariables = ref(false);
 const fontSize = ref(13);
+const searchQuery = ref('');
+const currentSearchMatch = ref(-1);
 const status = ref('');
 const sourceSize = ref(0);
 const fileBqReceiptIfIndentEnabled = computed(() => mode.value === 'if');
 const raw = computed(() => rows.value[selected.value]?.text || '');
 const analysis = computed(() => analyzeFileBqIfPairing(raw.value));
-const html = computed(() => highlightFileBqReceiptText(formatFileBqReceiptText(raw.value), analysis.value.errorOrdinals));
+const searchResult = computed(() => highlightReceiptSearch(
+ highlightFileBqReceiptText(formatFileBqReceiptText(raw.value), analysis.value.errorOrdinals), searchQuery.value
+));
+const html = computed(() => searchResult.value.html);
 const total = computed(() => rows.value.reduce((sum,r) => sum+r.size,0));
 const variables = computed(() => {
  const counts = new Map<string,number>();
@@ -24,6 +30,15 @@ const variables = computed(() => {
 });
 const fileBqTokenPattern = /<%[^>]*%>|<%|%>/g;
 const fileBqIfPairTokenPattern = /<%IF[^>]*%>|<%EE%>|<%EI%>/g;
+watch([searchQuery, raw, mode], () => {
+ currentSearchMatch.value = searchResult.value.count ? 0 : -1;
+ void scrollToSearchMatch();
+}, { flush: 'post' });
+watch([html, currentSearchMatch], () => {
+ preview.value?.querySelectorAll<HTMLElement>('[data-receipt-search-index]').forEach(element => {
+  element.classList.toggle('current-search-match', Number(element.dataset.receiptSearchIndex) === currentSearchMatch.value);
+ });
+}, { flush: 'post' });
 type FileBqPairingIssue = {
   ordinal: number
   message: string
@@ -325,6 +340,18 @@ async function selectVariable(name: string) {
  preview.value?.querySelector<HTMLElement>('.selected-variable')
   ?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
 }
+async function scrollToSearchMatch() {
+ await nextTick();
+ if (currentSearchMatch.value < 0) return;
+ preview.value?.querySelector<HTMLElement>(`[data-receipt-search-index="${currentSearchMatch.value}"]`)
+  ?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+}
+function moveSearchMatch(direction: number) {
+ const count = searchResult.value.count;
+ if (!count) return;
+ currentSearchMatch.value = (currentSearchMatch.value + direction + count) % count;
+ void scrollToSearchMatch();
+}
 </script>
 
 <template>
@@ -352,10 +379,19 @@ async function selectVariable(name: string) {
     <footer>{{ rows.length }} 行 / 合計 {{ total }}バイト ({{ sourceSize ? Math.round(total/sourceSize*100) : 0 }}%)</footer>
    </section>
    <section class="preview" aria-label="レシート本文">
+    <div class="receipt-search" role="search" aria-label="レシート本文の検索">
+     <input v-model="searchQuery" type="search" aria-label="検索文字列" placeholder="本文を検索" @keydown.enter.prevent="moveSearchMatch($event.shiftKey ? -1 : 1)" @keydown.esc.prevent="searchQuery = ''">
+     <span class="search-count" role="status">{{ searchQuery ? `${currentSearchMatch + 1} / ${searchResult.count}件` : '' }}</span>
+     <button type="button" :disabled="!searchResult.count" @click="moveSearchMatch(-1)">前へ</button>
+     <button type="button" :disabled="!searchResult.count" @click="moveSearchMatch(1)">次へ</button>
+     <button type="button" :disabled="!searchQuery" @click="searchQuery = ''">クリア</button>
+    </div>
+    <div class="receipt-content">
     <div v-if="analysis.issues.length" class="diagnostics" role="alert">
      <button v-for="issue in analysis.issues" :key="issue.ordinal" type="button" class="diagnostic" @click="scrollToIssue(issue.ordinal)">{{ issue.message }}</button>
     </div>
     <pre ref="preview" class="file-bq-highlighted" :style="{ fontSize: `${fontSize}px` }" v-html="html"></pre>
+    </div>
    </section>
    <section v-show="showVariables" id="receipt-variables" class="variables" aria-label="変数一覧">
     <table><thead><tr><th>No</th><th>変数名</th><th>使用数</th><th>値</th></tr></thead><tbody><tr v-for="([name,count],index) in variables" :key="name" :class="{ selected: selectedVariable === name }" :aria-selected="selectedVariable === name" tabindex="0" @click="selectVariable(name)" @keydown.enter.prevent="selectVariable(name)" @keydown.space.prevent="selectVariable(name)"><td>{{ index+1 }}</td><td>{{ name }}</td><td>{{ count }}</td><td></td></tr></tbody></table>
@@ -401,7 +437,13 @@ tbody tr:nth-child(even) { background:#eff4fa; }
 tbody tr.selected { background:#c8e1ff; }
 .name { white-space:pre; overflow:hidden; text-overflow:ellipsis; font-family:'BIZ UDGothic','BIZ UDゴシック','MS Gothic',monospace; }
 footer { font-size:10px; background:#eef3fa; }
-.preview { flex:1; min-width:0; overflow:auto; background:#f4f7fa; }
+.preview { flex:1; min-width:0; overflow:hidden; display:flex; flex-direction:column; background:#f4f7fa; }
+.receipt-search { display:flex; flex-wrap:wrap; align-items:center; gap:4px; padding:6px 8px; border-bottom:1px solid #c7d5e5; background:#eef3fa; }
+.receipt-search input { flex:1; min-width:80px; width:120px; padding:4px 6px; border:1px solid #c7d5e5; border-radius:4px; color:inherit; font:inherit; }
+.receipt-search button { padding:4px 6px; border:1px solid #c7d5e5; border-radius:4px; background:white; color:inherit; font:inherit; cursor:pointer; }
+.receipt-search button:disabled { opacity:0.45; cursor:default; }
+.search-count { min-width:56px; font-size:11px; white-space:nowrap; }
+.receipt-content { flex:1; min-height:0; overflow:auto; }
 pre { padding:8px; font:13px/1.3 'BIZ UDGothic','BIZ UDゴシック','MS Gothic',monospace; white-space:pre; }
 .diagnostics { display:flex; flex-direction:column; gap:4px; padding:8px 10px; border-bottom:1px solid #f1aaa4; background:#ffe5e2; }
 .diagnostic { border:0; padding:0; background:transparent; color:#8f1d14; font:inherit; font-size:11px; line-height:1.35; text-align:left; cursor:pointer; }
@@ -615,4 +657,6 @@ pre { padding:8px; font:13px/1.3 'BIZ UDGothic','BIZ UDゴシック','MS Gothic'
   outline:1px solid #b88100;
   border-radius:2px;
 }
+.file-bq-highlighted :deep(.receipt-search-match) { background:#ffeb3b; color:#192d46; font-weight:700; }
+.file-bq-highlighted :deep(.current-search-match) { background:#ffad33; color:#192d46; outline:2px solid #914700; }
 </style>

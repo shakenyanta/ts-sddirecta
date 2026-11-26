@@ -3,13 +3,18 @@ const { readFileSync } = require('node:fs');
 const { test } = require('node:test');
 const ts = require('typescript');
 const vue = require('vue');
+const searchUtility = {};
+new Function('exports', ts.transpileModule(readFileSync('src/utils/receiptSearch.ts', 'utf8'), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+}).outputText)(searchUtility);
 
 // Run the view's real setup/reactivity with only IPC and mounting replaced.
 async function receipt(t, texts) {
   const source = readFileSync('src/pages/ReceiptView.vue', 'utf8')
     .match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1];
   const js = ts.transpileModule(source + `
-    return { selected, selectedVariable, preview, mode, html, variables, selectVariable };
+    return { selected, selectedVariable, preview, mode, html, variables, selectVariable,
+      searchQuery, currentSearchMatch, searchResult, moveSearchMatch };
   `, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
   let mount;
   const scope = vue.effectScope();
@@ -17,7 +22,7 @@ async function receipt(t, texts) {
   const ui = scope.run(() => new Function('require', 'exports', 'defineProps', js)(
     name => name === 'vue'
       ? { ...vue, onMounted: callback => { mount = callback; } }
-      : { invoke: async () => ({
+      : name === '../utils/receiptSearch' ? searchUtility : { invoke: async () => ({
           rows: texts.map((text, index) => ({ name: `${index}.txt`, bytes: [...Buffer.from(text)] })),
           source_size: 100,
           reused: false,
@@ -35,7 +40,7 @@ for (const mode of ['standard', 'if']) {
     const ui = await receipt(t, ['<%IFM001%><%M001:04D%> M001 <%M002%><%EI%>']);
     ui.mode.value = mode;
     const scrolls = [];
-    ui.preview.value = { querySelector(selector) {
+    ui.preview.value = { querySelectorAll: () => [], querySelector(selector) {
       assert.equal(selector, '.selected-variable');
       assert.match(ui.html.value, /<mark class="selected-variable">/);
       return { scrollIntoView: options => scrolls.push(options) };
@@ -80,4 +85,33 @@ test('empty receipts and absent preview do not cause selection errors', async t 
   await ui.selectVariable('M001');
   assert.equal(ui.html.value, '');
   assert.deepEqual(ui.variables.value, []);
+});
+
+test('search counts, wraps navigation, refreshes after receipt changes, and clears', async t => {
+  const ui = await receipt(t, ['<%M001%> M001', '<%M002%>']);
+  ui.searchQuery.value = 'M001';
+  await vue.nextTick();
+  assert.equal(ui.searchResult.value.count, 2);
+  assert.equal(ui.currentSearchMatch.value, 0);
+  ui.moveSearchMatch(1);
+  assert.equal(ui.currentSearchMatch.value, 1);
+  ui.moveSearchMatch(1);
+  assert.equal(ui.currentSearchMatch.value, 0);
+  ui.moveSearchMatch(-1);
+  assert.equal(ui.currentSearchMatch.value, 1);
+  await ui.selectVariable('M001');
+  assert.match(ui.html.value, /selected-variable/);
+  assert.match(ui.html.value, /receipt-search-match/);
+  ui.mode.value = 'if';
+  await vue.nextTick();
+  assert.equal(ui.searchResult.value.count, 2);
+  ui.selected.value = 1;
+  await vue.nextTick();
+  assert.equal(ui.searchResult.value.count, 0);
+  assert.equal(ui.currentSearchMatch.value, -1);
+  ui.moveSearchMatch(1);
+  assert.equal(ui.currentSearchMatch.value, -1);
+  ui.searchQuery.value = '';
+  await vue.nextTick();
+  assert.doesNotMatch(ui.html.value, /receipt-search-match/);
 });
