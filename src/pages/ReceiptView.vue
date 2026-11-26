@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 const props = defineProps<{ directory: string }>();
 const rows = ref<{name: string; text: string; size: number; issues: number}[]>([]);
 const selected = ref(-1);
+const selectedVariable = ref<string | null>(null);
+watch(selected, () => { selectedVariable.value = null; });
 const preview = ref<HTMLElement | null>(null);
 const mode = ref('standard');
 const showVariables = ref(false);
@@ -207,6 +209,12 @@ function getFileBqTokenSegments(tokenBody: string): Array<{ text: string; classN
   return [{ text: tokenBody, className: getFileBqTokenClass(tokenBody) }]
 }
 
+function highlightSelectedVariable(text: string): string {
+  return escapeHtml(text).replace(/[A-Za-z]\d{3}/g, name =>
+    name === selectedVariable.value ? `<mark class="selected-variable">${name}</mark>` : name
+  );
+}
+
 function renderFileBqToken(token: string, isErrorToken = false, errorOrdinal: number | null = null): string {
   const errorClass = isErrorToken ? ' token-error' : ''
   const errorAttrs = isErrorToken
@@ -222,12 +230,12 @@ function renderFileBqToken(token: string, isErrorToken = false, errorOrdinal: nu
     const segments = getFileBqTokenSegments(tokenBody)
     return [
       `<span class="file-bq-token token-delimiter${errorClass}"${errorAttrs}>&lt;%</span>`,
-      ...segments.map(segment => `<span class="file-bq-token ${segment.className}${errorClass}"${errorAttrs}>${escapeHtml(segment.text)}</span>`),
+      ...segments.map(segment => `<span class="file-bq-token ${segment.className}${errorClass}"${errorAttrs}>${highlightSelectedVariable(segment.text)}</span>`),
       `<span class="file-bq-token token-delimiter${errorClass}"${errorAttrs}>%&gt;</span>`,
     ].join('')
   }
 
-  return `<span class="file-bq-token token-unknown${errorClass}"${errorAttrs}>${escapeHtml(token)}</span>`
+  return `<span class="file-bq-token token-unknown${errorClass}"${errorAttrs}>${highlightSelectedVariable(token)}</span>`
 }
 
 function getFileBqIndentLevelClass(levelIndex: number): string {
@@ -264,7 +272,7 @@ function highlightFileBqReceiptLine(
   let lastIndex = 0
 
   content.replace(fileBqTokenPattern, (token, offset) => {
-    result += escapeHtml(content.slice(lastIndex, offset))
+    result += highlightSelectedVariable(content.slice(lastIndex, offset))
     const isPairToken = token.startsWith('<%IF') || token === '<%EE%>' || token === '<%EI%>'
     const isErrorToken = isPairToken && errorOrdinals.has(pairTokenOrdinal)
     result += renderFileBqToken(token, isErrorToken, isErrorToken ? pairTokenOrdinal : null)
@@ -275,7 +283,7 @@ function highlightFileBqReceiptLine(
     return token
   })
 
-  result += escapeHtml(content.slice(lastIndex))
+  result += highlightSelectedVariable(content.slice(lastIndex))
   return { html: result, nextOrdinal: pairTokenOrdinal }
 }
 
@@ -311,6 +319,12 @@ async function scrollToIssue(ordinal: number) {
  preview.value?.querySelector<HTMLElement>(`[data-file-bq-error-ordinal="${ordinal}"]`)
   ?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
 }
+async function selectVariable(name: string) {
+ selectedVariable.value = name;
+ await nextTick();
+ preview.value?.querySelector<HTMLElement>('.selected-variable')
+  ?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+}
 </script>
 
 <template>
@@ -344,7 +358,7 @@ async function scrollToIssue(ordinal: number) {
     <pre ref="preview" class="file-bq-highlighted" :style="{ fontSize: `${fontSize}px` }" v-html="html"></pre>
    </section>
    <section v-show="showVariables" id="receipt-variables" class="variables" aria-label="変数一覧">
-    <table><thead><tr><th>No</th><th>変数名</th><th>使用数</th><th>値</th></tr></thead><tbody><tr v-for="([name,count],index) in variables" :key="name"><td>{{ index+1 }}</td><td>{{ name }}</td><td>{{ count }}</td><td></td></tr></tbody></table>
+    <table><thead><tr><th>No</th><th>変数名</th><th>使用数</th><th>値</th></tr></thead><tbody><tr v-for="([name,count],index) in variables" :key="name" :class="{ selected: selectedVariable === name }" :aria-selected="selectedVariable === name" tabindex="0" @click="selectVariable(name)" @keydown.enter.prevent="selectVariable(name)" @keydown.space.prevent="selectVariable(name)"><td>{{ index+1 }}</td><td>{{ name }}</td><td>{{ count }}</td><td></td></tr></tbody></table>
    </section>
   </div>
  </main>
@@ -372,6 +386,8 @@ header span { flex:1; font-size:11px; overflow-wrap:anywhere; }
 .variables th:nth-child(2) { width:40px; }
 .variables th:nth-child(3) { width:42px; }
 .variables th:last-child { width:42px; }
+.variables tbody tr { cursor:pointer; }
+.variables tbody tr:focus-visible { outline:2px solid #2875b9; outline-offset:-2px; }
 .grid { flex:1; overflow:auto; }
 .grid table { table-layout:fixed; }
 .grid th:first-child { width:28px; }
@@ -593,4 +609,10 @@ pre { padding:8px; font:13px/1.3 'BIZ UDGothic','BIZ UDゴシック','MS Gothic'
 }
 
 
+.file-bq-highlighted :deep(.selected-variable) {
+  background:#ffe16b;
+  color:#192d46;
+  outline:1px solid #b88100;
+  border-radius:2px;
+}
 </style>
