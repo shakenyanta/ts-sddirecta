@@ -295,6 +295,7 @@ onMounted(async () => {
  const data = await invoke<{ rows: { name: string; bytes: number[] }[]; source_size: number; reused: boolean }>('read_receipts', { directory: props.directory });
  const decoder = new TextDecoder('shift-jis');
  rows.value = data.rows.map(row => { const text = decoder.decode(new Uint8Array(row.bytes)); return { name: row.name, text, size: row.bytes.length, issues: analyzeFileBqIfPairing(text).issueCount }; });
+ selected.value = rows.value.length > 0 ? 0 : -1;
  sourceSize.value = data.source_size;
  status.value = `${data.reused ? '既存の BQ_TXT を再利用しました' : 'BQ_TXT を作成しました'} (${data.rows.length} 件)`;
  } catch (error) { status.value = String(error); }
@@ -313,7 +314,11 @@ async function scrollToIssue(ordinal: number) {
 <template>
  <main class="receipt">
   <header><strong>FILE-BQレシート</strong><span role="status">{{ status }}</span>
-   <select v-model="mode" aria-label="表示モード"><option value="standard">標準表示</option><option value="if">IF整形</option><option value="vars">変数一覧</option></select>
+   <div class="mode-switch" role="group" aria-label="表示モード">
+    <button type="button" :aria-pressed="mode === 'standard'" @click="mode = 'standard'">標準表示</button>
+    <button type="button" :aria-pressed="mode === 'if'" @click="mode = 'if'">IF整形</button>
+    <button type="button" :aria-pressed="mode === 'vars'" @click="mode = 'vars'">変数一覧</button>
+   </div>
   </header>
   <div class="panes">
    <section class="list">
@@ -338,9 +343,16 @@ async function scrollToIssue(ordinal: number) {
 
 <style scoped>
 .receipt { height:100%; display:flex; flex-direction:column; font:12px 'Meiryo',sans-serif; color:#192d46; }
-header { display:flex; align-items:center; gap:12px; padding:8px; border-bottom:1px solid #bbb; min-height:40px; }
+header { display:flex; flex-wrap:wrap; align-items:center; gap:12px; padding:8px; border-bottom:1px solid #bbb; min-height:40px; }
 header span { flex:1; font-size:11px; overflow-wrap:anywhere; }
-select { border:1px solid #c7d5e5; border-radius:16px; padding:4px 10px; background:white; }
+.mode-switch { display:flex; flex-shrink:0; margin-left:auto; }
+.mode-switch button { border:1px solid #c7d5e5; padding:4px 10px; background:white; color:inherit; font:inherit; cursor:pointer; }
+.mode-switch button + button { margin-left:-1px; }
+.mode-switch button:first-child { border-radius:16px 0 0 16px; }
+.mode-switch button:last-child { border-radius:0 16px 16px 0; }
+.mode-switch button:hover { background:#eff4fa; }
+.mode-switch button[aria-pressed="true"] { background:#c8e1ff; font-weight:600; }
+.mode-switch button:focus-visible { outline:2px solid #2875b9; outline-offset:2px; position:relative; z-index:1; }
 .panes { display:flex; flex:1; min-height:0; }
 .list { width:38%; min-width:240px; max-width:80%; resize:horizontal; overflow:auto; display:flex; flex-direction:column; border-right:3px solid #7db1d4; }
 .grid { flex:1; overflow:auto; }

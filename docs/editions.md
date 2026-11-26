@@ -173,7 +173,8 @@ Rust側で起動時に一度だけ確定し、Vue側へ渡します。変更後�
 
 ## 配布・更新
 
-`npm run build:exe` で共通exeを作成します。GitHub Releasesの公開ファイルは従来の
+`npm run build:exe` で共通exeを作成し、`package.json` のバージョンが公開済み最新版より新しければ署名・GitHub公開まで自動実行します。同じ番号・古い番号はビルドのみ、最新版の取得失敗時は停止します。
+公開しない場合は `npm run build:exe:only` を使います。`edition:test:prepare` は公開しないビルドを使用します。GitHub Releasesの公開ファイルは従来の
 `ts-sddirecta.exe`、`latest.json`、`latest.json.sig` の３つです。
 バージョンと更新先は両版で共通です。
 

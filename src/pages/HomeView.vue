@@ -1401,16 +1401,6 @@ async function openFolder(directory: string) {
 	}
 }
 
-async function copyDirectory() {
-	try {
-		await navigator.clipboard.writeText(displayedDirectory.value);
-	} catch {
-		await appendMessage('コピーできませんでした');
-		return;
-	}
-	await appendMessage('コピーしました');
-}
-
 function resizeOptions(event: PointerEvent) {
 	const target = event.currentTarget as HTMLElement;
 	const width = target.parentElement!.clientWidth - target.offsetWidth;
@@ -1477,9 +1467,9 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 					<div class="path-header sd-path-header">
 						<FolderCombo v-if="features.folderSelector" :rules="historyPathRules" :selected-folder="sourceDirectory" :disabled="historyBusy" @select="selectRegisteredFolder" />
 						<span v-else class="folder-selector-placeholder" aria-hidden="true"></span>
-						<button type="button" class="copy-path" :disabled="!sourceDirectory" @click="copyDirectory" :title="displayedDirectory">
-							<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="2" width="8" height="10" rx="1.5"/><path d="M10 14H4a1 1 0 0 1-1-1V5"/></svg>
-							パスをコピー
+						<button type="button" class="open-folder" :disabled="!displayedDirectory || closing" @click="openFolder(displayedDirectory)"
+							:title="`エクスプローラーで開く\n${displayedDirectory}`" aria-label="エクスプローラーで開く">
+							<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M17 11v5a1.5 1.5 0 0 1-1.5 1.5h-12A1.5 1.5 0 0 1 2 16V5a1.5 1.5 0 0 1 1.5-1.5H7l2 3h2"/><path d="M12 2.5h5.5V8M10 10l7.5-7.5"/></svg>
 						</button>
 					</div>
 					<p v-if="pathError" class="path-message path-error" role="alert">{{ pathError }}</p>
@@ -2025,11 +2015,11 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 }
 .panel_sd .sd-path-header { padding: 5px 7px; background: #fff; border-bottom: 1px solid #edf0f5; }
 .folder-selector-placeholder { flex: 1; min-width: 0; max-width: 240px; height: 24px; }
-.sd-path-header .copy-path { display: inline-flex; align-items: center; gap: 3px; flex-shrink: 0; padding: 2px; border: 0; border-radius: 3px; background: transparent; color: #3267aa; white-space: nowrap; }
-.copy-path svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.2; }
-.copy-path:hover:enabled { background: #edf4fe; }
-.sd-path-header .copy-path:disabled { color: #94a3b8; }
-.copy-path:focus-visible, .folder-toggle:focus-visible { outline: 2px solid #4285d4; outline-offset: -1px; }
+.sd-path-header .open-folder { display: inline-flex; align-items: center; gap: 3px; flex-shrink: 0; padding: 4px; border: 0; border-radius: 3px; background: transparent; color: #3267aa; white-space: nowrap; }
+.open-folder svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.2; }
+.open-folder:hover:enabled { background: #edf4fe; }
+.sd-path-header .open-folder:disabled { color: #94a3b8; }
+.open-folder:focus-visible, .folder-toggle:focus-visible { outline: 2px solid #4285d4; outline-offset: -1px; }
 .path-header {
 	display: flex;
 	align-items: center;

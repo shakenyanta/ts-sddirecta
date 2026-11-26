@@ -25,7 +25,7 @@ try {
     if ($publicKey -ne $embeddedKey) {
         throw '署名鍵の公開鍵とアプリに組み込む公開鍵が一致しません。'
     }
-    & npm.cmd run build:exe
+    & npm.cmd run build:exe:only
     if ($LASTEXITCODE -ne 0) { throw '配布用exeのビルドに失敗しました。' }
     $exePath = Join-Path $projectRoot 'src-tauri/target/release/ts-sddirecta.exe'
     $productVersion = (Get-Item -LiteralPath $exePath).VersionInfo.ProductVersion
