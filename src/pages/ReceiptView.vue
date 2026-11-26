@@ -6,6 +6,7 @@ const rows = ref<{name: string; text: string; size: number; issues: number}[]>([
 const selected = ref(-1);
 const preview = ref<HTMLElement | null>(null);
 const mode = ref('standard');
+const showVariables = ref(false);
 const fontSize = ref(13);
 const status = ref('');
 const sourceSize = ref(0);
@@ -315,10 +316,10 @@ async function scrollToIssue(ordinal: number) {
 <template>
  <main class="receipt">
   <header><strong>FILE-BQレシート</strong><span role="status">{{ status }}</span>
-   <div class="mode-switch" role="group" aria-label="表示モード">
+   <div class="mode-switch" role="group" aria-label="表示切替">
     <button type="button" :aria-pressed="mode === 'standard'" @click="mode = 'standard'">標準表示</button>
     <button type="button" :aria-pressed="mode === 'if'" @click="mode = 'if'">IF整形</button>
-    <button type="button" :aria-pressed="mode === 'vars'" @click="mode = 'vars'">変数一覧</button>
+    <button type="button" :aria-pressed="showVariables" aria-controls="receipt-variables" @click="showVariables = !showVariables">変数一覧</button>
    </div>
    <div class="mode-switch font-size-control" role="group" aria-label="レシート本文の文字サイズ">
     <button type="button" aria-label="文字を小さくする" title="文字を小さくする" :disabled="fontSize <= 10" @click="fontSize--">−</button>
@@ -336,12 +337,14 @@ async function scrollToIssue(ordinal: number) {
     </div>
     <footer>{{ rows.length }} 行 / 合計 {{ total }}バイト ({{ sourceSize ? Math.round(total/sourceSize*100) : 0 }}%)</footer>
    </section>
-   <section class="preview">
+   <section class="preview" aria-label="レシート本文">
     <div v-if="analysis.issues.length" class="diagnostics" role="alert">
      <button v-for="issue in analysis.issues" :key="issue.ordinal" type="button" class="diagnostic" @click="scrollToIssue(issue.ordinal)">{{ issue.message }}</button>
     </div>
-    <pre v-if="mode !== 'vars'" ref="preview" class="file-bq-highlighted" :style="{ fontSize: `${fontSize}px` }" v-html="html"></pre>
-    <table v-else><thead><tr><th>No</th><th>変数名</th><th>使用数</th><th>値</th><th>説明</th></tr></thead><tbody><tr v-for="([name,count],index) in variables" :key="name"><td>{{ index+1 }}</td><td>{{ name }}</td><td>{{ count }}</td><td></td><td></td></tr></tbody></table>
+    <pre ref="preview" class="file-bq-highlighted" :style="{ fontSize: `${fontSize}px` }" v-html="html"></pre>
+   </section>
+   <section v-show="showVariables" id="receipt-variables" class="variables" aria-label="変数一覧">
+    <table><thead><tr><th>No</th><th>変数名</th><th>使用数</th><th>値</th></tr></thead><tbody><tr v-for="([name,count],index) in variables" :key="name"><td>{{ index+1 }}</td><td>{{ name }}</td><td>{{ count }}</td><td></td></tr></tbody></table>
    </section>
   </div>
  </main>
@@ -362,7 +365,13 @@ header span { flex:1; font-size:11px; overflow-wrap:anywhere; }
 .mode-switch button:disabled { opacity:0.45; cursor:default; background:white; }
 .font-size-control { margin-left:0; }
 .panes { display:flex; flex:1; min-height:0; }
-.list { width:34%; min-width:240px; max-width:80%; resize:horizontal; overflow:auto; display:flex; flex-direction:column; border-right:3px solid #7db1d4; }
+.list { width:34%; min-width:240px; max-width:40%; flex-shrink:0; box-sizing:border-box; resize:horizontal; overflow:auto; display:flex; flex-direction:column; border-right:3px solid #7db1d4; }
+.variables { width:20%; min-width:180px; max-width:40%; flex-shrink:0; box-sizing:border-box; resize:horizontal; overflow:auto; border-left:3px solid #7db1d4; background:#f4f7fa; }
+.variables table { table-layout:fixed; min-width:180px; }
+.variables th:first-child { width:28px; }
+.variables th:nth-child(2) { width:40px; }
+.variables th:nth-child(3) { width:42px; }
+.variables th:last-child { width:42px; }
 .grid { flex:1; overflow:auto; }
 .grid table { table-layout:fixed; }
 .grid th:first-child { width:28px; }
@@ -374,11 +383,10 @@ th { height:24px; font-weight:600; }
 th { position:sticky; top:0; background:#eee; }
 tbody tr:nth-child(even) { background:#eff4fa; }
 tbody tr.selected { background:#c8e1ff; }
-.name { white-space:pre; overflow:hidden; text-overflow:ellipsis; font-family:'MS Gothic',monospace; }
+.name { white-space:pre; overflow:hidden; text-overflow:ellipsis; font-family:'BIZ UDGothic','BIZ UDゴシック','MS Gothic',monospace; }
 footer { font-size:10px; background:#eef3fa; }
 .preview { flex:1; min-width:0; overflow:auto; background:#f4f7fa; }
-.preview > table { width:calc(100% - 16px); margin:8px; }
-pre { padding:8px; font:13px/1.5 'MS Gothic',monospace; white-space:pre; }
+pre { padding:8px; font:13px/1.3 'BIZ UDGothic','BIZ UDゴシック','MS Gothic',monospace; white-space:pre; }
 .diagnostics { display:flex; flex-direction:column; gap:4px; padding:8px 10px; border-bottom:1px solid #f1aaa4; background:#ffe5e2; }
 .diagnostic { border:0; padding:0; background:transparent; color:#8f1d14; font:inherit; font-size:11px; line-height:1.35; text-align:left; cursor:pointer; }
 .diagnostic:hover { text-decoration:underline; }
