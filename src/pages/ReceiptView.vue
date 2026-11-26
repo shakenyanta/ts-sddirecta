@@ -6,6 +6,7 @@ const rows = ref<{name: string; text: string; size: number; issues: number}[]>([
 const selected = ref(-1);
 const preview = ref<HTMLElement | null>(null);
 const mode = ref('standard');
+const fontSize = ref(13);
 const status = ref('');
 const sourceSize = ref(0);
 const fileBqReceiptIfIndentEnabled = computed(() => mode.value === 'if');
@@ -319,6 +320,11 @@ async function scrollToIssue(ordinal: number) {
     <button type="button" :aria-pressed="mode === 'if'" @click="mode = 'if'">IF整形</button>
     <button type="button" :aria-pressed="mode === 'vars'" @click="mode = 'vars'">変数一覧</button>
    </div>
+   <div class="mode-switch font-size-control" role="group" aria-label="レシート本文の文字サイズ">
+    <button type="button" aria-label="文字を小さくする" title="文字を小さくする" :disabled="fontSize <= 10" @click="fontSize--">−</button>
+    <button type="button" aria-label="文字サイズを標準の13pxに戻す" title="標準の13pxに戻す" @click="fontSize = 13">{{ fontSize }}px</button>
+    <button type="button" aria-label="文字を大きくする" title="文字を大きくする" :disabled="fontSize >= 24" @click="fontSize++">＋</button>
+   </div>
   </header>
   <div class="panes">
    <section class="list">
@@ -334,7 +340,7 @@ async function scrollToIssue(ordinal: number) {
     <div v-if="analysis.issues.length" class="diagnostics" role="alert">
      <button v-for="issue in analysis.issues" :key="issue.ordinal" type="button" class="diagnostic" @click="scrollToIssue(issue.ordinal)">{{ issue.message }}</button>
     </div>
-    <pre v-if="mode !== 'vars'" ref="preview" class="file-bq-highlighted" v-html="html"></pre>
+    <pre v-if="mode !== 'vars'" ref="preview" class="file-bq-highlighted" :style="{ fontSize: `${fontSize}px` }" v-html="html"></pre>
     <table v-else><thead><tr><th>No</th><th>変数名</th><th>使用数</th><th>値</th><th>説明</th></tr></thead><tbody><tr v-for="([name,count],index) in variables" :key="name"><td>{{ index+1 }}</td><td>{{ name }}</td><td>{{ count }}</td><td></td><td></td></tr></tbody></table>
    </section>
   </div>
@@ -353,8 +359,10 @@ header span { flex:1; font-size:11px; overflow-wrap:anywhere; }
 .mode-switch button:hover { background:#eff4fa; }
 .mode-switch button[aria-pressed="true"] { background:#c8e1ff; font-weight:600; }
 .mode-switch button:focus-visible { outline:2px solid #2875b9; outline-offset:2px; position:relative; z-index:1; }
+.mode-switch button:disabled { opacity:0.45; cursor:default; background:white; }
+.font-size-control { margin-left:0; }
 .panes { display:flex; flex:1; min-height:0; }
-.list { width:38%; min-width:240px; max-width:80%; resize:horizontal; overflow:auto; display:flex; flex-direction:column; border-right:3px solid #7db1d4; }
+.list { width:34%; min-width:240px; max-width:80%; resize:horizontal; overflow:auto; display:flex; flex-direction:column; border-right:3px solid #7db1d4; }
 .grid { flex:1; overflow:auto; }
 .grid table { table-layout:fixed; }
 .grid th:first-child { width:28px; }
