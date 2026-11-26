@@ -1646,6 +1646,56 @@ test('history replay retains records and reports unavailable paths, CSV and matc
   }
 });
 
+test('access timeout unlocks both editions, retains history and allows manual retry', async () => {
+  for (const optionPanel of [true, false]) {
+    let failed = true;
+    const calls = [];
+    const service = backend({ resolve_drop_directory: ({ paths }) => {
+      if (failed) throw '2秒以内にフォルダーへのアクセスを確認できませんでした（タイムアウト）';
+      return paths[0];
+    } });
+    const ui = view(async (command, args) => {
+      calls.push(command);
+      return service(command, args);
+    }, performance, Date, undefined, optionPanel);
+    await ui.mount();
+    calls.length = 0;
+    const paths = ['\\\\server\\share\\folder'];
+    ui.drop(paths);
+    await until(() => !ui.initializing.value);
+    assert.deepEqual(calls, ['resolve_drop_directory']);
+    assert.match(ui.pathError.value, /2秒.*タイムアウト/);
+    assert.ok(ui.pathError.value.includes(paths[0]));
+    assert.ok(ui.messages.value.some(message => message.warning && message.text.includes('タイムアウト')));
+    assert.equal(ui.sourceDirectory.value, '');
+    assert.equal(ui.canSdWrite.value, false);
+    assert.equal(ui.historyBusy.value, false);
+    const entry = structuredClone(ui.dropHistory.value[0]);
+    await ui.reopenHistory(entry.id);
+    assert.deepEqual(ui.dropHistory.value, [entry]);
+    assert.equal(ui.initializing.value, false);
+    failed = false;
+    await ui.reopenHistory(entry.id);
+    assert.equal(ui.pathError.value, '');
+    assert.equal(ui.sourceDirectory.value, paths[0]);
+    assert.deepEqual(ui.dropHistory.value, [entry]);
+    ui.unmount();
+  }
+});
+
+test('registered folder access failure skips follow-up listings and permits another selection', async () => {
+  const calls = [];
+  const service = backend({ resolve_drop_directory: () => { throw 'アクセス権限がありません'; } });
+  const ui = view(async (command, args) => { calls.push(command); return service(command, args); });
+  const folder = ui.historyPathRules.value[0].folder;
+  await ui.selectRegisteredFolder(folder);
+  assert.deepEqual(calls, ['resolve_drop_directory']);
+  assert.equal(ui.initializing.value, false);
+  assert.ok(ui.pathError.value.includes(folder));
+  assert.match(ui.pathError.value, /アクセス権限/);
+  ui.unmount();
+});
+
 test('history selection and replay respect loading, SD work, shutdown, missing rows and disposal', async () => {
   let calls = 0;
   const ui = view(backend({ resolve_drop_directory: () => { calls++; return 'C:\\folder'; } }));

@@ -26,8 +26,8 @@ pub fn dropped_directory(paths: Vec<String>) -> Result<String, String> {
         if !path.is_absolute() {
             return Err("絶対パスで指定してください".into());
         }
-        let path = fs::canonicalize(path).map_err(|e| e.to_string())?;
-        let metadata = fs::metadata(&path).map_err(|e| e.to_string())?;
+        let path = fs::canonicalize(path).map_err(crate::source_access::access_error)?;
+        let metadata = fs::metadata(&path).map_err(crate::source_access::access_error)?;
         let folder = if metadata.is_dir() {
             path
         } else if metadata.is_file() {

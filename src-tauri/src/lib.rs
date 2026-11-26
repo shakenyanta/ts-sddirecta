@@ -20,6 +20,7 @@ mod sd_format;
 mod sd_read_batch;
 mod sd_worker;
 mod source_directory;
+mod source_access;
 mod startup_csv;
 mod storage_diagnostics;
 mod windows_api;
@@ -544,8 +545,9 @@ async fn run_sd_ff_initialize(
 use sd_detection::DriveInfo;
 
 #[tauri::command]
-fn resolve_drop_directory(paths: Vec<String>) -> Result<String, String> {
-    source_directory::dropped_directory(paths)
+async fn resolve_drop_directory(paths: Vec<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || source_access::resolve(paths))
+        .await.map_err(|error| error.to_string())?
 }
 
 #[tauri::command(async)]
@@ -590,12 +592,12 @@ async fn resolve_saved_folder(directory: String) -> Result<Option<String>, Strin
         .await.map_err(|error| error.to_string())?
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn check_startup_csv(directory: Option<String>) -> Result<bool, String> {
     source_directory::directory(directory).map(|_| true)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn read_startup_csv(directory: Option<String>) -> Result<StartupCsv, String> {
     source_directory::directory(directory)?;
     Ok(StartupCsv {

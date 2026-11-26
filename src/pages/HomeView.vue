@@ -332,6 +332,7 @@ const displayedDirectory = computed(() => useInputDirectory.value
 	? `${sourceDirectory.value.replace(/[\\/]+$/, '')}\\input`
 	: sourceDirectory.value);
 const pathError = ref('');
+const checkingSourceAccess = ref(false);
 type PanelMessage = string | { text: string; warning: true };
 type TimedPanelMessage = { text: string; warning?: true; time: string };
 const messages = ref<TimedPanelMessage[]>([]);
@@ -813,10 +814,12 @@ async function initializeSource(paths?: string[], refreshDirectory?: string, pre
 	pathError.value = '';
 	lastMatchError = '';
 	try {
+		checkingSourceAccess.value = !!paths;
 		const directory = refreshDirectory ?? (paths
 			? await invoke<string>('resolve_drop_directory', { paths })
 			: await invoke<string>('get_executable_directory'));
 		if (!active()) return;
+		checkingSourceAccess.value = false;
 		sourceDirectory.value = directory;
 		if (!preserveTree) resetFolderTree(directory);
 		if (preserveTree) await appendMessage(`フォルダー選択：${directory.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || directory}`);
@@ -856,14 +859,15 @@ async function initializeSource(paths?: string[], refreshDirectory?: string, pre
 		await refreshMatchedFiles(true);
 	} catch (error) {
 		if (!active()) return;
-		pathError.value = `対象フォルダーを取得できませんでした: ${String(error)}`;
-		await appendMessage(pathError.value);
+		pathError.value = `対象フォルダーを開けませんでした: ${String(error)}${paths?.length ? ` 対象：${paths.join('、')}` : ''}`;
+		await appendMessage({ text: pathError.value, warning: true });
 	} finally {
 		if (active()) {
+			checkingSourceAccess.value = false;
 			if (!preserveTree && displayedDirectory.value) resetFolderTree(displayedDirectory.value);
 			initializing.value = false;
-			if (activeOptionTab.value === 'file-info') await refreshDirectoryFiles();
-			if (activeOptionTab.value === 'output') await refreshOutputFiles();
+			if (!pathError.value && activeOptionTab.value === 'file-info') await refreshDirectoryFiles();
+			if (!pathError.value && activeOptionTab.value === 'output') await refreshOutputFiles();
 			if (!preserveTree) {
 				await nextTick();
 				if (active() && pathList.value) pathList.value.scrollTop = pathList.value.scrollHeight;
@@ -1518,7 +1522,7 @@ function resize(event: PointerEvent, divider: 1 | 2) {
 					</div>
 				</div>
 				<div id="panel_footer" class="panel_footer" :class="{ 'drop-unavailable': initializing || writing || closing }" role="status">
-					<div class="drop-hint"><svg v-if="!initializing && !writing && !closing" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 21H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h9l5 5v5M14 3v6h5M18 15v8m-4-4h8"/></svg><span>{{ closing ? '終了処理中：SD操作プロセスの終了を確認しています' : writing ? 'SD処理中：ドライブ・対象フォルダーの変更と再読込はできません' : dragging ? 'ドロップして対象フォルダーを変更' : initializing ? '対象フォルダーを読込中…' : 'ファイル・フォルダーをドロップ' }}</span></div>
+					<div class="drop-hint"><svg v-if="!initializing && !writing && !closing" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 21H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h9l5 5v5M14 3v6h5M18 15v8m-4-4h8"/></svg><span>{{ closing ? '終了処理中：SD操作プロセスの終了を確認しています' : writing ? 'SD処理中：ドライブ・対象フォルダーの変更と再読込はできません' : dragging ? 'ドロップして対象フォルダーを変更' : checkingSourceAccess ? 'フォルダーにアクセスしています…（最大2秒）' : initializing ? '対象フォルダーを読込中…' : 'ファイル・フォルダーをドロップ' }}</span></div>
 					<div v-if="transientNotice" class="path-error">{{ transientNotice }}</div>
 						<div v-if="historyStorageError" class="path-error" role="alert">{{ historyStorageError }}</div>
 				</div>
