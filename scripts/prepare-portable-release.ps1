@@ -5,6 +5,27 @@
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
+$signingPassword = $null
+$probePath = $null
+
+function Invoke-ReleaseSignature([string]$FilePath) {
+    $previousPassword = [Environment]::GetEnvironmentVariable('TAURI_SIGNING_PRIVATE_KEY_PASSWORD', 'Process')
+    $passwordPointer = [IntPtr]::Zero
+    try {
+        $passwordPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($signingPassword)
+        # Pass the password only through the signer's process environment, never command arguments.
+        [Environment]::SetEnvironmentVariable('TAURI_SIGNING_PRIVATE_KEY_PASSWORD', [Runtime.InteropServices.Marshal]::PtrToStringBSTR($passwordPointer), 'Process')
+        # PowerShell 5.1 drops empty native arguments and cannot retain an empty env value.
+        $passwordArguments = @()
+        if ($signingPassword.Length -eq 0) { $passwordArguments = @('--password=') }
+        & node node_modules/@tauri-apps/cli/tauri.js signer sign -f $PrivateKeyPath @passwordArguments $FilePath
+        if ($LASTEXITCODE -ne 0) { throw '署名に失敗しました。秘密鍵とパスワードを確認してください。' }
+    } finally {
+        [Environment]::SetEnvironmentVariable('TAURI_SIGNING_PRIVATE_KEY_PASSWORD', $previousPassword, 'Process')
+        if ($passwordPointer -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passwordPointer) }
+    }
+}
+
 Push-Location -LiteralPath $projectRoot
 try {
     & node scripts/sync-version.mjs
@@ -25,6 +46,20 @@ try {
     if ($publicKey -ne $embeddedKey) {
         throw '署名鍵の公開鍵とアプリに組み込む公開鍵が一致しません。'
     }
+    $existingPassword = [Environment]::GetEnvironmentVariable('TAURI_SIGNING_PRIVATE_KEY_PASSWORD', 'Process')
+    if ($null -ne $existingPassword -and $existingPassword -ne '') {
+        $signingPassword = ConvertTo-SecureString -String $existingPassword -AsPlainText -Force
+    } else {
+        $signingPassword = Read-Host '署名鍵のパスワード（未設定の場合はEnter）' -AsSecureString
+    }
+    $existingPassword = $null
+    $probePath = Join-Path ([System.IO.Path]::GetTempPath()) ("ts-sddirecta-signing-" + [Guid]::NewGuid().ToString('N') + '.txt')
+    [System.IO.File]::WriteAllText($probePath, 'ts-sddirecta signing check')
+    Write-Host 'ビルド前に署名鍵とパスワードを確認しています。'
+    Invoke-ReleaseSignature $probePath
+    Remove-Item -LiteralPath $probePath, "$probePath.sig" -Force
+    $probePath = $null
+    Write-Host '署名の事前確認が完了しました。exeのビルドを開始します。'
     & npm.cmd run build:exe:only
     if ($LASTEXITCODE -ne 0) { throw '配布用exeのビルドに失敗しました。' }
     $exePath = Join-Path $projectRoot 'src-tauri/target/release/ts-sddirecta.exe'
@@ -53,11 +88,14 @@ try {
     $manifestPath = Join-Path $outputDirectory 'latest.json'
     $manifestJson = $manifest | ConvertTo-Json -Depth 4
     [System.IO.File]::WriteAllText($manifestPath, $manifestJson, (New-Object System.Text.UTF8Encoding($false)))
-    & npm.cmd run tauri -- signer sign -f $PrivateKeyPath $manifestPath
-    if ($LASTEXITCODE -ne 0) { throw '更新情報の署名に失敗しました。リリースを公開しないでください。' }
+    Invoke-ReleaseSignature $manifestPath
     Write-Host "配布ファイルの作成が完了しました: $outputDirectory"
     Write-Host 'exeの起動確認後、npm.cmd run release:publish で3ファイルをGitHubへ公開してください。'
     Write-Host '初回配布はexeを手動で配置します。次のバージョンからアプリ内の更新を利用できます。'
 } finally {
+    if ($null -ne $probePath) {
+        Remove-Item -LiteralPath $probePath, "$probePath.sig" -Force -ErrorAction SilentlyContinue
+    }
+    if ($null -ne $signingPassword) { $signingPassword.Dispose() }
     Pop-Location
 }
