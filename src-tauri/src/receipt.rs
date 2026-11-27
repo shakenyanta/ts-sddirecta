@@ -183,16 +183,18 @@ fn file_bq_receipt_contents(source_path: &Path) -> Result<(usize, std::collectio
         let file_name = parse_bq_record_name(record);
         if file_name.contains(['/', '\\', ':']) { return Err("Invalid receipt name".into()); }
         let (start_addr, end_addr) = parse_bq_record_range(record);
-        if end_addr < start_addr || end_addr >= file_bytes.len() {
+        // Some BQ generators encode an empty receipt as end = start - 1.
+        if (end_addr < start_addr && end_addr.checked_add(1) != Some(start_addr))
+            || end_addr >= file_bytes.len() {
             return Err(format!("FILE-BQ.001 のレコード範囲が不正です: {file_name}"));
         }
         if start_addr >= file_bytes.len() {
             return Err(format!("FILE-BQ.001 の開始アドレスが範囲外です: {file_name}"));
         }
 
-        let mut out = Vec::with_capacity(end_addr.saturating_sub(start_addr) + 1);
-        let last_index = end_addr.min(file_bytes.len().saturating_sub(1));
-        for &byte in &file_bytes[start_addr..=last_index] {
+        let end_exclusive = end_addr + 1;
+        let mut out = Vec::with_capacity(end_exclusive - start_addr);
+        for &byte in &file_bytes[start_addr..end_exclusive] {
             if byte == 0xff {
                 break;
             }
@@ -312,5 +314,42 @@ mod tests {
         bytes[10] = b'/';
         std::fs::write(&source, &bytes).unwrap();
         assert!(file_bq_receipt_contents(&source).is_err());
+    }
+
+    #[test]
+    fn empty_receipt_does_not_stop_following_receipts() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("FILE-BQ.001");
+        let output = root.path().join("BQ_TXT");
+        std::fs::create_dir(&output).unwrap();
+        let mut bytes = vec![0xff; 0x20000];
+        for (index, (number, start, end)) in [
+            (0x0201u16, 0x1dcf0u32, 0x1dcefu32),
+            (0x0210, 0x1dd00, 0x1dd03),
+        ].into_iter().enumerate() {
+            let record = &mut bytes[index * 32..(index + 1) * 32];
+            record[..2].copy_from_slice(&number.to_be_bytes());
+            record[2..6].copy_from_slice(&start.to_be_bytes());
+            record[6..10].copy_from_slice(&end.to_be_bytes());
+            record[10..32].fill(b' ');
+        }
+        bytes[0x1dd00..0x1dd04].copy_from_slice(b"abc\xff");
+        std::fs::write(&source, &bytes).unwrap();
+        let (count, contents) = file_bq_receipt_contents(&source).unwrap();
+        assert_eq!(count, 2);
+        assert!(contents.iter().find(|(name, _)| name.starts_with("0201_")).unwrap().1.is_empty());
+        assert_eq!(contents.iter().find(|(name, _)| name.starts_with("0210_")).unwrap().1, b"abc");
+        assert_eq!(split_file_bq_receipt(&source, &output).unwrap(), 2);
+        let empty = std::fs::read_dir(&output).unwrap().map(Result::unwrap)
+            .find(|entry| entry.file_name().to_string_lossy().starts_with("0201_")).unwrap();
+        assert_eq!(empty.metadata().unwrap().len(), 0);
+
+        // Larger inversions and addresses outside the file remain invalid.
+        for (start, end) in [(0x1dcf0u32, 0x1dceeu32), (0x20001, 0x20000), (0x1dcf0, 0x20000)] {
+            bytes[2..6].copy_from_slice(&start.to_be_bytes());
+            bytes[6..10].copy_from_slice(&end.to_be_bytes());
+            std::fs::write(&source, &bytes).unwrap();
+            assert!(file_bq_receipt_contents(&source).is_err(), "start={start:X} end={end:X}");
+        }
     }
 }

@@ -187,6 +187,18 @@ const backgroundColumns = computed(() => columns.value
                         <template v-else-if="column.label === '個別情報'">
                             <button v-if="file.filename === 'FILE-BQ.001'" type="button"
                                 class="receipt-button" :disabled="disabled" @click.stop="emit('openReceipt')">レシート</button>
+                            <span v-else-if="file.filename === 'FILE-BM.002'" class="individual-info-with-details">
+                                <span class="individual-info-text">{{ file.individualInfo }}</span>
+                                <button type="button" class="details-button" :disabled="disabled"
+                                    title="詳細を表示" aria-label="詳細を表示">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                                        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                        <path d="M3 5h15M3 10h8M3 15h5" />
+                                        <circle cx="16" cy="16" r="4" />
+                                        <path d="m19 19 3 3" />
+                                    </svg>
+                                </button>
+                            </span>
                             <template v-else>{{ file.individualInfo }}</template>
                         </template>
                         <template v-else-if="column.label === '詳細'">
@@ -240,6 +252,26 @@ const backgroundColumns = computed(() => columns.value
 .im-preview canvas { display: block; max-width: 100%; height: auto; }
 
 .filename-cell { user-select: none; }
+.individual-info-with-details { display: flex; align-items: center; gap: 3px; min-width: 0; }
+.individual-info-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.details-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 20px;
+    height: 16px;
+    padding: 0;
+    border: 0;
+    border-radius: 3px;
+    background: transparent;
+    color: #255b9f;
+    cursor: pointer;
+}
+.details-button svg { width: 16px; height: 16px; }
+.details-button:hover:not(:disabled) { background: #dbeafe; }
+.details-button:focus-visible { outline: 1px solid #60a5fa; outline-offset: -1px; }
+.details-button:disabled { opacity: .45; cursor: default; }
 .daily-report-button,
 .receipt-button {
     height: 16px;
