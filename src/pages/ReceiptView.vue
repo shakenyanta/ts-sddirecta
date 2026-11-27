@@ -657,6 +657,15 @@ pre { padding:8px; font:13px/1.3 'BIZ UDGothic','BIZ UDゴシック','MS Gothic'
   outline:1px solid #b88100;
   border-radius:2px;
 }
-.file-bq-highlighted :deep(.receipt-search-match) { background:#ffeb3b; color:#192d46; font-weight:700; }
-.file-bq-highlighted :deep(.current-search-match) { background:#ffad33; color:#192d46; outline:2px solid #914700; }
+.file-bq-highlighted :deep(.receipt-search-match) {
+  background:#fef08a;
+  color:#1f2937;
+  font-weight:inherit;
+}
+.file-bq-highlighted :deep(.receipt-search-match.current-search-match) {
+  background:#1d4ed8;
+  color:#ffffff;
+  outline:1px solid #1e3a8a;
+  outline-offset:-1px;
+}
 </style>
